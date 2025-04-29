@@ -1629,7 +1629,65 @@ static MVMDispSysCall is_debugserver_running = {
     .expected_concrete = { 0 },
 };
 
-static MVMObject *yy_to_mvm(MVMThreadContext *tc, yyjson_val *val) {
+
+// This is used for MVMString, but those bhave been cast to MVMObject
+#define OBJECT_CACHE_MAX 256
+struct MVMStringCache {
+    MVMObject  *strings;
+    const char *keys[OBJECT_CACHE_MAX];
+    int count;
+};
+
+static void yy_add_object_to_cache(MVMThreadContext *tc, struct MVMStringCache *cache, const char *cstr, MVMString *mvm_string) {
+    MVMHLLConfig *hllc = tc->cur_frame->static_info->body.cu->body.hll_config;
+
+//    MVMint64 elems = MVM_repr_elems(tc, cache->strings);
+//    MVMRegister cs_reg;
+//    cs_reg.s = mvm_string;
+
+    int currentindex = cache->count++;
+//    MVM_VMArray_bind_pos(
+//        tc,
+//        STABLE(cache->strings),
+//        cache->strings,
+//        OBJECT_BODY(cache->strings),
+//        currentindex,
+//        cs_reg,
+//        MVM_reg_str
+//    );
+    MVMROOT(tc, mvm_string) {
+        MVM_repr_bind_pos_s(tc, cache->strings, currentindex, mvm_string);
+    }
+    cache->keys[currentindex] = cstr;
+}
+
+static MVMString *yy_get_object_from_cache(MVMThreadContext *tc, struct MVMStringCache *cache, const char *cstr) {
+//    MVMHLLConfig *hllc = tc->cur_frame->static_info->body.cu->body.hll_config;
+
+    MVMint64 elems = MVM_repr_elems(tc, cache->strings);
+    MVMSTable *cache_strings_st = STABLE(cache->strings);
+    void *cache_strings_data = OBJECT_BODY(cache->strings);
+    MVMRegister *cs_reg;
+
+//    for (int x=0; x < cache->count && cache->count < OBJECT_CACHE_MAX; x++) {
+//        if (strcmp(cache->keys[x], cstr) == 0) {
+//            return MVM_repr_at_pos_s(tc, cache->strings, x);
+//        }
+//    }
+
+    // If we didn't already return a cached result, then we create the missing MVMString
+    MVMString *valstr = MVM_string_utf8_decode(tc, tc->instance->VMString, cstr, strlen(cstr));
+//    MVMROOT(tc, valstr) {
+//        // Barebones eviction strategy
+//        if (OBJECT_CACHE_MAX <= cache->count) {
+//            cache->count = OBJECT_CACHE_MAX / 2;
+//        }
+//        yy_add_object_to_cache(tc, cache, cstr, valstr);
+//    }
+    return valstr;
+}
+
+static MVMObject *yy_to_mvm(MVMThreadContext *tc, struct MVMStringCache *cache, yyjson_val *val) {
     MVMHLLConfig *hllc = tc->cur_frame->static_info->body.cu->body.hll_config;
 
     switch (yyjson_get_type(val)) {
@@ -1644,9 +1702,10 @@ static MVMObject *yy_to_mvm(MVMThreadContext *tc, yyjson_val *val) {
                 while ((key = yyjson_obj_iter_next(&iter))) {
                     yyjson_val *val = yyjson_obj_iter_get_val(key);
                     const char *key_cstr = yyjson_get_str(key);
-                    MVMString *keystr = MVM_string_utf8_decode(tc, tc->instance->VMString, key_cstr, strlen(key_cstr));
+//                    MVMString *keystr = MVM_string_utf8_decode(tc, tc->instance->VMString, key_cstr, strlen(key_cstr));
+                    MVMString *keystr = yy_get_object_from_cache(tc, cache, key_cstr);
                     MVMROOT(tc, keystr) {
-                        MVMObject *val_obj = yy_to_mvm(tc, val);
+                        MVMObject *val_obj = yy_to_mvm(tc, cache, val);
                         MVM_repr_bind_key_o(tc, result, keystr, val_obj);
                     }
                 }
@@ -1661,7 +1720,7 @@ static MVMObject *yy_to_mvm(MVMThreadContext *tc, yyjson_val *val) {
 
                 yyjson_val *item_val;
                 while ((item_val = yyjson_arr_iter_next(&iter))) {
-                    MVMObject *val_obj = yy_to_mvm(tc, item_val);
+                    MVMObject *val_obj = yy_to_mvm(tc, cache, item_val);
                     MVM_repr_push_o(tc, result, val_obj);
                 }
             }
@@ -1735,20 +1794,30 @@ static void parse_json_impl(MVMThreadContext *tc, MVMArgs arg_info) {
 
     yyjson_val *root = yyjson_doc_get_root(doc);
 
+    // Set up the MVMStringCache
+    struct MVMStringCache *cache = MVM_malloc(sizeof(struct MVMStringCache));
+    cache->strings = MVM_repr_alloc_init(tc, tc->instance->boot_types.BOOTStrArray);
+    cache->count = 0;
+
     MVMObject *result = tc->instance->VMNull;
 
     if (yyjson_get_type(root) == YYJSON_TYPE_OBJ) {
         /* TODO check if tc->cur_frame->static_info->body.cu is the correct cu to look at for the hll list and hash types */
         /* the cu of tc->cur_frame will depend on what the syscall is called from, could be nqp or raku */
-
-        result = yy_to_mvm(tc, root);
+        MVMROOT(tc,cache->strings) {
+            result = yy_to_mvm(tc, cache, root);
+        }
     } else if (yyjson_get_type(root) == YYJSON_TYPE_ARR) {
-        result = yy_to_mvm(tc, root);
+        MVMROOT(tc,cache->strings) {
+            result = yy_to_mvm(tc, cache, root);
+        }
     } else {
         MVM_exception_throw_adhoc(tc, "this impl only handles arr or obj json documents, not %s", yyjson_get_type_desc(root));
     }
 
     yyjson_doc_free(doc);
+//    gc_free(tc, cache->strings);
+    MVM_free(cache);
 
     MVM_args_set_result_obj(tc, result, MVM_RETURN_CURRENT_FRAME);
 }
