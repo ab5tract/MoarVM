@@ -233,7 +233,7 @@ void utf8_decode_errors(MVMThreadContext *tc, const char *utf8, size_t bytes) {
 /* Decodes the specified number of bytes of utf8 into an NFG string, creating
  * a result of the specified type. The type must have the MVMString REPR. */
 MVMString * MVM_string_utf8_decode(MVMThreadContext *tc, const MVMObject *result_type, const char *utf8, size_t bytes) {
-    MVMString *result = (MVMString *)REPR(result_type)->allocate(tc, STABLE(result_type));
+    MVMString *result = NULL;
     MVMint32 count = 0;
     MVMCodepoint codepoint;
     MVMint32 state = 0;
@@ -242,6 +242,17 @@ MVMString * MVM_string_utf8_decode(MVMThreadContext *tc, const MVMObject *result
     size_t orig_bytes = bytes;
     const char *orig_utf8 = utf8;
     MVMint32 ready;
+    MVMuint8 did_mark_thread_blocked = 0;
+
+    MVM_gc_root_temp_push_slow(tc, (MVMCollectable **)&result_type);
+
+    /* If we have to go through a lot of bytes, mark the thread as blocked so
+     * that GC can happen at the same time. Remember the decision so we unblock
+     * it after the main work is done. */
+    if (bytes > 10000) {
+        MVM_gc_mark_thread_blocked(tc);
+        did_mark_thread_blocked = 1;
+    }
 
     /* Need to normalize to NFG as we decode. */
     MVMNormalizer norm;
@@ -265,6 +276,8 @@ MVMString * MVM_string_utf8_decode(MVMThreadContext *tc, const MVMObject *result
              * line and col numbers. */
             MVM_unicode_normalizer_cleanup(tc, &norm); /* Since we'll throw. */
             MVM_free(buffer);
+            if (did_mark_thread_blocked)
+                MVM_gc_mark_thread_unblocked(tc);
             utf8_decode_errors(tc, orig_utf8, orig_bytes);
             break;
         }
@@ -272,6 +285,8 @@ MVMString * MVM_string_utf8_decode(MVMThreadContext *tc, const MVMObject *result
     if (state != UTF8_ACCEPT) {
         MVM_unicode_normalizer_cleanup(tc, &norm);
         MVM_free(buffer);
+        if (did_mark_thread_blocked)
+            MVM_gc_mark_thread_unblocked(tc);
         MVM_exception_throw_adhoc(tc, "Malformed termination of UTF-8 string");
     }
 
@@ -284,6 +299,21 @@ MVMString * MVM_string_utf8_decode(MVMThreadContext *tc, const MVMObject *result
         }
     }
     MVM_unicode_normalizer_cleanup(tc, &norm);
+
+    if (did_mark_thread_blocked) {
+        /* Cannot allocate on a blocked thread. */
+        MVM_gc_mark_thread_unblocked(tc);
+    }
+
+    result = (MVMString *)REPR(result_type)->allocate(tc, STABLE(result_type));
+    /* set a storage type that states that body->storage.any
+     * is not a pointer. */
+    result->body.storage_type    = MVM_STRING_IN_SITU_8;
+
+    if (did_mark_thread_blocked) {
+        MVM_gc_root_temp_push_slow(tc, (MVMCollectable **)&result);
+        MVM_gc_mark_thread_blocked(tc);
+    }
 
     /* If we're lucky, we can fit our string in 8 bits per grapheme. */
     if (MVM_string_buf32_can_fit_into_8bit(buffer, count)) {
@@ -311,6 +341,14 @@ MVMString * MVM_string_utf8_decode(MVMThreadContext *tc, const MVMObject *result
         result->body.storage_type    = MVM_STRING_GRAPHEME_32;
     }
     result->body.num_graphs      = count;
+
+    if (did_mark_thread_blocked) {
+        MVM_gc_root_temp_pop_n(tc, 2);
+        MVM_gc_mark_thread_unblocked(tc);
+    }
+    else {
+        MVM_gc_root_temp_pop(tc);
+    }
 
     return result;
 }
@@ -617,14 +655,17 @@ char * MVM_string_utf8_encode_C_string(MVMThreadContext *tc, MVMString *str) {
     return utf8_string;
 }
 
-/* Encodes the specified string to a UTF-8 C string. */
+/* Encodes the specified string to a UTF-8 C string using libc malloc/realloc. */
 char * MVM_string_utf8_encode_C_string_malloc(MVMThreadContext *tc, MVMString *str) {
     MVMint64         length = MVM_string_graphs(tc, str);
     /* Guesstimate that we'll be within 2 bytes for most chars most of the
      * time, and give ourselves 4 bytes breathing space, plus 1 for the NUL. */
     size_t           result_limit = 2 * length;
-    MVMuint8        *result = malloc(result_limit + 4 + 1);
     size_t           result_pos = 0;
+    MVMuint8        *result = malloc(result_limit + 4 + 1);
+    if (!result) {
+        MVM_exception_throw_adhoc(tc, "Error encoding utf8 string: could not allocate %ld bytes", result_limit + 4 + 1);
+    }
 
     /* Iterate the codepoints and encode them. */
     MVMCodepointIter ci;
@@ -633,7 +674,12 @@ char * MVM_string_utf8_encode_C_string_malloc(MVMThreadContext *tc, MVMString *s
         MVMCodepoint cp = MVM_string_ci_get_codepoint(tc, &ci);
         if (result_pos >= result_limit) {
             result_limit *= 2;
-            result = realloc(result, result_limit + 4 + 1);
+            MVMuint8 *new_result = realloc(result, result_limit + 4 + 1);
+            if (!new_result) {
+                free(result);
+                MVM_exception_throw_adhoc(tc, "Error encoding utf8 string: could not reellocate to %ld bytes", result_limit + 4 + 1);
+            }
+            result = new_result;
         }
         MVMint32 bytes = utf8_encode(result + result_pos, cp);
         if (bytes)

@@ -2084,13 +2084,13 @@ static void spesh(MVMThreadContext *tc, MVMSTable *st, MVMSpeshGraph *g, MVMSpes
                         mp_int *i = body->u.bigint;
                         const int bits = mp_count_bits(i);
                         if (bits <= 63) {
-                            MVMuint64 res = mp_get_mag_ull(i);
+                            MVMuint64 res = mp_get_mag_u64(i);
                             value = MP_NEG == i->sign ? -res : res;
                             have_value = 1;
                         }
                         else if (bits == 64
                                  && MP_NEG == i->sign
-                                 && mp_get_mag_ull(i) == 9223372036854775808ULL) {
+                                 && mp_get_mag_u64(i) == 9223372036854775808ULL) {
                             value = -9223372036854775807ULL - 1;
                             have_value = 1;
                         }
@@ -2147,7 +2147,7 @@ static void spesh(MVMThreadContext *tc, MVMSTable *st, MVMSpeshGraph *g, MVMSpes
                         mp_int *i = body->u.bigint;
                         const int bits = mp_count_bits(i);
                         if (bits <= 64) {
-                            value = mp_get_mag_ull(i);
+                            value = mp_get_mag_u64(i);
                             have_value = 1;
                         }
                     }
@@ -2427,7 +2427,7 @@ static void dump_p6opaque(MVMThreadContext *tc, MVMObject *obj, int nested) {
                                 else
                                     fprintf(stderr, "<already seen>");
                             }
-                            if (value != NULL && REPR(value)->ID == MVM_REPR_ID_MVMCode) {
+                            else if (value != NULL && REPR(value)->ID == MVM_REPR_ID_MVMCode) {
                                 MVMCode *code = (MVMCode*)value;
                                 MVMStaticFrame *sf = code->body.sf;
                                 fprintf(
@@ -2439,12 +2439,22 @@ static void dump_p6opaque(MVMThreadContext *tc, MVMObject *obj, int nested) {
                                     sf->body.cuuid  ? MVM_string_utf8_maybe_encode_C_string(tc, sf->body.cuuid)  : "<null>"
                                 );
                             }
+                            else if (value != NULL) {
+                                fprintf(stderr, "=%s (%s) %p", value->st->REPR->name, value->st->debug_name, value);
+                            }
                         }
                         else {
                             if (attr_st->REPR->ID == MVM_REPR_ID_P6str) {
                                 MVMString *str = (MVMString *)get_obj_at_offset(data, offset);
                                 char * const c_str = str ? MVM_string_utf8_encode_C_string(tc, str) : "<null>";
-                                fprintf(stderr, "='%s'", c_str);
+                                unsigned long orig_len = strlen(c_str);
+                                if (orig_len > 256) {
+                                    c_str[256] = 0;
+                                    fprintf(stderr, "='%s'(...%lu bytes)", c_str, orig_len);
+                                }
+                                else {
+                                    fprintf(stderr, "='%s'", c_str);
+                                }
                                 if (str)
                                     MVM_free(c_str);
                             }

@@ -264,6 +264,8 @@ $config{cincludes} = '' unless defined $config{cincludes};
 $config{moar_cincludes} = '' unless defined $config{moar_cincludes};
 $config{lincludes} = '' unless defined $config{lincludes};
 $config{install}   = '' unless defined $config{install};
+$config{has_libuv_pty} = !$args{'has-libuv'} ? 1 : 0;
+$config{do_pty_ourself} = (!$config{has_libuv_pty} && $^O ne 'MSWin32') ? 1 : 0;
 if ($args{'has-libuv'}) {
     $defaults{-thirdparty}->{uv} = undef;
     unshift @{$config{usrlibs}}, 'uv';
@@ -451,6 +453,15 @@ else {
     $config{mimalloc_include} = "";
     $config{mimalloc_object} = "";
 }
+
+# zmij
+$config{moar_cincludes} .= ' ' . $defaults{ccinc} . '3rdparty/zmij/'
+                         . ' ' . $defaults{ccinc} . '3rdparty/zmij/';
+$config{install}   .= "\t\$(MKPATH) \"\$(DESTDIR)\$(PREFIX)/include/zmij\"\n"
+                   . "\t\$(CP) 3rdparty/zmij/zmij-c.h \"\$(DESTDIR)\$(PREFIX)/include/zmij\"\n";
+push @hllincludes, 'zmij';
+$config{zmij_include} = '@ccincsystem@3rdparty/zmij';
+$config{zmij_object} = '3rdparty/zmij/zmij@obj@';
 
 # mangle library names
 $config{ldlibs} = join ' ',
