@@ -127,9 +127,13 @@ pub fn addMoar(
     const base = cflags(b, opts);
     const flags = if (opts.static) base else withFlag(b, base, "-DMVM_SHARED");
     mod.addCSourceFiles(.{ .files = lists.main, .flags = flags });
-    mod.linkLibrary(libmoar);
 
-    if (!opts.static) {
+    if (opts.static) {
+        mod.linkLibrary(libmoar);
+    } else {
+        // Not linkLibrary: for a dynamic artifact zig adds an rpath to the
+        // build-tree dir (relative to the cwd), which would shadow the install.
+        mod.addObjectFile(libmoar.getEmittedBin());
         // Find libmoar.so both from the install prefix (like the Perl
         // build's -Wl,-rpath,$(LIBDIR)) and relative to the binary.
         mod.addRPath(.{ .cwd_relative = paths.libdir });
