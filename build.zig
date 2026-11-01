@@ -5,17 +5,27 @@ const version = @import("build/zig/version.zig");
 const platform = @import("build/zig/platform.zig");
 const config = @import("build/zig/config.zig");
 const thirdparty = @import("build/zig/thirdparty.zig");
+const moar = @import("build/zig/moar.zig");
 
 pub fn build(b: *std.Build) void {
     const opts = options.parse(b);
     const facts = platform.facts(&opts.target.result);
     const ver = version.detect(b);
     const lists = sources.load(b, "build/sources.list");
-    _ = lists;
 
     const config_h = config.configHeader(b, .{ .opts = opts, .facts = facts, .version = ver });
 
     const tp = thirdparty.addAll(b, opts, facts);
+
+    const libmoar = moar.addLibmoar(b, .{
+        .opts = opts,
+        .facts = facts,
+        .lists = lists,
+        .config_h = config_h,
+        .config_c = b.path("src/gen/config.c"), // Task 7 replaces this with the generated file
+        .tp = tp,
+    });
+    b.installArtifact(libmoar);
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");
     for (tp.all()) |lib| tp_step.dependOn(&lib.step);
