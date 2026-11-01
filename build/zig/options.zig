@@ -18,11 +18,11 @@ pub fn parse(b: *std.Build) Options {
     // -Doptimize=Debug for a -g style build.
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size (default ReleaseFast)") orelse .ReleaseFast;
 
-    const jit = b.option(bool, "jit", "Build the JIT compiler (not yet supported by the zig build; default false)") orelse false;
-    if (jit) std.process.fatal(
-        "-Djit=true is not implemented by the zig build yet (phase 2 of the migration). " ++
-            "Build with the default -Djit=false, or use perl Configure.pl for a JIT-enabled MoarVM.",
-        .{},
+    const x86_64 = target.result.cpu.arch == .x86_64;
+    const jit = b.option(bool, "jit", "Build the x86-64 JIT compiler (default: true on x86_64)") orelse x86_64;
+    if (jit and !x86_64) std.process.fatal(
+        "the JIT is only available on x86_64 (target is {s}); build with -Djit=false",
+        .{@tagName(target.result.cpu.arch)},
     );
 
     return .{

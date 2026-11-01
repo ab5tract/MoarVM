@@ -4,6 +4,7 @@ const Options = @import("options.zig").Options;
 const Facts = @import("platform.zig").Facts;
 const sources = @import("sources.zig");
 const thirdparty = @import("thirdparty.zig");
+const jit = @import("jit.zig");
 
 pub fn heapSnapshotFormat(opts: Options) u8 {
     return if (opts.zstd) 3 else 2;
@@ -67,6 +68,7 @@ pub const LibInputs = struct {
     /// the Perl-generated src/gen/config.c for the Makefile's benefit.
     config_c: std.Build.LazyPath,
     tp: thirdparty.Libs,
+    jit: ?jit.Jit,
 };
 
 pub fn addLibmoar(b: *std.Build, in: LibInputs) *std.Build.Step.Compile {
@@ -76,6 +78,10 @@ pub fn addLibmoar(b: *std.Build, in: LibInputs) *std.Build.Step.Compile {
         .linkage = if (in.opts.static) .static else .dynamic,
         .root_module = mod,
     });
+    // Generated JIT headers must come before `src`, where the Perl build
+    // leaves its own copies (gitignored), so "jit/core_templates.h" and
+    // "jit/x64/tile_pattern.h" resolve to ours.
+    if (in.jit) |j| mod.addIncludePath(j.gen.include_dir);
     addIncludes(b, mod);
     mod.addConfigHeader(in.config_h);
 
@@ -85,7 +91,18 @@ pub fn addLibmoar(b: *std.Build, in: LibInputs) *std.Build.Step.Compile {
 
     mod.addCSourceFiles(.{ .files = resolveCoreSources(b, in.lists.core), .flags = flags });
     mod.addCSourceFiles(.{ .files = in.lists.platform_posix, .flags = flags });
-    mod.addCSourceFiles(.{ .files = in.lists.jit_stub, .flags = flags });
+    if (in.jit) |j| {
+        mod.addCSourceFiles(.{ .files = in.lists.jit, .flags = flags });
+        // [jit-x64] lists the generated src/jit/x64/emit.c for the Makefile's
+        // benefit; the zig build compiles the one DynASM just produced.
+        for (in.lists.jit_x64) |f| {
+            if (std.mem.eql(u8, f, "src/jit/x64/emit.c")) continue;
+            mod.addCSourceFile(.{ .file = b.path(f), .flags = flags });
+        }
+        mod.addCSourceFile(.{ .file = j.dynasm.emit_c, .flags = flags });
+    } else {
+        mod.addCSourceFiles(.{ .files = in.lists.jit_stub, .flags = flags });
+    }
     mod.addCSourceFile(.{ .file = b.path("3rdparty/freebsd/memmem.c"), .flags = flags });
     mod.addCSourceFile(.{ .file = b.path("3rdparty/zmij/zmij.c"), .flags = gnu11(b, flags) });
     if (in.opts.mimalloc)

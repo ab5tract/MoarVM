@@ -34,6 +34,13 @@ pub fn build(b: *std.Build) void {
     const inputs: config.Inputs = .{ .opts = opts, .facts = facts, .version = ver };
     const config_c = config.configSource(b, inputs, paths, moar.cflags(b, opts));
 
+    const jit_build: ?jit.Jit = if (opts.jit) jit.addAll(b) else null;
+    if (jit_build) |j| {
+        _ = jit.addCheckStep(b, j);
+        const emit_c_step = b.step("emit-c", "Copy the DynASM-generated emit.c to zig-out/emit.c for inspection");
+        emit_c_step.dependOn(&b.addInstallFileWithDir(j.dynasm.emit_c, .prefix, "emit.c").step);
+    }
+
     const libmoar = moar.addLibmoar(b, .{
         .opts = opts,
         .facts = facts,
@@ -41,6 +48,7 @@ pub fn build(b: *std.Build) void {
         .config_h = config_h,
         .config_c = config_c,
         .tp = tp,
+        .jit = jit_build,
     });
     const exe = moar.addMoar(b, opts, libmoar, lists, config_h, paths);
     b.installArtifact(libmoar);
@@ -62,7 +70,7 @@ pub fn build(b: *std.Build) void {
     version_run.addFileArg(installed_moar);
     version_run.addFileInput(installed_libmoar);
     version_run.addArg("--version");
-    version_run.expectStdOutEqual(b.fmt("This is MoarVM version {s}\n", .{ver.full}));
+    version_run.expectStdOutEqual(b.fmt("This is MoarVM version {s}{s}\n", .{ ver.full, if (opts.jit) " built with JIT support" else "" }));
     test_step.dependOn(&version_run.step);
 
     const stage0 = b.option([]const u8, "nqp-stage0", "Directory with nqp's stage0 .moarvm files for `zig build test` (default ../src/vm/moar/stage0)") orelse
@@ -78,11 +86,27 @@ pub fn build(b: *std.Build) void {
         smoke.expectStdOutEqual("2\n");
         smoke.setCwd(b.path("."));
         test_step.dependOn(&smoke.step);
+
+        if (jit_build != null) {
+            const hot = std.Build.Step.Run.create(b, "run installed moar with forced JIT");
+            hot.step.dependOn(b.getInstallStep());
+            hot.addFileArg(installed_moar);
+            hot.addFileInput(installed_libmoar);
+            hot.addArg(b.fmt("--libpath={s}", .{stage0}));
+            hot.addArg(b.pathJoin(&.{ stage0, "nqp.moarvm" }));
+            hot.addArgs(&.{ "-e", "my int $i := 0; my int $n := 0; while $i < 200000 { $n := $n + $i; $i := $i + 1 }; say($n)" });
+            hot.setEnvironmentVariable("MVM_SPESH_NODELAY", "1");
+            hot.setEnvironmentVariable("MVM_SPESH_BLOCKING", "1");
+            hot.setEnvironmentVariable("MVM_JIT_EXPR_ENABLE", "1");
+            hot.expectStdOutEqual("19999900000\n");
+            hot.setCwd(b.path("."));
+            test_step.dependOn(&hot.step);
+        }
     } else |_| {}
 
     // Unit tests of the build helpers; `test` runs them first.
     const unit_step = b.step("unit-test", "Run the unit tests of the build helpers");
-    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig" }) |path| {
+    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig", "tools/zig/sexpr.zig", "tools/zig/oplist.zig", "tools/zig/expr_ops.zig", "tools/zig/expr_template_compiler.zig", "tools/zig/tiler_table_generator.zig" }) |path| {
         const t = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = b.graph.host,
@@ -93,10 +117,6 @@ pub fn build(b: *std.Build) void {
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");
     for (tp.all()) |lib| tp_step.dependOn(&lib.step);
-
-    const dynasm = jit.addDynasm(b);
-    const emit_c_step = b.step("emit-c", "Run DynASM and copy the generated emit.c to zig-out/emit.c for inspection");
-    emit_c_step.dependOn(&b.addInstallFileWithDir(dynasm.emit_c, .prefix, "emit.c").step);
 
     const show_version = b.step("version", "Print the detected MoarVM version");
     show_version.dependOn(&b.addSystemCommand(&.{ "echo", ver.full, ver.major, ver.minor, ver.patch }).step);
