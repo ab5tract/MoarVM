@@ -82,7 +82,6 @@ fn parseDirectedOperand(meta: []const u8) ?Operand {
     return .{ .dir = meta[0..1], .ty = meta[i + 1 .. meta.len - 1] };
 }
 
-
 test "parse: operands, attribute, adverbs, comments" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

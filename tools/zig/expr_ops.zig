@@ -74,7 +74,6 @@ fn isWordChar(c: u8) bool {
     return std.ascii.isAlphanumeric(c) or c == '_';
 }
 
-
 test "parse: entries after the define, comments ignored, variadic kept negative" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();

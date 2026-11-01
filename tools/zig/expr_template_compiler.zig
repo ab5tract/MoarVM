@@ -3,6 +3,7 @@
 //! core_templates.h. Must run from the repository root because `include:`
 //! paths in .expr files are cwd-relative.
 const std = @import("std");
+const builtin = @import("builtin");
 const sexpr = @import("sexpr.zig");
 const oplist = @import("oplist.zig");
 const expr_ops = @import("expr_ops.zig");
@@ -353,7 +354,7 @@ pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env) Erro
 pub fn checkType(got: []const u8, want: []const u8, why: []const u8) Error![]const u8 {
     if (eql(got, want)) return got;
     if (eql(want, "?") and (std.mem.indexOf(u8, got, "reg") != null or std.mem.indexOf(u8, got, "num") != null)) return got;
-    std.debug.print("{s}: Got {s} wanted {s}\n", .{ why, got, want });
+    if (!builtin.is_test) std.debug.print("{s}: Got {s} wanted {s}\n", .{ why, got, want });
     return error.TypeMismatch;
 }
 
@@ -547,7 +548,7 @@ pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringH
                 opcode = opcode[0 .. opcode.len - 1];
             }
             const op = ctx.ol.get(opcode) orelse {
-                std.debug.print("Opcode '{s}' unknown\n", .{opcode});
+                if (!builtin.is_test) std.debug.print("Opcode '{s}' unknown\n", .{opcode});
                 return error.UnknownOpcode;
             };
             if (result.info.contains(opcode)) return error.OpcodeRedefined;
@@ -572,12 +573,12 @@ pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringH
             if (rest.len != 1) return error.MalformedStatement;
             const file = std.mem.trim(u8, rest[0].atom, "\"");
             if (seen.contains(file)) {
-                std.debug.print("{s} already included\n", .{file});
+                if (!builtin.is_test) std.debug.print("{s} already included\n", .{file});
                 continue;
             }
             try seen.put(file, {});
             const inc_text = ctx.includes.read(ctx.includes.context, gpa, file) catch |err| {
-                std.debug.print("cannot read include '{s}': {t}\n", .{ file, err });
+                if (!builtin.is_test) std.debug.print("cannot read include '{s}': {t}\n", .{ file, err });
                 return err;
             };
             var inc = try parseFile(ctx, inc_text, macros, seen);
@@ -596,7 +597,7 @@ pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringH
             }
             try result.templates.appendSlice(gpa, inc.templates.items);
         } else {
-            std.debug.print("I don't know what to do with '{s}'\n", .{keyword});
+            if (!builtin.is_test) std.debug.print("I don't know what to do with '{s}'\n", .{keyword});
             return error.UnknownKeyword;
         }
     }
