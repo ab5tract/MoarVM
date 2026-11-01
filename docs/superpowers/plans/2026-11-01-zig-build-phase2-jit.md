@@ -1646,6 +1646,8 @@ diff <(tail -n +2 $SCRATCH/ct.perl.h) <(tail -n +2 $SCRATCH/ct.zig.h) && echo "c
 ```
 Expected: `core_templates.h IDENTICAL from line 2`. On a difference: `diff` output points at the first divergent line; find the construct in `core_templates.expr` that produced it (template rows carry the opcode order, so count rows), and compare the Zig function with the Perl one for that construct. Do not patch the output; fix the port.
 
+Notes recorded during execution (the committed file reflects these): zig 0.16 has no managed `std.StringArrayHashMap`, so `Constants` is `std.StringArrayHashMapUnmanaged(void)` with `.empty` and `getOrPut(gpa, key)`; `expr_ops.parse` reads one entry per line, so test fixtures must list one `_(...)` per line; a `let:` declaration may carry extra elements after the definition (the real input has `($bibody (...) ptr_sz)`), which Perl ignores, so the check is `declaration.items.items.len < 2`; the second compile test's desc is `nsnsl.nsl.nsli.nsl.` because `idx`'s third item is a parameter.
+
 - [ ] **Step 9: Commit**
 
 ```bash
@@ -1729,10 +1731,19 @@ const test_grammar =
     \\(tile: i (add reg (load reg $size)) reg 6)
 ;
 
+// One entry per line: expr_ops.parse (like expr_ops.pm) takes one entry per line.
 const test_expr_ops =
     \\#define MVM_JIT_EXPR_OPS(_) \
-    \\    _(NOOP, 0, 0), _(COPY, 1, 0), _(LOAD, 1, 1), _(STORE, 2, 1), _(ADDR, 1, 1), \
-    \\    _(CONST, 0, 2), _(ADD, 2, 0), _(TC, 0, 0), _(STACK, 0, 0), _(MAX_NODES, 0, 0)
+    \\    _(NOOP, 0, 0), \
+    \\    _(COPY, 1, 0), \
+    \\    _(LOAD, 1, 1), \
+    \\    _(STORE, 2, 1), \
+    \\    _(ADDR, 1, 1), \
+    \\    _(CONST, 0, 2), \
+    \\    _(ADD, 2, 0), \
+    \\    _(TC, 0, 0), \
+    \\    _(STACK, 0, 0), \
+    \\    _(MAX_NODES, 0, 0)
 ;
 
 fn runTest(arena: std.mem.Allocator) !struct { out: []const u8, debug: []const u8 } {
