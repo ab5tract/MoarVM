@@ -1889,5 +1889,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - `-Dsystem-libuv`, `-Dsystem-libtommath`, `-Dsystem-libffi` are deferred to phase 5.
 - The `[core]` section of `build/sources.list` lists `src/gen/config.c` so the Perl Makefile is unchanged; `build/zig/moar.zig` filters it out and uses its own generated file.
 - The zig build fails fast when a Perl-generated `src/gen/config.h` exists, because it would shadow the generated header through `src/moar.h`'s quote include (found in Task 7).
+- Recorded after the final whole-branch review (fix wave 9cb9448f1..a506c3a02):
+  - `moar.pc` installs to `share/pkgconfig`, where `make install` puts it; the plan text above that says `lib/pkgconfig` is superseded.
+  - RUNPATH order is `$ORIGIN/../lib` first, then `<prefix>/lib`, so staged and DESTDIR installs load the sibling library.
+  - `--prefix` must be absolute; the build fails fast otherwise (Perl's Configure.pl makes it absolute with `rel2abs`).
+  - Non-Debug builds pass `-O3`, strip debug info and omit frame pointers like the Perl `--optimize` build; the default CPU model is `baseline` (generic x86-64) like gcc's default, with `-Dcpu=native` documented for a host-tuned build.
+  - Spec section 5's `moar_includes` WriteFile step is realised as `installHeadersDirectory`/`installHeader` on the `libmoar` artifact, which zig propagates to any module that links it.
+  - Open for phase 3 (plan-level, not fixed here): the cached `moar` artifact has no RUNPATH to its own `libmoar.so` (that rpath was deliberately dropped so installed binaries carry no build-tree path), so `addRunArtifact(moar)` from a dependent would load a system libmoar or fail. nqp's build must either run the installed `moar`, set `LD_LIBRARY_PATH` on its run steps, or get a separate dev executable linked with `linkLibrary`. Decide before phase 3.
+  - Spec defects to correct in its next revision: section 10 claims Configure.pl appends `-unknown` when git is missing (it does not; the zig build mirrors Configure.pl), and section 5 names the `.cmake` ConfigHeader style where `autoconf_at` is the correct one for `build/config.h.in`.
+  - The plan document itself and the "Plan:" commits are process artifacts; drop or squash them out of an upstream PR and keep `docs/zig-build.md`.
 - `-Doptimize` defaults to ReleaseFast via a plain `b.option`, because `standardOptimizeOption`'s preferred mode only applies with `-Drelease` (found in Task 6).
 - `build/sources.list` carries the Makefile template entry `src/core/nativecall_@nativecall_backend@.c` verbatim (found during Task 2); `build/zig/moar.zig` expands it to `dyncall`.
