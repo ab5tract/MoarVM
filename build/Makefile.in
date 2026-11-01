@@ -76,8 +76,9 @@ JIT_PERL_LIBS = tools/lib/sexpr.pm tools/lib/expr_ops.pm tools/lib/oplist.pm
 MAIN_OBJECTS = @objects_main@
 
 OBJECTS = $(OBJECTS1) $(OBJECTS2)
-OBJECTS1 = @objects_core@
-OBJECTS2 = 3rdparty/freebsd/memmem@obj@ \
+OBJECTS1 = @objects_core1@
+OBJECTS2 = @objects_core2@ \
+           3rdparty/freebsd/memmem@obj@ \
           @zmij_object@ \
           @mimalloc_object@ \
           @platform@ \

@@ -805,7 +805,12 @@ if ($config{os} eq 'mingw32') {
 # Object lists are shared with build.zig through build/sources.list.
 {
     my %sections = read_sources_list('build/sources.list');
-    $config{objects_core}           = objlist($sections{'core'});
+    # Split [core] in half (OBJECTS1/OBJECTS2) so that nmake's
+    # `$(RM) $(OBJECTS1)` stays under its command-line length limit.
+    my @core  = @{ $sections{'core'} };
+    my $half  = int(@core / 2);
+    $config{objects_core1}          = objlist([ @core[0 .. $half - 1] ]);
+    $config{objects_core2}          = objlist([ @core[$half .. $#core] ]);
     $config{objects_platform_posix} = objlist($sections{'platform-posix'});
     $config{objects_jit}            = objlist($sections{'jit'});
     $config{objects_jit_x64}        = objlist($sections{'jit-x64'});
@@ -1057,6 +1062,14 @@ sub read_sources_list {
         push @{ $sections{$current} }, $line;
     }
     close $fh;
+    my %known = map { $_ => 1 } qw(core platform-posix jit jit-x64 jit-stub main);
+    for my $name (sort keys %sections) {
+        hardfail("$file: unknown section [$name]") unless $known{$name};
+    }
+    for my $name (qw(core main)) {
+        hardfail("$file: section [$name] is missing or empty")
+            unless $sections{$name} && @{ $sections{$name} };
+    }
     return %sections;
 }
 
@@ -1128,6 +1141,8 @@ sub write_backend_config {
     $config{backendconfig} = '';
     for my $k (sort keys %config) {
         next if $k eq 'backendconfig';
+        # Object lists for Makefile.in only; multi-line, not backend config.
+        next if $k =~ /^objects_/;
         my $v = $config{$k};
 
         if (ref($v) eq 'ARRAY') {
