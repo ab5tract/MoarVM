@@ -38,8 +38,14 @@ pub fn facts(target: *const std.Target) Facts {
             .{@tagName(target.os.tag)},
         ),
     };
+    if (target.os.tag == .linux and !target.abi.isGnu()) std.process.fatal(
+        "the zig build does not support the '{s}' ABI on linux yet (glibc only; musl is not supported yet). " ++
+            "Add a Facts table for it in build/zig/platform.zig.",
+        .{@tagName(target.abi)},
+    );
     if (target.cpu.arch != .x86_64) std.process.fatal(
-        "the zig build does not support CPU architecture '{s}' yet (only x86_64 in phase 1).",
+        "the zig build does not support CPU architecture '{s}' yet (only x86_64 in phase 1). " ++
+            "Add the architecture to build/zig/platform.zig.",
         .{@tagName(target.cpu.arch)},
     );
     f.has_rdtscp = target.cpu.arch == .x86_64;

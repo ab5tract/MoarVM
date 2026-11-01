@@ -3,6 +3,7 @@
 An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
 
     zig build --prefix /abs/path/to/prefix install
+    zig build unit-test       # unit tests of the build helpers (sources.list parser, version, config rendering)
     zig build test            # installs, then runs the installed moar: --version and the nqp stage0 smoke test
 
 Options (`zig build --help` lists them):
@@ -10,15 +11,17 @@ Options (`zig build --help` lists them):
 | Option | Default | Meaning |
 |---|---|---|
 | `-Doptimize=` | `ReleaseFast` | zig's standard optimisation mode (`Debug` for a -g3 style build) |
-| `-Dtarget=` | native | only `x86_64-linux` is supported so far |
+| `-Dtarget=` | generic x86-64 linux | only glibc `x86_64-linux` is supported so far |
+| `-Dcpu=` | `baseline` | pass `-Dcpu=native` for a build tuned to the host CPU (the default matches gcc's generic x86-64) |
 | `-Djit=` | `false` | the JIT is not built by the zig build yet |
 | `-Dstatic=` | `false` | build `libmoar.a` instead of `libmoar.so` |
 | `-Dmimalloc=` | `true` | use the bundled mimalloc |
 | `-Dzstd=` | `true` | link the system libzstd for heap snapshot format 3 |
 | `-Dnqp-stage0=` | `../src/vm/moar/stage0` | where `zig build test` finds nqp's stage0 bytecode |
 
-Always pass an absolute `--prefix`: it is baked into the binary's rpath,
-into `nqp::backendconfig` and into `lib/pkgconfig/moar.pc`.
+Always pass an absolute `--prefix`: it is baked into the binary's RUNPATH,
+into `nqp::backendconfig` and into `share/pkgconfig/moar.pc`. A relative
+`--prefix` is rejected. The RUNPATH is `$ORIGIN/../lib` followed by `<prefix>/lib`.
 
 ## How it maps to the Perl build
 

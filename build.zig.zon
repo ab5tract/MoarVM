@@ -1,7 +1,6 @@
 .{
     .name = .moarvm,
     .version = "2026.9.0",
-    // Replaced in step 6 with the value zig prints.
     .fingerprint = 0x8043b2765db96988,
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},

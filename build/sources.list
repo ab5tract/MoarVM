@@ -1,6 +1,6 @@
 # C sources of libmoar and moar, relative to the repository root.
 # Read by build.zig (build/zig/sources.zig) and by Configure.pl to fill build/Makefile.in.
-# One path per line under a [section]; '#' starts a comment.
+# One path per line under a [section]; lines starting with '#' are comments.
 # Third-party objects (memmem, zmij, mimalloc) and generated JIT files are handled by the builds, not listed here.
 # Entries may use Makefile template variables; today only src/core/nativecall_@nativecall_backend@.c (dyncall or libffi). build.zig expands it to dyncall.
 

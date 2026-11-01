@@ -79,6 +79,17 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&smoke.step);
     } else |_| {}
 
+    // Unit tests of the build helpers; `test` runs them first.
+    const unit_step = b.step("unit-test", "Run the unit tests of the build helpers");
+    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig" }) |path| {
+        const t = b.addTest(.{ .root_module = b.createModule(.{
+            .root_source_file = b.path(path),
+            .target = b.graph.host,
+        }) });
+        unit_step.dependOn(&b.addRunArtifact(t).step);
+    }
+    test_step.dependOn(unit_step);
+
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");
     for (tp.all()) |lib| tp_step.dependOn(&lib.step);
 
