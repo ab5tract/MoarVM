@@ -238,3 +238,32 @@ test "renderBackendConfig: emits escaped add_entry lines in place of the marker"
         out,
     );
 }
+
+/// pkgconfig/moar.pc, mirroring build/mk-moar-pc.in for a non-/usr prefix.
+pub fn pkgConfig(b: *std.Build, ver: Version, paths: InstallPaths) std.Build.LazyPath {
+    const text = b.fmt(
+        \\# pkg-config information for MoarVM {[version]s}
+        \\#
+        \\prefix={[prefix]s}
+        \\package=moar
+        \\includedir={[prefix]s}/include
+        \\bindir={[bindir]s}
+        \\libdir={[libdir]s}
+        \\mastdir={[mastdir]s}
+        \\ldopts=
+        \\exeext=
+        \\version={[version]s}
+        \\moar={[bindir]s}/moar
+        \\libs=-L{[libdir]s} -lmoar
+        \\static_libs=
+        \\
+        \\Name:           MoarVM
+        \\Description:    A virtual machine for Rakudo and NQP
+        \\URL:            http://moarvm.org
+        \\Version:        {[version]s}
+        \\Libs:           -L{[libdir]s} -lmoar
+        \\Cflags:         -I{[prefix]s}/include
+        \\
+    , .{ .version = ver.full, .prefix = paths.prefix, .bindir = paths.bindir, .libdir = paths.libdir, .mastdir = paths.mastdir });
+    return b.addWriteFiles().add("moar.pc", text);
+}

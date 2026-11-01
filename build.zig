@@ -6,9 +6,21 @@ const platform = @import("build/zig/platform.zig");
 const config = @import("build/zig/config.zig");
 const thirdparty = @import("build/zig/thirdparty.zig");
 const moar = @import("build/zig/moar.zig");
+const install = @import("build/zig/install.zig");
 
 pub fn build(b: *std.Build) void {
     const opts = options.parse(b);
+    // The Perl build writes src/gen/config.h next to the sources. A quote
+    // include searches the including file's directory first, so that file
+    // would silently shadow the config.h this build generates.
+    if (b.build_root.handle.access(b.graph.io, "src/gen/config.h", .{})) |_| {
+        std.process.fatal(
+            "src/gen/config.h exists (written by perl Configure.pl) and would shadow the zig-generated config.h.\n" ++
+                "Remove the Perl-generated files first:  rm -f src/gen/config.h src/gen/config.c src/gen/config.o\n" ++
+                "(perl Configure.pl recreates them when you go back to the Perl build.)",
+            .{},
+        );
+    } else |_| {}
     const facts = platform.facts(&opts.target.result);
     const ver = version.detect(b);
     const lists = sources.load(b, "build/sources.list");
@@ -32,6 +44,7 @@ pub fn build(b: *std.Build) void {
     const exe = moar.addMoar(b, opts, libmoar, lists, config_h, paths);
     b.installArtifact(libmoar);
     b.installArtifact(exe);
+    install.addAll(b, libmoar, config_h, config.pkgConfig(b, ver, paths));
 
     // `zig build test`: moar --version plus the nqp stage0 smoke test.
     // MoarVM has no C test suite of its own; NQP's tests cover it.
