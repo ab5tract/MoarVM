@@ -46,7 +46,6 @@ pub fn addIncludes(b: *std.Build, mod: *std.Build.Module) void {
     mod.addIncludePath(b.path("3rdparty/dyncall/dyncallback"));
     mod.addIncludePath(b.path("3rdparty/mimalloc/include"));
     mod.addIncludePath(b.path("3rdparty/mimalloc/src"));
-    mod.addIncludePath(b.path("3rdparty/zmij"));
     mod.addIncludePath(b.path("3rdparty/sha1"));
     mod.addSystemIncludePath(b.path("3rdparty/mimalloc"));
     mod.addSystemIncludePath(b.path("3rdparty/zmij"));
@@ -108,4 +107,33 @@ fn resolveCoreSources(b: *std.Build, files: []const []const u8) []const []const 
         out.append(b.allocator, resolved) catch @panic("OOM");
     }
     return out.items;
+}
+
+const config = @import("config.zig");
+
+pub fn addMoar(
+    b: *std.Build,
+    opts: Options,
+    libmoar: *std.Build.Step.Compile,
+    lists: sources.Lists,
+    config_h: *std.Build.Step.ConfigHeader,
+    paths: config.InstallPaths,
+) *std.Build.Step.Compile {
+    const mod = thirdparty.newCModule(b, opts);
+    const exe = b.addExecutable(.{ .name = "moar", .root_module = mod });
+    addIncludes(b, mod);
+    mod.addConfigHeader(config_h);
+
+    const base = cflags(b, opts);
+    const flags = if (opts.static) base else withFlag(b, base, "-DMVM_SHARED");
+    mod.addCSourceFiles(.{ .files = lists.main, .flags = flags });
+    mod.linkLibrary(libmoar);
+
+    if (!opts.static) {
+        // Find libmoar.so both from the install prefix (like the Perl
+        // build's -Wl,-rpath,$(LIBDIR)) and relative to the binary.
+        mod.addRPath(.{ .cwd_relative = paths.libdir });
+        mod.addRPathSpecial("$ORIGIN/../lib");
+    }
+    return exe;
 }

@@ -82,3 +82,159 @@ pub fn configHeader(b: *std.Build, in: Inputs) *std.Build.Step.ConfigHeader {
         .expect_condition = @as(S, "__builtin_expect((condition), (expection))"),
     });
 }
+
+pub const Entry = struct { key: []const u8, value: []const u8 };
+
+/// Replaces `@backendconfig@` in `template` (build/config.c.in) with one
+/// `add_entry(tc, config, "key", "value");` line per entry, C-escaped.
+pub fn renderBackendConfig(allocator: std.mem.Allocator, template: []const u8, entries: []const Entry) ![]u8 {
+    var body: std.ArrayList(u8) = .empty;
+    for (entries) |e| {
+        try body.appendSlice(allocator, "        add_entry(tc, config, \"");
+        try appendCEscaped(&body, allocator, e.key);
+        try body.appendSlice(allocator, "\", \"");
+        try appendCEscaped(&body, allocator, e.value);
+        try body.appendSlice(allocator, "\");\n");
+    }
+    // The template line is "@backendconfig@\n"; drop our trailing newline so
+    // the file does not get a blank line.
+    const trimmed = std.mem.trimEnd(u8, body.items, "\n");
+    return std.mem.replaceOwned(u8, allocator, template, "@backendconfig@", trimmed);
+}
+
+fn appendCEscaped(list: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []const u8) !void {
+    for (s) |c| switch (c) {
+        '"' => try list.appendSlice(allocator, "\\\""),
+        '\\' => try list.appendSlice(allocator, "\\\\"),
+        '\n' => try list.appendSlice(allocator, "\\n"),
+        else => try list.append(allocator, c),
+    };
+}
+
+/// Where things end up at `zig build install`. Uses the logical prefix
+/// (`--prefix`), not the DESTDIR-adjusted path, because these strings are
+/// baked into the binary.
+pub const InstallPaths = struct {
+    prefix: []const u8,
+    bindir: []const u8,
+    libdir: []const u8,
+    mastdir: []const u8,
+
+    pub fn fromBuild(b: *std.Build) InstallPaths {
+        const prefix = b.install_prefix;
+        return .{
+            .prefix = prefix,
+            .bindir = b.pathJoin(&.{ prefix, "bin" }),
+            .libdir = b.pathJoin(&.{ prefix, "lib" }),
+            .mastdir = b.pathJoin(&.{ prefix, "share", "nqp", "lib", "MAST" }),
+        };
+    }
+};
+
+fn boolStr(v: bool) []const u8 {
+    return if (v) "1" else "0";
+}
+
+/// The nqp::backendconfig hash. Keys follow the Perl build's src/gen/config.c;
+/// values describe the zig toolchain. Consumers known today: nqp-configure
+/// reads `make` and `osname`; Rakudo reads `prefix` and `osname`; the
+/// rakudo/nqp Makefile templates read exe, obj, ccout, ldout, prefix,
+/// ccswitch, ccinc, libdir, lddir, ld, cflags, cc, cincludes, ldshared,
+/// ldlibs, ccshared, bindir.
+pub fn backendEntries(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []const []const u8) []const Entry {
+    const opt_flags: []const u8 = if (in.opts.optimize == .Debug) "-g3" else "-O3 -DNDEBUG";
+    const ldlibs: []const u8 = if (in.opts.zstd) "-lm -lpthread -lrt -ldl -lzstd" else "-lm -lpthread -lrt -ldl";
+    const cflags_str = std.mem.join(b.allocator, " ", cflags) catch @panic("OOM");
+    const config_str = b.fmt("zig build -Djit={} -Dstatic={} -Dmimalloc={} -Dzstd={} -Doptimize={s}", .{
+        in.opts.jit, in.opts.static, in.opts.mimalloc, in.opts.zstd, @tagName(in.opts.optimize),
+    });
+    const entries = [_]Entry{
+        .{ .key = "name", .value = "moar" },
+        .{ .key = "version", .value = in.version.full },
+        .{ .key = "versionmajor", .value = in.version.major },
+        .{ .key = "versionminor", .value = in.version.minor },
+        .{ .key = "versionpatch", .value = in.version.patch },
+        .{ .key = "config", .value = config_str },
+        .{ .key = "os", .value = in.facts.os_name },
+        .{ .key = "osname", .value = in.facts.os_name },
+        .{ .key = "be", .value = boolStr(in.facts.big_endian) },
+        .{ .key = "ptr_size", .value = b.fmt("{d}", .{in.facts.ptr_size}) },
+        .{ .key = "prefix", .value = paths.prefix },
+        .{ .key = "bindir", .value = paths.bindir },
+        .{ .key = "libdir", .value = paths.libdir },
+        .{ .key = "mastdir", .value = paths.mastdir },
+        .{ .key = "cc", .value = "zig cc" },
+        .{ .key = "ld", .value = "zig cc" },
+        .{ .key = "ccswitch", .value = "-c" },
+        .{ .key = "ccout", .value = "-o " },
+        .{ .key = "ldout", .value = "-o " },
+        .{ .key = "ccinc", .value = "-I" },
+        .{ .key = "ccincsystem", .value = "-isystem" },
+        .{ .key = "ccdef", .value = "-D" },
+        .{ .key = "lddir", .value = "-L" },
+        .{ .key = "ldusr", .value = "-l%s" },
+        .{ .key = "ldsys", .value = "-l%s" },
+        .{ .key = "ccshared", .value = "-fPIC" },
+        .{ .key = "ldshared", .value = "-shared -fPIC" },
+        .{ .key = "ccdefflags", .value = "-D_REENTRANT -D_FILE_OFFSET_BITS=64" },
+        .{ .key = "ccmiscflags", .value = "-std=gnu99 -Wextra -Wall -Wno-unused-parameter -Wno-unused-function -Wno-missing-braces -Werror=pointer-arith" },
+        .{ .key = "ccoptiflags", .value = opt_flags },
+        .{ .key = "ccdebugflags", .value = "-g3" },
+        .{ .key = "cflags", .value = cflags_str },
+        .{ .key = "cincludes", .value = "" },
+        .{ .key = "ldflags", .value = "" },
+        .{ .key = "ldlibs", .value = ldlibs },
+        .{ .key = "mainflags", .value = if (in.opts.static) "" else "-DMVM_SHARED" },
+        .{ .key = "mainlibs", .value = "-L. -lmoar" },
+        .{ .key = "objflags", .value = "-DMVM_BUILD_SHARED -fPIC" },
+        .{ .key = "exe", .value = "" },
+        .{ .key = "obj", .value = ".o" },
+        .{ .key = "dll", .value = "lib%s.so" },
+        .{ .key = "lib", .value = "lib%s.a" },
+        .{ .key = "staticlib", .value = if (in.opts.static) "libmoar.a" else "" },
+        .{ .key = "make", .value = "make" },
+        .{ .key = "sh", .value = "/bin/sh" },
+        .{ .key = "nul", .value = "/dev/null" },
+        .{ .key = "nativecall_backend", .value = "dyncall" },
+        .{ .key = "heapsnapformat", .value = if (in.opts.zstd) "3" else "2" },
+        .{ .key = "use_mimalloc", .value = boolStr(in.opts.mimalloc) },
+        .{ .key = "use_c11_atomics", .value = "1" },
+        .{ .key = "has_fn_malloc_trim", .value = boolStr(in.facts.has_fn_malloc_trim) },
+        .{ .key = "has_pthread_setname_np", .value = boolStr(in.facts.has_pthread_setname_np) },
+        .{ .key = "has_pthread_yield", .value = boolStr(in.facts.has_pthread_yield) },
+        .{ .key = "has_libuv_pty", .value = boolStr(in.facts.has_libuv_pty) },
+        .{ .key = "has_rdtscp", .value = boolStr(in.facts.has_rdtscp) },
+        .{ .key = "static_inline", .value = "static __inline__" },
+        .{ .key = "thread_local", .value = "_Thread_local" },
+        .{ .key = "booltype", .value = "_Bool" },
+        .{ .key = "jit_arch", .value = jitArch(in.opts) },
+        .{ .key = "jit_platform", .value = jitPlatform(in.opts) },
+        .{ .key = "translate_newline_output", .value = boolStr(in.facts.translate_newline_output) },
+        .{ .key = "hllincludes", .value = "moar libuv libtommath dyncall mimalloc zmij" },
+    };
+    return b.allocator.dupe(Entry, &entries) catch @panic("OOM");
+}
+
+/// config.c rendered from build/config.c.in at configure time.
+pub fn configSource(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []const []const u8) std.Build.LazyPath {
+    const template = b.build_root.handle.readFileAlloc(b.graph.io, "build/config.c.in", b.allocator, .unlimited) catch |err|
+        std.process.fatal("cannot read build/config.c.in: {t}", .{err});
+    const text = renderBackendConfig(b.allocator, template, backendEntries(b, in, paths, cflags)) catch @panic("OOM");
+    return b.addWriteFiles().add("config.c", text);
+}
+
+test "renderBackendConfig: emits escaped add_entry lines in place of the marker" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const out = try renderBackendConfig(arena.allocator(), "A\n@backendconfig@\nB\n", &.{
+        .{ .key = "cc", .value = "zig cc" },
+        .{ .key = "q", .value = "say \"hi\" \\ there" },
+    });
+    try std.testing.expectEqualStrings(
+        "A\n" ++
+            "        add_entry(tc, config, \"cc\", \"zig cc\");\n" ++
+            "        add_entry(tc, config, \"q\", \"say \\\"hi\\\" \\\\ there\");\n" ++
+            "B\n",
+        out,
+    );
+}
