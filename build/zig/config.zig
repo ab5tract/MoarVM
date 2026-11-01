@@ -122,6 +122,10 @@ pub const InstallPaths = struct {
 
     pub fn fromBuild(b: *std.Build) InstallPaths {
         const prefix = b.install_prefix;
+        if (!std.fs.path.isAbsolute(prefix)) std.process.fatal(
+            "--prefix must be an absolute path (got '{s}'): it is baked into the binary's RUNPATH and into nqp::backendconfig",
+            .{prefix},
+        );
         return .{
             .prefix = prefix,
             .bindir = b.pathJoin(&.{ prefix, "bin" }),
@@ -136,18 +140,20 @@ fn boolStr(v: bool) []const u8 {
 }
 
 /// The nqp::backendconfig hash. Keys follow the Perl build's src/gen/config.c;
-/// values describe the zig toolchain. Consumers known today: nqp-configure
-/// reads `make` and `osname`; Rakudo reads `prefix` and `osname`; the
-/// rakudo/nqp Makefile templates read exe, obj, ccout, ldout, prefix,
-/// ccswitch, ccinc, libdir, lddir, ld, cflags, cc, cincludes, ldshared,
-/// ldlibs, ccshared, bindir.
+/// values describe the zig toolchain. Covered: every key that nqp-configure
+/// (NQP/Config/NQP.pm), Rakudo (NQP/Config/Rakudo.pm) and the rakudo/nqp
+/// Makefile templates are known to read. Perl keys that are only used inside
+/// MoarVM's own Makefile (mingw_unicode, mainlibs variants, pkgconfig, ...)
+/// are deliberately absent; `ldswitch` does not exist in the Perl build.
 pub fn backendEntries(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []const []const u8) []const Entry {
-    const opt_flags: []const u8 = if (in.opts.optimize == .Debug) "-g3" else "-O3 -DNDEBUG";
+    const opt_flags: []const u8 = if (in.opts.optimize == .Debug) "" else "-O3 -DNDEBUG";
     const ldlibs: []const u8 = if (in.opts.zstd) "-lm -lpthread -lrt -ldl -lzstd" else "-lm -lpthread -lrt -ldl";
     const cflags_str = std.mem.join(b.allocator, " ", cflags) catch @panic("OOM");
     const config_str = b.fmt("zig build -Djit={} -Dstatic={} -Dmimalloc={} -Dzstd={} -Doptimize={s}", .{
         in.opts.jit, in.opts.static, in.opts.mimalloc, in.opts.zstd, @tagName(in.opts.optimize),
     });
+    const ldrpath = b.fmt("-Wl,-rpath,\"{s}\"", .{paths.libdir});
+    const ldflags = if (opt_flags.len == 0) ldrpath else b.fmt("{s} {s}", .{ opt_flags, ldrpath });
     const entries = [_]Entry{
         .{ .key = "name", .value = "moar" },
         .{ .key = "version", .value = in.version.full },
@@ -182,7 +188,13 @@ pub fn backendEntries(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []
         .{ .key = "ccdebugflags", .value = "-g3" },
         .{ .key = "cflags", .value = cflags_str },
         .{ .key = "cincludes", .value = "" },
-        .{ .key = "ldflags", .value = "" },
+        .{ .key = "ldflags", .value = ldflags },
+        .{ .key = "ldrpath", .value = ldrpath },
+        .{ .key = "ldrpath_relocatable", .value = "-Wl,-z,origin,-rpath,'$$ORIGIN/../lib'" },
+        .{ .key = "ldimp", .value = "" },
+        .{ .key = "do_pty_ourself", .value = boolStr(in.facts.do_pty_ourself) },
+        .{ .key = "moar", .value = if (in.opts.static) "libmoar.a" else "libmoar.so" },
+        .{ .key = "osvers", .value = "unknown" },
         .{ .key = "ldlibs", .value = ldlibs },
         .{ .key = "mainflags", .value = if (in.opts.static) "" else "-DMVM_SHARED" },
         .{ .key = "mainlibs", .value = "-L. -lmoar" },

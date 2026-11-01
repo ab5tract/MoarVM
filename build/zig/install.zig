@@ -26,5 +26,5 @@ pub fn addAll(
     install.dependOn(&b.addInstallFileWithDir(b.path("tools/libmoar.so-gdb.py"), .lib, "libmoar.so-gdb.py").step);
     install.dependOn(&b.addInstallFileWithDir(b.path("lib/MAST/Nodes.nqp"), .{ .custom = "share/nqp/lib/MAST" }, "Nodes.nqp").step);
     install.dependOn(&b.addInstallFileWithDir(b.path("lib/MAST/Ops.nqp"), .{ .custom = "share/nqp/lib/MAST" }, "Ops.nqp").step);
-    install.dependOn(&b.addInstallFileWithDir(pc, .{ .custom = "lib/pkgconfig" }, "moar.pc").step);
+    install.dependOn(&b.addInstallFileWithDir(pc, .{ .custom = "share/pkgconfig" }, "moar.pc").step);
 }
