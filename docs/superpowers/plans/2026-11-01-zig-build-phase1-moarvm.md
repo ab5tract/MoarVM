@@ -1511,12 +1511,36 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 **Files:**
 - Create: `build/zig/install.zig`
 - Modify: `build/zig/config.zig` (add `pkgConfig`)
-- Modify: `build.zig`
+- Modify: `build.zig` (stale-header guard, install wiring)
 
 **Interfaces:**
 - Consumes: `libmoar`, `config_h`, `config.InstallPaths`, `version.Version`.
 - Produces: `config.pkgConfig(b, ver, paths) std.Build.LazyPath`, `install.addAll(b, libmoar, config_h, pc)`.
 - Resulting layout under the prefix, matching the Perl `make install` for the moar backend: `bin/moar`, `lib/libmoar.so`, `lib/libmoar.so-gdb.py`, `lib/pkgconfig/moar.pc`, `share/nqp/lib/MAST/{Nodes,Ops}.nqp`, `include/moar/**/*.h` (incl. `include/moar/config.h` and `include/moar/gen/config.h`), `include/libuv/**`, `include/libtommath/*.h`, `include/dyncall/*.h`, `include/mimalloc/*.h`, `include/zmij/zmij-c.h`.
+
+- [ ] **Step 0: Fail fast when the Perl-generated `src/gen/config.h` is present**
+
+Found in Task 7: `src/moar.h` does `#include "gen/config.h"`, and a quote include searches the including file's directory first, so a Perl-generated `src/gen/config.h` (gitignored, written by `perl Configure.pl`) silently shadows the header this build generates, and `moar --version` reports the Perl build's version. No include flag can override that lookup and `src/` must not change, so the zig build refuses to run while the file exists. Add to `build.zig`, directly after `const opts = options.parse(b);`:
+```zig
+    // The Perl build writes src/gen/config.h next to the sources. A quote
+    // include searches the including file's directory first, so that file
+    // would silently shadow the config.h this build generates.
+    if (b.build_root.handle.access(b.graph.io, "src/gen/config.h", .{})) |_| {
+        std.process.fatal(
+            "src/gen/config.h exists (written by perl Configure.pl) and would shadow the zig-generated config.h.\n" ++
+                "Remove the Perl-generated files first:  rm -f src/gen/config.h src/gen/config.c src/gen/config.o\n" ++
+                "(perl Configure.pl recreates them when you go back to the Perl build.)",
+            .{},
+        );
+    } else |_| {}
+```
+Verify the guard, then clear the files so the rest of this task and the remaining tasks run against the zig-generated header:
+```bash
+zig build; echo "exit=$?"
+rm -f src/gen/config.h src/gen/config.c src/gen/config.o
+zig build test --summary all 2>&1 | tail -3 && zig-out/bin/moar --version
+```
+Expected: the first `zig build` prints the message and `exit=1`; after the removal, all steps succeed and `moar --version` prints the branch's `git describe` version (not `2026.09-39-g71a33965f`). The three removed files are gitignored Perl artifacts; Task 9 regenerates them.
 
 - [ ] **Step 1: Add `pkgConfig` to `build/zig/config.zig`**
 
@@ -1617,6 +1641,9 @@ Expected: the version line, an RPATH/RUNPATH containing `$P/lib` and `$ORIGIN/..
 ```bash
 git add build/zig/install.zig build/zig/config.zig build.zig
 git commit -m "zig build: install headers, MAST files, gdb helper and moar.pc like make install
+
+Also refuse to build while a Perl-generated src/gen/config.h would shadow
+the generated header.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1740,8 +1767,11 @@ Expected: `This is MoarVM version <git describe output> built with JIT support`,
 
 - [ ] **Step 6: Confirm the zig build is unaffected**
 
-Run: `zig build test --summary all 2>&1 | tail -3`
-Expected: all steps succeeded.
+`perl Configure.pl` in Step 4 recreated `src/gen/config.h`, which the zig build refuses to run beside (see the guard added in Task 8). Remove the Perl-generated files again, then run:
+```bash
+rm -f src/gen/config.h src/gen/config.c src/gen/config.o && zig build test --summary all 2>&1 | tail -3
+```
+Expected: all steps succeeded. (Re-run `perl Configure.pl ...` later if you want the Perl build back; `make` alone will not recreate them.)
 
 - [ ] **Step 7: Commit**
 
@@ -1800,6 +1830,19 @@ into `nqp::backendconfig` and into `lib/pkgconfig/moar.pc`.
 | `build/setup.pm` third-party rules, dyncall's `./configure` | `build/zig/thirdparty.zig` |
 | `make install` | `zig build install` (`build/zig/install.zig`) |
 
+## Coexisting with the Perl build in one checkout
+
+`perl Configure.pl` writes `src/gen/config.h` and `src/gen/config.c` next to
+the sources. Because `src/moar.h` includes `"gen/config.h"` with a quote
+include, that file would shadow the header the zig build generates, so
+`zig build` refuses to run while it exists and tells you to remove it:
+
+    rm -f src/gen/config.h src/gen/config.c src/gen/config.o
+
+Going the other way needs nothing: the zig build writes only under
+`.zig-cache/` and the install prefix, and `perl Configure.pl` recreates its
+files. Both builds compile the same `build/sources.list`.
+
 ## Not yet supported
 
 JIT (dynasm and the Perl template compilers), any OS other than linux,
@@ -1845,5 +1888,6 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - `-Dzstd` is new; the spec did not mention that heap snapshot format 3 needs the system libzstd.
 - `-Dsystem-libuv`, `-Dsystem-libtommath`, `-Dsystem-libffi` are deferred to phase 5.
 - The `[core]` section of `build/sources.list` lists `src/gen/config.c` so the Perl Makefile is unchanged; `build/zig/moar.zig` filters it out and uses its own generated file.
+- The zig build fails fast when a Perl-generated `src/gen/config.h` exists, because it would shadow the generated header through `src/moar.h`'s quote include (found in Task 7).
 - `-Doptimize` defaults to ReleaseFast via a plain `b.option`, because `standardOptimizeOption`'s preferred mode only applies with `-Drelease` (found in Task 6).
 - `build/sources.list` carries the Makefile template entry `src/core/nativecall_@nativecall_backend@.c` verbatim (found during Task 2); `build/zig/moar.zig` expands it to `dyncall`.
