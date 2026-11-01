@@ -1178,13 +1178,30 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 7: Generated `config.c`, the `moar` executable, and the smoke test
 
 **Files:**
+- Modify: `build/zig/options.zig` (default optimize mode)
 - Modify: `build/zig/config.zig` (add `InstallPaths`, `Entry`, `renderBackendConfig`, `backendEntries`, `configSource`)
-- Modify: `build/zig/moar.zig` (add `addMoar`)
+- Modify: `build/zig/moar.zig` (add `addMoar`; drop the duplicate zmij include)
 - Modify: `build.zig`
 
 **Interfaces:**
 - Produces: `config.InstallPaths { prefix, bindir, libdir, mastdir: []const u8 }` with `InstallPaths.fromBuild(b)`, `config.Entry { key, value }`, `config.renderBackendConfig(allocator, template, entries) ![]u8` (pure, tested), `config.configSource(b, in, paths) std.Build.LazyPath`, `moar.addMoar(b, opts, libmoar, lists, config_h, paths) *Compile`.
 - `zig build test` runs `moar --version` and the nqp stage0 smoke test.
+
+- [ ] **Step 0: Two corrections found while building Task 6**
+
+(a) The default optimize mode is Debug, not ReleaseFast: zig's `standardOptimizeOption` honours `preferred_optimize_mode` only when `-Drelease` is passed. The Perl build's default is `--optimize` (-O3), and `docs/zig-build.md` will document ReleaseFast as the default. In `build/zig/options.zig` replace
+```zig
+    const optimize = b.standardOptimizeOption(.{ .preferred_optimize_mode = .ReleaseFast });
+```
+with
+```zig
+    // Perl's Configure.pl defaults to --optimize (-O3); match that. Pass
+    // -Doptimize=Debug for a -g style build.
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize",
+        "Prioritize performance, safety, or binary size (default ReleaseFast)") orelse .ReleaseFast;
+```
+
+(b) `3rdparty/zmij` is listed both as `-I` and `-isystem` (the Makefile does the same; gcc is silent, clang warns `'-isystem' conflicts with '-I'`). In `build/zig/moar.zig` `addIncludes`, delete the line `mod.addIncludePath(b.path("3rdparty/zmij"));` and keep the `addSystemIncludePath` one. Verify with `zig build 2>&1 | grep -c "conflicts with"` → `0`.
 
 - [ ] **Step 1: Write the failing test for `renderBackendConfig`**
 
@@ -1478,8 +1495,11 @@ Expected: `"prefix", "/home/longwalker/code/raku/x.core/zmoarz/rakudo/nqp/MoarVM
 - [ ] **Step 10: Commit**
 
 ```bash
-git add build/zig/config.zig build/zig/moar.zig build.zig
+git add build/zig/options.zig build/zig/config.zig build/zig/moar.zig build.zig
 git commit -m "zig build: generate config.c, link the moar executable, add zig build test
+
+Also default to ReleaseFast like Configure.pl --optimize, and drop the
+duplicate -I for 3rdparty/zmij that clang warns about.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1825,4 +1845,5 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - `-Dzstd` is new; the spec did not mention that heap snapshot format 3 needs the system libzstd.
 - `-Dsystem-libuv`, `-Dsystem-libtommath`, `-Dsystem-libffi` are deferred to phase 5.
 - The `[core]` section of `build/sources.list` lists `src/gen/config.c` so the Perl Makefile is unchanged; `build/zig/moar.zig` filters it out and uses its own generated file.
+- `-Doptimize` defaults to ReleaseFast via a plain `b.option`, because `standardOptimizeOption`'s preferred mode only applies with `-Drelease` (found in Task 6).
 - `build/sources.list` carries the Makefile template entry `src/core/nativecall_@nativecall_backend@.c` verbatim (found during Task 2); `build/zig/moar.zig` expands it to `dyncall`.
