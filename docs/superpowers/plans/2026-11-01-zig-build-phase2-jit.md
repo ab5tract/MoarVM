@@ -2553,6 +2553,8 @@ wc -l $SCRATCH/tp.zig.h
 ```
 Expected: `canonical Perl outputs IDENTICAL`, `tile_pattern.h IDENTICAL from line 2`, and 30128 lines (the Perl output's size). If the `select`/`state` rows differ while the templates table matches, the fixpoint or the `best` quirk differs; if the templates table differs, `decompose`/`registerSpec`/`encode` differ.
 
+Notes recorded during execution (the committed file reflects these): `(define: pattern symbol cost)` with a third item occurs three times in the real tile file (for example `(define: (carg reg) c_arg 1)`); Perl's `add_rule(undef, @$tree, 0)` takes that third item as the cost, so `parseGrammar` accepts 2 or 3 items for `define:` and uses the third as the cost when present. The `"  { MVM_JIT_"` line-prefix count in the third test is 72, not 65: the 7 `MVM_JIT_TILE_NAME` template rows share the prefix with the 65 state rows.
+
 - [ ] **Step 10: Commit**
 
 ```bash
