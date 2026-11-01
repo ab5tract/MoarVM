@@ -37,8 +37,6 @@ pub fn build(b: *std.Build) void {
     const jit_build: ?jit.Jit = if (opts.jit) jit.addAll(b) else null;
     if (jit_build) |j| {
         _ = jit.addCheckStep(b, j);
-        const emit_c_step = b.step("emit-c", "Copy the DynASM-generated emit.c to zig-out/emit.c for inspection");
-        emit_c_step.dependOn(&b.addInstallFileWithDir(j.dynasm.emit_c, .prefix, "emit.c").step);
     }
 
     const libmoar = moar.addLibmoar(b, .{

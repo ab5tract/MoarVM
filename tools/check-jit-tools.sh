@@ -34,7 +34,7 @@ fi
 
 if [ -f src/jit/x64/emit.c ]; then
     if ! cmp -s src/jit/x64/emit.c "$zig_emit"; then
-        echo "check-jit-tools: emit.c differs from src/jit/x64/emit.c" >&2
+        echo "check-jit-tools: emit.c differs from src/jit/x64/emit.c; src/jit/x64/emit.c may be stale: regenerate it with the Perl build (make src/jit/x64/emit.c) and rerun" >&2
         exit 1
     fi
     echo "check-jit-tools: emit.c identical to the Perl build's"

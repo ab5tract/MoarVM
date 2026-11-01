@@ -2,7 +2,6 @@
 //! and the Zig ports of the Perl generators produce the expression template
 //! and tiler tables. All of these run on the build host.
 const std = @import("std");
-const Options = @import("options.zig").Options;
 
 pub const Dynasm = struct {
     minilua: *std.Build.Step.Compile,

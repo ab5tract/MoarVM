@@ -37,6 +37,11 @@ sub cmp_lists {
 my @order = sort { cmp_lists($rulesets{$a}, $rulesets{$b}) } keys %rulesets;
 my %newnum;
 $newnum{ $order[$_] } = $_ for 0 .. $#order;
+sub newnum {
+    my ($rs) = @_;
+    die "unknown ruleset $rs in $header_file\n" unless exists $newnum{$rs};
+    return $newnum{$rs};
+}
 
 open my $hfh, '<', $header_file or die "cannot open $header_file: $!";
 my @lines = <$hfh>;
@@ -54,7 +59,7 @@ while ($i < @lines) {
         while ($lines[$i] ne '};') {
             my ($rs, $sym, $rule) = $lines[$i] =~ /^  \{ (\d+), (\d+), (\d+) \},$/
                 or die "bad select row: $lines[$i]";
-            push @rows, [ $newnum{$rs}, $sym, $rule ];
+            push @rows, [ newnum($rs), $sym, $rule ];
             $i++;
         }
         push @out, map { sprintf('  { %d, %d, %d },', @$_) }
@@ -79,7 +84,7 @@ while ($i < @lines) {
                 $flush->() if @group;
                 $head = $h;
             }
-            push @group, [ $h, ($rs1 == -1 ? -1 : $newnum{$rs1}), ($rs2 == -1 ? -1 : $newnum{$rs2}), $newnum{$state}, $best ];
+            push @group, [ $h, ($rs1 == -1 ? -1 : newnum($rs1)), ($rs2 == -1 ? -1 : newnum($rs2)), newnum($state), $best ];
             $i++;
         }
         $flush->() if @group;
