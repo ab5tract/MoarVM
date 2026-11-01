@@ -3,7 +3,7 @@
 An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
 
     zig build --prefix /abs/path/to/prefix install
-    zig build test            # moar --version and the nqp stage0 smoke test
+    zig build test            # installs, then runs the installed moar: --version and the nqp stage0 smoke test
 
 Options (`zig build --help` lists them):
 

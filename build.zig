@@ -49,7 +49,14 @@ pub fn build(b: *std.Build) void {
     // `zig build test`: moar --version plus the nqp stage0 smoke test.
     // MoarVM has no C test suite of its own; NQP's tests cover it.
     const test_step = b.step("test", "Run moar --version and the nqp stage0 smoke test");
-    const version_run = b.addRunArtifact(exe);
+    // Run the installed binary, not the cached one: only the installed
+    // layout has libmoar.so where the RUNPATH (<prefix>/lib, $ORIGIN/../lib)
+    // expects it. The cached binary would silently load a system libmoar.so.
+    const installed_moar: std.Build.LazyPath = .{ .cwd_relative = b.getInstallPath(.bin, "moar") };
+
+    const version_run = std.Build.Step.Run.create(b, "run installed moar --version");
+    version_run.step.dependOn(b.getInstallStep());
+    version_run.addFileArg(installed_moar);
     version_run.addArg("--version");
     version_run.expectStdOutEqual(b.fmt("This is MoarVM version {s}\n", .{ver.full}));
     test_step.dependOn(&version_run.step);
@@ -57,7 +64,9 @@ pub fn build(b: *std.Build) void {
     const stage0 = b.option([]const u8, "nqp-stage0", "Directory with nqp's stage0 .moarvm files for `zig build test` (default ../src/vm/moar/stage0)") orelse
         "../src/vm/moar/stage0";
     if (b.build_root.handle.access(b.graph.io, stage0, .{})) |_| {
-        const smoke = b.addRunArtifact(exe);
+        const smoke = std.Build.Step.Run.create(b, "run installed moar on nqp stage0");
+        smoke.step.dependOn(b.getInstallStep());
+        smoke.addFileArg(installed_moar);
         smoke.addArg(b.fmt("--libpath={s}", .{stage0}));
         smoke.addArg(b.pathJoin(&.{ stage0, "nqp.moarvm" }));
         smoke.addArgs(&.{ "-e", "say(1+1)" });
