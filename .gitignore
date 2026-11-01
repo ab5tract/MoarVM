@@ -90,3 +90,7 @@ tools/lib/MAST/Ops.pm
 # utility code
 tools/repr_size_table
 tools/repr_size_table.exe
+
+# zig build
+.zig-cache/
+zig-out/
