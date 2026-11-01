@@ -3,8 +3,8 @@
 An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
 
     zig build --prefix /abs/path/to/prefix install
-    zig build unit-test       # unit tests of the build helpers (sources.list parser, version, config rendering)
-    zig build check-jit-tools # diff the Zig JIT generators against the Perl originals (needs perl)
+    zig build unit-test       # unit tests of the build helpers (sources.list parser, version, config rendering) and of the JIT generators
+    zig build check-jit-tools # diff the Zig JIT generators against the Perl originals (needs perl; exists only when the JIT is on)
     zig build test            # installs, then runs the installed moar: --version and the nqp stage0 smoke test
 
 Options (`zig build --help` lists them):
@@ -62,11 +62,12 @@ equivalents that need no Perl:
 The generated `core_templates.h` and `tile_pattern.h` live in the zig cache
 and are put on the include path ahead of `src/`, so Perl-generated copies
 under `src/jit/` are ignored. `zig build test` additionally runs an nqp loop
-with `MVM_SPESH_NODELAY=1 MVM_SPESH_BLOCKING=1 MVM_JIT_EXPR_ENABLE=1` so both
-the lego JIT and the expression JIT execute.
+with `MVM_SPESH_NODELAY=1 MVM_SPESH_BLOCKING=1 MVM_JIT_EXPR_ENABLE=1` which
+exercises both JIT paths (the test asserts the program's result, not that
+frames were compiled). That run is skipped when nqp's stage0 directory is
+absent or with `-Djit=false`. `check-jit-tools` exists only when the JIT is on.
 
 ## Not yet supported
 
-Any OS other than linux,
-any CPU other than x86_64, system libuv/libtommath/libffi, MSVC, coverage
+Any OS other than linux, any CPU other than x86_64, system libuv/libtommath/libffi, MSVC, coverage
 and sanitizer builds, `--relocatable`.

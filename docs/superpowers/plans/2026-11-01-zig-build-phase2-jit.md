@@ -2909,4 +2909,6 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - `-Djit` is a build option defaulting to true on x86_64 (the spec's "default on for x64").
 - The Perl tool's own self-test (`expr-template-compiler.pl --test`) does not pass as shipped (it links `(copy $1)` with no operand environment); the Zig unit tests cover the same cases with an environment.
 - `tools/zig/oplist.zig` and `tools/zig/expr_ops.zig` were committed without `zig fmt`; the final verification's `zig fmt --check` caught them and Task 7 reformatted them (whitespace only).
-- The expression compiler's diagnostics (`checkType`, opcode/include/keyword messages) are suppressed under `builtin.is_test`, because zig's build runner prints a misleading `failed command` line when a test binary writes to stderr.
+- The generators report diagnostics through a sink (`Ctx.diag` in the expression compiler, a `diag` parameter of `generate` in the tiler) instead of `std.debug.print` gated on `builtin.is_test`; tests pass a null or capturing writer, because zig's build runner prints a misleading `failed command` line when a test binary writes to stderr.
+- The Zig file names use underscores (`expr_template_compiler.zig`, `tiler_table_generator.zig`) where the spec wrote hyphens, because hyphens are not valid in Zig module names.
+- The `emit-c` step was dropped: it installed `emit.c` into the prefix root, and `check-jit-tools` already covers `emit.c`.
