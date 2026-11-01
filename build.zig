@@ -5,6 +5,7 @@ const version = @import("build/zig/version.zig");
 const platform = @import("build/zig/platform.zig");
 const config = @import("build/zig/config.zig");
 const thirdparty = @import("build/zig/thirdparty.zig");
+const jit = @import("build/zig/jit.zig");
 const moar = @import("build/zig/moar.zig");
 const install = @import("build/zig/install.zig");
 
@@ -92,6 +93,10 @@ pub fn build(b: *std.Build) void {
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");
     for (tp.all()) |lib| tp_step.dependOn(&lib.step);
+
+    const dynasm = jit.addDynasm(b);
+    const emit_c_step = b.step("emit-c", "Run DynASM and copy the generated emit.c to zig-out/emit.c for inspection");
+    emit_c_step.dependOn(&b.addInstallFileWithDir(dynasm.emit_c, .prefix, "emit.c").step);
 
     const show_version = b.step("version", "Print the detected MoarVM version");
     show_version.dependOn(&b.addSystemCommand(&.{ "echo", ver.full, ver.major, ver.minor, ver.patch }).step);
