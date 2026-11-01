@@ -58,22 +58,12 @@ PLATFORM_WIN32 = src/platform/win32/mmap@obj@ \
                  src/platform/win32/io@obj@ \
                  src/platform/win32/fork@obj@
 
-PLATFORM_POSIX = src/platform/posix/mmap@obj@ \
-                 src/platform/posix/time@obj@ \
-                 src/platform/posix/io@obj@ \
-                 src/platform/posix/fork@obj@
+PLATFORM_POSIX = @objects_platform_posix@
 
 DASM_FLAGS   = @dasm_flags@
-JIT_ARCH_X64 = src/jit/x64/emit@obj@ src/jit/x64/arch@obj@
-JIT_STUB     = src/jit/stub@obj@
-JIT_OBJECTS  = src/jit/graph@obj@ \
-               src/jit/label@obj@ \
-               src/jit/compile@obj@ \
-               src/jit/dump@obj@ \
-               src/jit/expr@obj@ \
-               src/jit/tile@obj@ \
-               src/jit/linear_scan@obj@ \
-               src/jit/interface@obj@
+JIT_ARCH_X64 = @objects_jit_x64@
+JIT_STUB     = @objects_jit_stub@
+JIT_OBJECTS  = @objects_jit@
 
 
 # JIT intermediate files which clean should remove
@@ -83,179 +73,13 @@ JIT_INTERMEDIATES = src/jit/x64/emit.c \
 
 JIT_PERL_LIBS = tools/lib/sexpr.pm tools/lib/expr_ops.pm tools/lib/oplist.pm
 
-MAIN_OBJECTS = src/main@obj@
+MAIN_OBJECTS = @objects_main@
 
 OBJECTS = $(OBJECTS1) $(OBJECTS2)
-OBJECTS1 = src/core/callsite@obj@ \
-          src/core/args@obj@ \
-          src/core/exceptions@obj@ \
-          src/core/interp@obj@ \
-          src/core/str_hash_table@obj@ \
-          src/core/fixkey_hash_table@obj@ \
-          src/core/index_hash_table@obj@ \
-          src/core/ptr_hash_table@obj@ \
-          src/core/uni_hash_table@obj@ \
-          src/core/threadcontext@obj@ \
-          src/core/compunit@obj@ \
-          src/core/bytecode@obj@ \
-          src/core/frame@obj@ \
-          src/core/callstack@obj@ \
-          src/core/validation@obj@ \
-          src/core/bytecodedump@obj@ \
-          src/core/threads@obj@ \
-          src/core/ops@obj@ \
-          src/core/hll@obj@ \
-          src/core/loadbytecode@obj@ \
-          src/core/coerce@obj@ \
-          src/core/dll@obj@ \
-          src/core/ext@obj@ \
-          src/core/nativecall@obj@ \
-          src/core/nativecall_@nativecall_backend@@obj@ \
-          src/core/continuation@obj@ \
-          src/core/intcache@obj@ \
-          src/core/regionalloc@obj@ \
-          src/debug/debugserver@obj@ \
-          src/gen/config@obj@ \
-          src/gc/orchestrate@obj@ \
-          src/gc/allocation@obj@ \
-          src/gc/worklist@obj@ \
-          src/gc/roots@obj@ \
-          src/gc/collect@obj@ \
-          src/gc/gen2@obj@ \
-          src/gc/wb@obj@ \
-          src/gc/objectid@obj@ \
-          src/gc/finalize@obj@ \
-          src/gc/debug@obj@ \
-          src/io/io@obj@ \
-          src/io/eventloop@obj@ \
-          src/io/syncfile@obj@ \
-          src/io/syncsocket@obj@ \
-          src/io/fileops@obj@ \
-          src/io/dirops@obj@ \
-          src/io/procops@obj@ \
-          src/io/timers@obj@ \
-          src/io/filewatchers@obj@ \
-          src/io/signals@obj@ \
-          src/io/asyncsocket@obj@ \
-          src/io/asyncsocketudp@obj@ \
-          src/6model/reprs@obj@ \
-          src/6model/reprconv@obj@ \
-          src/6model/containers@obj@ \
-          src/6model/parametric@obj@ \
-          src/6model/reprs/MVMString@obj@ \
-          src/6model/reprs/VMArray@obj@ \
-          src/6model/reprs/MVMHash@obj@ \
-          src/6model/reprs/MVMCFunction@obj@ \
-          src/6model/reprs/KnowHOWREPR@obj@ \
-          src/6model/reprs/KnowHOWAttributeREPR@obj@ \
-          src/6model/reprs/P6str@obj@ \
-          src/6model/reprs/P6opaque@obj@ \
-          src/6model/reprs/MVMCode@obj@ \
-          src/6model/reprs/MVMOSHandle@obj@ \
-          src/6model/reprs/MVMCompUnit@obj@ \
-          src/6model/reprs/MVMStaticFrame@obj@ \
-          src/6model/reprs/P6int@obj@ \
-          src/6model/reprs/P6num@obj@ \
-          src/6model/reprs/Uninstantiable@obj@ \
-          src/6model/reprs/HashAttrStore@obj@ \
-          src/6model/reprs/MVMThread@obj@ \
-          src/6model/reprs/MVMIter@obj@ \
-          src/6model/reprs/MVMContext@obj@ \
-          src/6model/reprs/SCRef@obj@ \
-          src/6model/reprs/P6bigint@obj@ \
-          src/6model/reprs/NFA@obj@ \
-          src/6model/reprs/MVMException@obj@
-OBJECTS2 = src/6model/reprs/MVMDLLSym@obj@ \
-          src/6model/reprs/MVMContinuation@obj@ \
-          src/6model/reprs/NativeCall@obj@ \
-          src/6model/reprs/CPointer@obj@ \
-          src/6model/reprs/CStr@obj@ \
-          src/6model/reprs/CArray@obj@ \
-          src/6model/reprs/CStruct@obj@ \
-          src/6model/reprs/CUnion@obj@ \
-          src/6model/reprs/ReentrantMutex@obj@ \
-          src/6model/reprs/ConditionVariable@obj@ \
-          src/6model/reprs/Semaphore@obj@ \
-          src/6model/reprs/ConcBlockingQueue@obj@ \
-          src/6model/reprs/MVMAsyncTask@obj@ \
-          src/6model/reprs/MVMNull@obj@ \
-          src/6model/reprs/CPPStruct@obj@ \
-          src/6model/reprs/NativeRef@obj@ \
-          src/6model/reprs/MultiDimArray@obj@ \
-          src/6model/reprs/Decoder@obj@ \
-          src/6model/reprs/MVMSpeshLog@obj@ \
-          src/6model/reprs/MVMStaticFrameSpesh@obj@ \
-          src/6model/reprs/MVMCapture@obj@ \
-          src/6model/reprs/MVMTracked@obj@ \
-          src/6model/reprs/MVMStat@obj@ \
-          src/6model/6model@obj@ \
-          src/6model/bootstrap@obj@ \
-          src/6model/sc@obj@ \
-          src/6model/serialization@obj@ \
-          src/disp/boot@obj@ \
-          src/disp/registry@obj@ \
-          src/disp/inline_cache@obj@ \
-          src/disp/program@obj@ \
-          src/disp/syscall@obj@ \
-          src/disp/resume@obj@ \
-          src/spesh/dump@obj@ \
-          src/spesh/graph@obj@ \
-          src/spesh/codegen@obj@ \
-          src/spesh/manipulate@obj@ \
-          src/spesh/args@obj@ \
-          src/spesh/usages@obj@ \
-          src/spesh/facts@obj@ \
-          src/spesh/optimize@obj@ \
-          src/spesh/dead_bb_elimination@obj@ \
-          src/spesh/dead_ins_elimination@obj@ \
-          src/spesh/deopt@obj@ \
-          src/spesh/log@obj@ \
-          src/spesh/threshold@obj@ \
-          src/spesh/inline@obj@ \
-          src/spesh/osr@obj@ \
-          src/spesh/lookup@obj@ \
-          src/spesh/iterator@obj@ \
-          src/spesh/worker@obj@ \
-          src/spesh/debug@obj@ \
-          src/spesh/stats@obj@ \
-          src/spesh/plan@obj@ \
-          src/spesh/arg_guard@obj@ \
-          src/spesh/frame_walker@obj@ \
-          src/spesh/pea@obj@ \
-          src/6model/reprs/MVMSpeshCandidate@obj@ \
-          src/spesh/disp@obj@ \
-          src/strings/decode_stream@obj@ \
-          src/strings/ascii@obj@ \
-          src/strings/parse_num@obj@ \
-          src/strings/utf8@obj@ \
-          src/strings/utf8_c8@obj@ \
-          src/strings/nfg@obj@ \
-          src/strings/ops@obj@ \
-          src/strings/unicode@obj@ \
-          src/strings/normalize@obj@ \
-          src/strings/latin1@obj@ \
-          src/strings/utf16@obj@ \
-          src/strings/windows1252@obj@ \
-          src/strings/shiftjis@obj@ \
-          src/strings/gb2312@obj@ \
-          src/strings/gb18030@obj@ \
-          src/math/bigintops@obj@ \
-          src/profiler/instrument@obj@ \
-          src/profiler/log@obj@ \
-          src/profiler/profile@obj@ \
-          src/profiler/heapsnapshot@obj@ \
-          src/profiler/telemeh@obj@ \
-          src/profiler/configuration@obj@ \
-          src/instrument/crossthreadwrite@obj@ \
-          src/instrument/line_coverage@obj@ \
-          src/platform/sys@obj@ \
-          src/platform/random@obj@ \
-          src/platform/memmem32@obj@ \
-          3rdparty/freebsd/memmem@obj@ \
+OBJECTS1 = @objects_core@
+OBJECTS2 = 3rdparty/freebsd/memmem@obj@ \
           @zmij_object@ \
           @mimalloc_object@ \
-          src/platform/malloc_trim@obj@ \
-          src/moar@obj@ \
           @platform@ \
           @jit_obj@
 

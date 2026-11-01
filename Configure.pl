@@ -802,6 +802,17 @@ if ($config{os} eq 'mingw32') {
     $config{mingw_unicode} = '-municode';
 }
 
+# Object lists are shared with build.zig through build/sources.list.
+{
+    my %sections = read_sources_list('build/sources.list');
+    $config{objects_core}           = objlist($sections{'core'});
+    $config{objects_platform_posix} = objlist($sections{'platform-posix'});
+    $config{objects_jit}            = objlist($sections{'jit'});
+    $config{objects_jit_x64}        = objlist($sections{'jit-x64'});
+    $config{objects_jit_stub}       = objlist($sections{'jit-stub'});
+    $config{objects_main}           = objlist($sections{'main'});
+}
+
 # read list of files to generate
 
 open my $listfile, '<', $GENLIST
@@ -1026,6 +1037,33 @@ sub configure {
     }
 
     return $template;
+}
+
+# Parse build/sources.list: '[section]' headers, one path per line,
+# '#' comments and blank lines ignored.
+sub read_sources_list {
+    my ($file) = @_;
+    open my $fh, '<', $file or hardfail("cannot open $file: $!");
+    my (%sections, $current);
+    while (my $line = <$fh>) {
+        $line =~ s/^\s+|\s+$//g;
+        next if $line eq '' || $line =~ /^#/;
+        if ($line =~ /^\[(.+)\]$/) {
+            $current = $1;
+            $sections{$current} ||= [];
+            next;
+        }
+        hardfail("$file: entry '$line' before any [section]") unless defined $current;
+        push @{ $sections{$current} }, $line;
+    }
+    close $fh;
+    return %sections;
+}
+
+# Turn a list of .c paths into Makefile object entries, one per line.
+sub objlist {
+    my ($files) = @_;
+    return join " \\\n          ", map { my $f = $_; $f =~ s/\.c$//; "$f\@obj\@" } @{ $files || [] };
 }
 
 # generate files
