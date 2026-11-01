@@ -2832,8 +2832,17 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 7: Documentation, plan deviations and final verification
 
 **Files:**
+- Modify: `tools/zig/expr_template_compiler.zig` (silence diagnostics under `zig test`)
 - Modify: `docs/zig-build.md`
 - Modify: `docs/superpowers/plans/2026-11-01-zig-build-phase2-jit.md` (the "Deviations" section at the end, if anything new was found)
+
+- [ ] **Step 0: Keep `zig build unit-test` output pristine**
+
+The expression compiler's error-path unit tests make it print its diagnostics (`checkType`'s "X: Got A wanted B" and the include "already included" warning) with `std.debug.print`; zig's build runner then prints an alarming `failed command: .../test --listen=-` line even though the step passes. Keep the diagnostics for the real tool but silence them under test: add `const builtin = @import("builtin");` to the imports of `tools/zig/expr_template_compiler.zig` and wrap each diagnostic `std.debug.print(...)` in that file as `if (!builtin.is_test) std.debug.print(...);` (the ones in `checkType`, the include SEEN warning, and the "Opcode ... unknown" / "I don't know what to do with" messages). Verify:
+```bash
+zig build unit-test --summary all 2>&1 | grep -c "failed command"
+```
+Expected: `0`.
 
 - [ ] **Step 1: Update `docs/zig-build.md`**
 
@@ -2882,8 +2891,11 @@ Expected: `fmt-clean`; all steps succeed; the version line ends with `built with
 - [ ] **Step 3: Record anything learned in the plan's "Deviations" section and commit**
 
 ```bash
-git add docs/zig-build.md docs/superpowers/plans/2026-11-01-zig-build-phase2-jit.md
+git add tools/zig/expr_template_compiler.zig docs/zig-build.md docs/superpowers/plans/2026-11-01-zig-build-phase2-jit.md
 git commit -m "Document the zig build's JIT code generation
+
+Also silence the expression compiler's diagnostics under zig test so the
+unit-test step's output stays clean.
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
