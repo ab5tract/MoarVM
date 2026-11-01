@@ -1803,14 +1803,14 @@ add new C files there, not in `Makefile.in`.
 
 Run:
 ```bash
-rm -rf .zig-cache zig-out && zig build test --summary all 2>&1 | tail -3 && zig-out/bin/moar --version && zig test build/zig/sources.zig && zig test build/zig/version.zig && zig test build/zig/config.zig && git status --short
+zig fmt --check build.zig build/zig && rm -rf .zig-cache zig-out && zig build test --summary all 2>&1 | tail -3 && zig-out/bin/moar --version && zig test build/zig/sources.zig && zig test build/zig/version.zig && zig test build/zig/config.zig && git status --short
 ```
-Expected: all steps succeeded, the version line, three `All N tests passed.`, and `git status` showing only the two doc files as changes.
+Expected: `zig fmt --check` prints nothing (run `zig fmt build.zig build/zig` and include the result in this commit if it lists files), all steps succeeded, the version line, three `All N tests passed.`, and `git status` showing only the doc files (and any fmt-touched zig files) as changes.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add docs/zig-build.md build/README.md
+git add docs/zig-build.md build/README.md build.zig build/zig
 git commit -m "Document the zig build
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
