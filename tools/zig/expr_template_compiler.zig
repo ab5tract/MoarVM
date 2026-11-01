@@ -97,7 +97,21 @@ const Code = struct { tag: u8, value: []const u8 };
 
 pub const Compiled = struct { root: u32, template: []const []const u8, desc: []const u8 };
 
+/// How `include:` files are read; main reads from the cwd, tests supply text.
+pub const Includes = struct {
+    context: ?*const anyopaque = null,
+    read: *const fn (context: ?*const anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]const u8 = readNothing,
+
+    fn readNothing(context: ?*const anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
+        _ = context;
+        _ = gpa;
+        _ = path;
+        return error.FileNotFound;
+    }
+};
+
 pub const Ctx = struct {
+    includes: Includes = .{},
     gpa: std.mem.Allocator,
     ops: *const expr_ops.ExprOps,
     ol: *const oplist.Oplist,
@@ -503,7 +517,7 @@ fn cmacroText(c: *Compiler, expr: *Node) Error![]const u8 {
 /// Parses one .expr file (statements macro:, template:, include:). Macros and
 /// the include set are shared across includes; templates and info are merged
 /// into the including file with their indices shifted.
-pub fn parseFile(ctx: Ctx, io: std.Io, text: []const u8, macros: *Macros, seen: *std.StringHashMap(void)) !ParsedFile {
+pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringHashMap(void)) !ParsedFile {
     const gpa = ctx.gpa;
     var result: ParsedFile = .{ .info = std.StringHashMap(Info).init(gpa) };
     var parser = sexpr.Parser.init(gpa, text);
@@ -562,11 +576,17 @@ pub fn parseFile(ctx: Ctx, io: std.Io, text: []const u8, macros: *Macros, seen: 
                 continue;
             }
             try seen.put(file, {});
-            const inc_text = std.Io.Dir.cwd().readFileAlloc(io, file, gpa, .unlimited) catch |err| {
+            const inc_text = ctx.includes.read(ctx.includes.context, gpa, file) catch |err| {
                 std.debug.print("cannot read include '{s}': {t}\n", .{ file, err });
                 return err;
             };
-            var inc = try parseFile(ctx, io, inc_text, macros, seen);
+            var inc = try parseFile(ctx, inc_text, macros, seen);
+            // Perl's `$info{keys %$inc_info} = values %$inc_info;` (line 554 of
+            // expr-template-compiler.pl) is a bug: both sides are evaluated in
+            // scalar context, so it stores one junk key and drops the included
+            // templates' info. This does the intended per-entry merge (index
+            // shift, redeclaration check). macro.expr, the only include in the
+            // tree, has no templates, so the output is unaffected.
             var it = inc.info.iterator();
             while (it.next()) |entry| {
                 if (result.info.contains(entry.key_ptr.*)) return error.TemplateRedeclaredInInclude;
@@ -622,6 +642,16 @@ pub fn writeOutput(w: *std.Io.Writer, parsed: *const ParsedFile, ol: *const opli
     , .{ol.ops.len});
 }
 
+fn readFromCwd(context: ?*const anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
+    const io: *const std.Io = @ptrCast(@alignCast(context.?));
+    return std.Io.Dir.cwd().readFileAlloc(io.*, path, gpa, .unlimited);
+}
+
+fn usageExit() noreturn {
+    std.debug.print("usage: expr_template_compiler --oplist src/core/oplist --expr-ops src/jit/expr_ops.h -o out.h input.expr (run from the repository root)\n", .{});
+    std.process.exit(2);
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
@@ -635,34 +665,33 @@ pub fn main(init: std.process.Init) !void {
         const a = args[i];
         if (eql(a, "--oplist")) {
             i += 1;
+            if (i >= args.len) usageExit();
             oplist_path = args[i];
         } else if (eql(a, "--expr-ops")) {
             i += 1;
+            if (i >= args.len) usageExit();
             expr_ops_path = args[i];
         } else if (eql(a, "-o") or eql(a, "--output")) {
             i += 1;
+            if (i >= args.len) usageExit();
             output_path = args[i];
         } else if (std.mem.startsWith(u8, a, "-")) {
             std.debug.print("unknown option {s}\n", .{a});
             std.process.exit(2);
         } else input_path = a;
     }
-    const usage = "usage: expr_template_compiler --oplist src/core/oplist --expr-ops src/jit/expr_ops.h -o out.h input.expr (run from the repository root)\n";
-    const in_path = input_path orelse {
-        std.debug.print(usage, .{});
-        std.process.exit(2);
-    };
+    const in_path = input_path orelse usageExit();
     const cwd = std.Io.Dir.cwd();
     const ol = try arena.create(oplist.Oplist);
     ol.* = try oplist.parse(arena, try cwd.readFileAlloc(io, oplist_path orelse "src/core/oplist", arena, .unlimited));
     const eo = try arena.create(expr_ops.ExprOps);
     eo.* = try expr_ops.parse(arena, try cwd.readFileAlloc(io, expr_ops_path orelse "src/jit/expr_ops.h", arena, .unlimited));
     var constants: Constants = .empty;
-    const ctx: Ctx = .{ .gpa = arena, .ops = eo, .ol = ol, .constants = &constants };
+    const ctx: Ctx = .{ .includes = .{ .context = &io, .read = readFromCwd }, .gpa = arena, .ops = eo, .ol = ol, .constants = &constants };
     var macros = Macros.init(arena);
     var seen = std.StringHashMap(void).init(arena);
     const text = try cwd.readFileAlloc(io, in_path, arena, .unlimited);
-    const parsed = parseFile(ctx, io, text, &macros, &seen) catch |err| {
+    const parsed = parseFile(ctx, text, &macros, &seen) catch |err| {
         std.debug.print("expr_template_compiler: {s}: {t}\n", .{ in_path, err });
         std.process.exit(1);
     };
@@ -881,4 +910,45 @@ test "output: template array wraps after 75 columns like the Perl loop" {
             "    MVM_JIT_COPY,MVM_JIT_COPY,\n};\n",
         out.written(),
     );
+}
+
+const TestFiles = struct {
+    names: []const []const u8,
+    texts: []const []const u8,
+
+    fn read(context: ?*const anyopaque, gpa: std.mem.Allocator, path: []const u8) anyerror![]const u8 {
+        _ = gpa;
+        const self: *const TestFiles = @ptrCast(@alignCast(context.?));
+        for (self.names, self.texts) |n, t| if (eql(n, path)) return t;
+        return error.FileNotFound;
+    }
+};
+
+test "include: templates merge with shifted indices, SEEN skips, redeclaration errors" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var constants: Constants = .empty;
+    var ctx = try testCtx(a, &constants);
+    const files: TestFiles = .{
+        .names = &.{ "inc.expr", "dup.expr" },
+        .texts = &.{
+            "(template: set (copy $1))",
+            "(template: const_i64 (copy $1))",
+        },
+    };
+    ctx.includes = .{ .context = &files, .read = TestFiles.read };
+
+    // const_i64 -> 3 template slots, set -> 3 slots (via include, shifted by 3)
+    var macros = Macros.init(a);
+    var seen = std.StringHashMap(void).init(a);
+    const parsed = try parseFile(ctx, "(template: const_i64 (copy $1))\n(include: \"inc.expr\")\n(include: \"inc.expr\")", &macros, &seen);
+    try std.testing.expectEqual(@as(usize, 6), parsed.templates.items.len);
+    try std.testing.expectEqual(@as(usize, 0), parsed.info.get("const_i64").?.idx);
+    try std.testing.expectEqual(@as(usize, 3), parsed.info.get("set").?.idx);
+    try std.testing.expectEqual(@as(usize, 1), seen.count()); // inc.expr recorded once, second include skipped
+
+    var macros2 = Macros.init(a);
+    var seen2 = std.StringHashMap(void).init(a);
+    try std.testing.expectError(error.TemplateRedeclaredInInclude, parseFile(ctx, "(template: const_i64 (copy $1))\n(include: \"dup.expr\")", &macros2, &seen2));
 }
