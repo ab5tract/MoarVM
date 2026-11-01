@@ -757,7 +757,7 @@ Run:
 ```bash
 zig build config-h && diff src/gen/config.h zig-out/config.h; echo "diff exit=$?"
 ```
-Expected: exactly two changed lines, the JIT ones, because the zig build has JIT off:
+Expected: exactly four changed lines and `diff exit=1`. Two are the JIT lines, because the zig build has JIT off:
 ```
 < #define MVM_JIT_ARCH MVM_JIT_ARCH_X64
 < #define MVM_JIT_PLATFORM MVM_JIT_PLATFORM_POSIX
@@ -765,7 +765,7 @@ Expected: exactly two changed lines, the JIT ones, because the zig build has JIT
 > #define MVM_JIT_ARCH MVM_JIT_ARCH_NONE
 > #define MVM_JIT_PLATFORM MVM_JIT_PLATFORM_NONE
 ```
-and `diff exit=1`. If the step fails with "unspecified config header value" or "config header value unused", a name in `configHeader` does not match `build/config.h.in`; fix the name. If a `#define` line differs in whitespace, the Perl value has trailing spaces (`MVM_NO_RETURN ` and `MVM_VECTORIZE_LOOP ` do); zig's autoconf_at writer preserves the template's text, so a difference there means the template changed; accept it only if the Perl output has the same bytes.
+The other two are `MVM_VERSION` and `MVM_VERSION_PATCH`: the Perl header was generated at `2026.09-39-g71a33965f`, and this branch has added commits since, so `git describe` now reports a higher patch number and a different hash (compare with `git describe --tags --match=20*`). Any other difference is a defect. If the step fails with "unspecified config header value" or "config header value unused", a name in `configHeader` does not match `build/config.h.in`; fix the name. If a `#define` line differs in whitespace, the Perl value has trailing spaces (`MVM_NO_RETURN ` and `MVM_VECTORIZE_LOOP ` do); zig's autoconf_at writer preserves the template's text, so a difference there means the template changed; accept it only if the Perl output has the same bytes.
 
 - [ ] **Step 5: Check the unsupported-target guard**
 
@@ -1716,7 +1716,7 @@ Expected: no output (differences are confined to the `CONFIG` line and the refor
 - [ ] **Step 5: Confirm the Perl build still links**
 
 Run: `make -j$(nproc) moar 2>&1 | tail -3 && ./moar --version`
-Expected: `This is MoarVM version 2026.09-39-g71a33965f built with JIT support` (a no-op rebuild if objects were current; otherwise a full rebuild that succeeds).
+Expected: `This is MoarVM version <git describe output> built with JIT support`, where the version matches `git describe --tags --match=20*` on this branch. Because Configure.pl regenerated `src/gen/config.h` with the new version string, make rebuilds every object; this takes a few minutes and must succeed.
 
 - [ ] **Step 6: Confirm the zig build is unaffected**
 
