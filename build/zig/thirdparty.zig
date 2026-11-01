@@ -46,6 +46,9 @@ pub fn newCModule(b: *std.Build, opts: Options) *std.Build.Module {
         .link_libc = true,
         .pic = true,
         .sanitize_c = .off,
+        // Perl's --optimize build carries no debug info and omits frame pointers.
+        .strip = opts.optimize != .Debug,
+        .omit_frame_pointer = opts.optimize != .Debug,
     });
 }
 

@@ -15,7 +15,11 @@ pub fn cflags(b: *std.Build, opts: Options) []const []const u8 {
     flags.appendSlice(b.allocator, &thirdparty.base_cflags) catch @panic("OOM");
     flags.appendSlice(b.allocator, &.{ "-DMVM_TRACING=0", "-DMVM_CGOTO=1" }) catch @panic("OOM");
     flags.append(b.allocator, b.fmt("-DMVM_HEAPSNAPSHOT_FORMAT={d}", .{heapSnapshotFormat(opts)})) catch @panic("OOM");
-    if (opts.optimize != .Debug) flags.append(b.allocator, "-DNDEBUG") catch @panic("OOM");
+    if (opts.optimize != .Debug) {
+        // zig's ReleaseFast compiles C at -O2; Perl's --optimize uses -O3.
+        // clang honours the last -O flag.
+        flags.appendSlice(b.allocator, &.{ "-DNDEBUG", "-O3" }) catch @panic("OOM");
+    }
     return flags.items;
 }
 
@@ -134,10 +138,11 @@ pub fn addMoar(
         // Not linkLibrary: for a dynamic artifact zig adds an rpath to the
         // build-tree dir (relative to the cwd), which would shadow the install.
         mod.addObjectFile(libmoar.getEmittedBin());
-        // Find libmoar.so both from the install prefix (like the Perl
-        // build's -Wl,-rpath,$(LIBDIR)) and relative to the binary.
-        mod.addRPath(.{ .cwd_relative = paths.libdir });
+        // Find libmoar.so relative to the binary first, so a staged or
+        // DESTDIR install loads its own sibling library, then fall back to
+        // the install prefix (like the Perl build's -Wl,-rpath,$(LIBDIR)).
         mod.addRPathSpecial("$ORIGIN/../lib");
+        mod.addRPath(.{ .cwd_relative = paths.libdir });
     }
     return exe;
 }

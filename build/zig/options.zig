@@ -10,7 +10,10 @@ pub const Options = struct {
 };
 
 pub fn parse(b: *std.Build) Options {
-    const target = b.standardTargetOptions(.{});
+    const target = b.standardTargetOptions(.{
+        // Generic x86-64 like gcc's default; -Dcpu=native tunes for the host.
+        .default_target = .{ .cpu_model = .baseline },
+    });
     // Perl's Configure.pl defaults to --optimize (-O3); match that. Pass
     // -Doptimize=Debug for a -g style build.
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size (default ReleaseFast)") orelse .ReleaseFast;
