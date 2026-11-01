@@ -24,7 +24,7 @@ pub const Rule = struct {
     text: []const u8 = "",
 };
 
-pub const Error = error{ MalformedStatement, BadCost, CannotFindKey, RulesetUnreachable, MissingCost, OutOfMemory, WriteFailed };
+pub const Error = error{ MalformedStatement, BadCost, CannotFindKey, RulesetUnreachable, MissingCost, UnknownSymbol, OutOfMemory, WriteFailed };
 
 // --- Tests: the Perl tool's own __DATA__ grammar, expected values taken from
 // a canonicalised run of the Perl tool. ---
@@ -60,7 +60,7 @@ fn runTest(arena: std.mem.Allocator) !struct { out: []const u8, debug: []const u
     eo.* = try expr_ops.parse(arena, test_expr_ops);
     var out: std.Io.Writer.Allocating = .init(arena);
     var dbg: std.Io.Writer.Allocating = .init(arena);
-    try generate(arena, test_grammar, eo, &dbg.writer, &out.writer);
+    try generate(arena, test_grammar, eo, &dbg.writer, &out.writer, null);
     return .{ .out = out.written(), .debug = dbg.written() };
 }
 
@@ -483,7 +483,7 @@ fn childCost(rule_cost: *const std.AutoHashMap(RsRule, f64), min_cost: *const st
     return rule_cost.get(.{ .rs = @intCast(rs), .rule = best }) orelse error.MissingCost;
 }
 
-pub fn generate(gpa: std.mem.Allocator, tile_text: []const u8, eo: *const expr_ops.ExprOps, debug: ?*std.Io.Writer, out: *std.Io.Writer) !void {
+pub fn generate(gpa: std.mem.Allocator, tile_text: []const u8, eo: *const expr_ops.ExprOps, debug: ?*std.Io.Writer, out: *std.Io.Writer, diag: ?*std.Io.Writer) !void {
     var g: Gen = .{ .gpa = gpa };
     try parseGrammar(&g, tile_text);
     const rules = g.rules.items;
@@ -507,6 +507,14 @@ pub fn generate(gpa: std.mem.Allocator, tile_text: []const u8, eo: *const expr_o
         if (!symnum.contains(r.sym)) {
             try symnum.put(r.sym, @intCast(symbols.items.len));
             try symbols.append(gpa, r.sym);
+        }
+    }
+    // every symbol a pattern consumes must be produced by some rule
+    for (rules, 0..) |r, n| {
+        for (r.pat[@min(r.pat.len, 1)..]) |p| {
+            if (symnum.contains(p)) continue;
+            if (diag) |d| d.print("unknown symbol '{s}' in rule {d} ({s})\n", .{ p, n, try encodePattern(gpa, r.pat) }) catch {};
+            return error.UnknownSymbol;
         }
     }
     const table = try generateTable(gpa, rules, rulesets);
@@ -667,6 +675,11 @@ const lookup_routines =
     \\
 ;
 
+fn usageExit() noreturn {
+    std.debug.print("usage: tiler_table_generator --expr-ops src/jit/expr_ops.h [--debug] -o out.h input.tile\n", .{});
+    std.process.exit(2);
+}
+
 pub fn main(init: std.process.Init) !void {
     const arena = init.arena.allocator();
     const io = init.io;
@@ -680,9 +693,11 @@ pub fn main(init: std.process.Init) !void {
         const a = args[i];
         if (std.mem.eql(u8, a, "--expr-ops")) {
             i += 1;
+            if (i >= args.len) usageExit();
             expr_ops_path = args[i];
         } else if (std.mem.eql(u8, a, "-o") or std.mem.eql(u8, a, "--output")) {
             i += 1;
+            if (i >= args.len) usageExit();
             output_path = args[i];
         } else if (std.mem.eql(u8, a, "--debug")) {
             debug = true;
@@ -691,10 +706,7 @@ pub fn main(init: std.process.Init) !void {
             std.process.exit(2);
         } else input_path = a;
     }
-    const in_path = input_path orelse {
-        std.debug.print("usage: tiler_table_generator --expr-ops src/jit/expr_ops.h [--debug] -o out.h input.tile\n", .{});
-        std.process.exit(2);
-    };
+    const in_path = input_path orelse usageExit();
     const cwd = std.Io.Dir.cwd();
     const eo = try arena.create(expr_ops.ExprOps);
     eo.* = try expr_ops.parse(arena, try cwd.readFileAlloc(io, expr_ops_path orelse "src/jit/expr_ops.h", arena, .unlimited));
@@ -702,8 +714,11 @@ pub fn main(init: std.process.Init) !void {
     var out: std.Io.Writer.Allocating = .init(arena);
     var stdout_buf: [4096]u8 = undefined;
     var stdout: std.Io.File.Writer = .init(.stdout(), io, &stdout_buf);
-    generate(arena, text, eo, if (debug) &stdout.interface else null, &out.writer) catch |err| {
-        std.debug.print("tiler_table_generator: {s}: {t}\n", .{ in_path, err });
+    var err_buf: [1024]u8 = undefined;
+    var stderr: std.Io.File.Writer = .init(.stderr(), io, &err_buf);
+    generate(arena, text, eo, if (debug) &stdout.interface else null, &out.writer, &stderr.interface) catch |err| {
+        stderr.interface.print("tiler_table_generator: {s}: {t}\n", .{ in_path, err }) catch {};
+        stderr.interface.flush() catch {};
         std.process.exit(1);
     };
     if (output_path) |p| {
@@ -712,4 +727,16 @@ pub fn main(init: std.process.Init) !void {
         try stdout.interface.writeAll(out.written());
     }
     try stdout.interface.flush();
+}
+
+test "generate: a symbol no rule produces is reported, not a panic" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const eo = try a.create(expr_ops.ExprOps);
+    eo.* = try expr_ops.parse(a, test_expr_ops);
+    var out: std.Io.Writer.Allocating = .init(a);
+    var diag: std.Io.Writer.Allocating = .init(a);
+    try std.testing.expectError(error.UnknownSymbol, generate(a, "(tile: b (add reg regx) reg 2)", eo, null, &out.writer, &diag.writer));
+    try std.testing.expect(std.mem.indexOf(u8, diag.written(), "unknown symbol 'regx' in rule 0") != null);
 }

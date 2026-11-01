@@ -3,7 +3,6 @@
 //! core_templates.h. Must run from the repository root because `include:`
 //! paths in .expr files are cwd-relative.
 const std = @import("std");
-const builtin = @import("builtin");
 const sexpr = @import("sexpr.zig");
 const oplist = @import("oplist.zig");
 const expr_ops = @import("expr_ops.zig");
@@ -111,7 +110,35 @@ pub const Includes = struct {
     }
 };
 
+/// Where a diagnostic is reported: the sink, the input file and the construct
+/// being compiled ("template 'add_i'" or "macro '^name'"). A null sink drops
+/// messages (tests that only look at the error value).
+pub const Report = struct {
+    w: ?*std.Io.Writer = null,
+    file: []const u8 = "",
+    scope: []const u8 = "",
+
+    pub fn print(self: Report, comptime fmt: []const u8, args: anytype) void {
+        const w = self.w orelse return;
+        if (self.scope.len > 0) {
+            w.print("{s}: {s}: " ++ fmt ++ "\n", .{ self.file, self.scope } ++ args) catch {};
+        } else {
+            w.print("{s}: " ++ fmt ++ "\n", .{self.file} ++ args) catch {};
+        }
+    }
+
+    fn within(self: Report, gpa: std.mem.Allocator, kind: []const u8, name: []const u8) Report {
+        var r = self;
+        r.scope = std.fmt.allocPrint(gpa, "{s} '{s}'", .{ kind, name }) catch "";
+        return r;
+    }
+};
+
 pub const Ctx = struct {
+    /// Diagnostic sink; main passes buffered stderr, tests null or a capturing writer.
+    diag: ?*std.Io.Writer = null,
+    /// Name of the file being compiled, for diagnostics.
+    file: []const u8 = "",
     includes: Includes = .{},
     gpa: std.mem.Allocator,
     ops: *const expr_ops.ExprOps,
@@ -123,6 +150,7 @@ const Compiler = struct {
     ctx: Ctx,
     opcode: []const u8,
     operands: *const Env,
+    rep: Report,
     expr_index: std.AutoHashMap(*Node, u32),
     tmpl: std.ArrayList([]const u8) = .empty,
     desc: std.ArrayList(u8) = .empty,
@@ -210,7 +238,7 @@ fn isIncDec(name: []const u8, suffixes: []const u8) bool {
 /// its definition node so every use shares that node (identity is what the
 /// compiler later uses for reuse). Perl passes %env by value, so a nested
 /// scope sees outer names but cannot leak its own.
-pub fn linkDeclarations(gpa: std.mem.Allocator, expr: *Node, env_in: *const Env) Error!void {
+pub fn linkDeclarations(gpa: std.mem.Allocator, expr: *Node, env_in: *const Env, rep: Report) Error!void {
     if (!expr.isList() or expr.items.items.len == 0) return;
     const op = expr.head();
     if (std.mem.indexOf(u8, op, "let:") != null or std.mem.indexOf(u8, op, "letv:") != null) {
@@ -223,15 +251,15 @@ pub fn linkDeclarations(gpa: std.mem.Allocator, expr: *Node, env_in: *const Env)
             if (!declaration.isList() or declaration.items.items.len < 2) return error.MalformedStatement; // Perl ignores extra elements
             const name = declaration.items.items[0].atom;
             const definition = declaration.items.items[1];
-            try linkDeclarations(gpa, definition, &env);
-            _ = try checkType(try exprType(gpa, definition, &env), "?", op);
+            try linkDeclarations(gpa, definition, &env, rep);
+            _ = try checkType(try exprType(gpa, definition, &env, rep), "?", op, rep);
             try env.put(name, .{ .node = definition });
             const discard = try Node.newList(gpa);
             try discard.items.append(gpa, try Node.newAtom(gpa, "discard"));
             try discard.items.append(gpa, definition);
             try definitions.append(gpa, discard);
         }
-        for (expressions) |e| try linkDeclarations(gpa, e, &env);
+        for (expressions) |e| try linkDeclarations(gpa, e, &env, rep);
         var rebuilt: std.ArrayList(*Node) = .empty;
         try rebuilt.append(gpa, try Node.newAtom(gpa, if (eql(op, "letv:")) "dov" else "do"));
         try rebuilt.appendSlice(gpa, definitions.items);
@@ -242,13 +270,19 @@ pub fn linkDeclarations(gpa: std.mem.Allocator, expr: *Node, env_in: *const Env)
     for (expr.items.items[1..]) |*slot| {
         const operand = slot.*;
         if (operand.isList()) {
-            if (operand.items.items.len > 0) try linkDeclarations(gpa, operand, env_in);
+            if (operand.items.items.len > 0) try linkDeclarations(gpa, operand, env_in, rep);
         } else if (dollarName(operand.atom)) |name| {
             if (looksLikeNumber(name)) continue;
-            const entry = env_in.get(operand.atom) orelse return error.InvalidName;
+            const entry = env_in.get(operand.atom) orelse {
+                rep.print("operator '{s}': {s} is not a declared name", .{ op, operand.atom });
+                return error.InvalidName;
+            };
             switch (entry) {
                 .node => |n| slot.* = n,
-                .ty => return error.InvalidName,
+                .ty => {
+                    rep.print("operator '{s}': {s} names an operand, not a let-bound value", .{ op, operand.atom });
+                    return error.InvalidName;
+                },
             }
         }
     }
@@ -256,15 +290,21 @@ pub fn linkDeclarations(gpa: std.mem.Allocator, expr: *Node, env_in: *const Env)
 
 /// Expands `^name` applications bottom-up. The expanded instance replaces the
 /// application's contents in place, so the application node keeps its identity.
-pub fn applyMacros(gpa: std.mem.Allocator, expr: *Node, macros: *const Macros) Error!void {
+pub fn applyMacros(gpa: std.mem.Allocator, expr: *Node, macros: *const Macros, rep: Report) Error!void {
     if (!expr.isList() or expr.items.items.len == 0) return;
     for (expr.items.items[1..]) |operand| {
-        if (operand.isList()) try applyMacros(gpa, operand, macros);
+        if (operand.isList()) try applyMacros(gpa, operand, macros, rep);
     }
     const op = expr.head();
     if (op.len == 0 or op[0] != '^') return;
-    const macro = macros.get(op) orelse return error.UndefinedMacro;
-    if (expr.items.items.len - 1 != macro.params.len) return error.MacroArity;
+    const macro = macros.get(op) orelse {
+        rep.print("macro '{s}' is not defined", .{op});
+        return error.UndefinedMacro;
+    };
+    if (expr.items.items.len - 1 != macro.params.len) {
+        rep.print("macro '{s}' takes {d} arguments, got {d}", .{ op, macro.params.len, expr.items.items.len - 1 });
+        return error.MacroArity;
+    }
     var bind = std.StringHashMap(*Node).init(gpa);
     for (macro.params, expr.items.items[1..]) |param, arg| try bind.put(param, arg);
     var sub = std.AutoHashMap(*Node, *Node).init(gpa);
@@ -300,7 +340,7 @@ fn expandMacro(gpa: std.mem.Allocator, macro: *const Node, bind: *const std.Stri
 /// (polymorphic). A bare atom must be `$name` (looked up) or `\$name` (reg);
 /// any other atom is not an expression (Perl dies with "Can't use string as
 /// an ARRAY ref").
-pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env) Error![]const u8 {
+pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env, rep: Report) Error![]const u8 {
     if (expr.kind == .atom) {
         var s = expr.atom;
         var is_ref = false;
@@ -310,40 +350,62 @@ pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env) Erro
         }
         if (s.len >= 2 and s[0] == '$' and allWordChars(s[1..])) {
             if (is_ref) return "reg";
-            const entry = env.get(s) orelse return error.NotDeclared;
+            const entry = env.get(s) orelse {
+                rep.print("{s} is not declared", .{s});
+                return error.NotDeclared;
+            };
             return switch (entry) {
                 .ty => |t| t,
-                .node => error.NotDeclared,
+                .node => {
+                    rep.print("{s} is bound to an expression and cannot be used as an operand here", .{s});
+                    return error.NotDeclared;
+                },
             };
         }
+        rep.print("'{s}' is not an expression (expected $name or \\$name)", .{expr.atom});
         return error.ExpectedExpression;
     }
     if (expr.items.items.len == 0 or expr.items.items[0].isList()) return "reg";
     const op = expr.head();
-    if ((op.len > 0 and op[0] == '&') or (op.len > 0 and op[op.len - 1] == ':')) return error.ExpectedOperator;
+    if ((op.len > 0 and op[0] == '&') or (op.len > 0 and op[op.len - 1] == ':')) {
+        rep.print("'{s}' cannot be used as an operator", .{op});
+        return error.ExpectedOperator;
+    }
     const operands = expr.items.items[1..];
     if (std.mem.indexOf(u8, op, "if") != null) {
-        if (operands.len < 3) return error.TypeMismatch;
-        const flag = try exprType(gpa, operands[0], env);
-        const left = try exprType(gpa, operands[1], env);
-        const right = try exprType(gpa, operands[2], env);
-        _ = try checkType(flag, "flag", op);
-        return if (eql(left, "?")) checkType(right, left, op) else checkType(left, right, op);
+        if (operands.len < 3) {
+            rep.print("operator '{s}' needs 3 operands, got {d}", .{ op, operands.len });
+            return error.TypeMismatch;
+        }
+        const flag = try exprType(gpa, operands[0], env, rep);
+        const left = try exprType(gpa, operands[1], env, rep);
+        const right = try exprType(gpa, operands[2], env, rep);
+        _ = try checkType(flag, "flag", op, rep);
+        return if (eql(left, "?")) checkType(right, left, op, rep) else checkType(left, right, op, rep);
     }
     if (eql(op, "do")) {
-        if (operands.len == 0) return error.MalformedStatement;
-        return exprType(gpa, operands[operands.len - 1], env);
+        if (operands.len == 0) {
+            rep.print("operator 'do' needs at least one operand", .{});
+            return error.MalformedStatement;
+        }
+        return exprType(gpa, operands[operands.len - 1], env, rep);
     }
     if (eql(op, "copy")) {
-        if (operands.len == 0) return error.MalformedStatement;
-        return exprType(gpa, operands[0], env);
+        if (operands.len == 0) {
+            rep.print("operator 'copy' needs an operand", .{});
+            return error.MalformedStatement;
+        }
+        return exprType(gpa, operands[0], env, rep);
     }
     if (op.len > 1 and op[0] == '^' and isWordChar(op[1])) return "?";
     const ty = operator_types.get(op) orelse "reg";
     if (eql(ty, "?")) {
-        if (operands.len == 0) return error.MalformedStatement;
-        const subtype = try exprType(gpa, operands[0], env);
-        for (operands[1..]) |o| _ = try checkType(try exprType(gpa, o, env), subtype, op);
+        if (operands.len == 0) {
+            rep.print("operator '{s}' needs at least one operand", .{op});
+            return error.MalformedStatement;
+        }
+        const subtype = try exprType(gpa, operands[0], env, rep);
+        for (operands[1..]) |o| _ = try checkType(try exprType(gpa, o, env, rep), subtype, op, rep);
         return subtype;
     }
     return ty;
@@ -351,10 +413,10 @@ pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env) Erro
 
 /// Returns `got` when it satisfies `want`: equal, or `want` is '?' and `got`
 /// contains "reg" or "num".
-pub fn checkType(got: []const u8, want: []const u8, why: []const u8) Error![]const u8 {
+pub fn checkType(got: []const u8, want: []const u8, why: []const u8, rep: Report) Error![]const u8 {
     if (eql(got, want)) return got;
     if (eql(want, "?") and (std.mem.indexOf(u8, got, "reg") != null or std.mem.indexOf(u8, got, "num") != null)) return got;
-    if (!builtin.is_test) std.debug.print("{s}: Got {s} wanted {s}\n", .{ why, got, want });
+    rep.print("{s}: Got {s} wanted {s}", .{ why, got, want });
     return error.TypeMismatch;
 }
 
@@ -363,6 +425,7 @@ pub fn compileTemplate(ctx: Ctx, expr: *Node, opcode: []const u8, operands: *con
         .ctx = ctx,
         .opcode = opcode,
         .operands = operands,
+        .rep = (Report{ .w = ctx.diag, .file = ctx.file }).within(ctx.gpa, "template", opcode),
         .expr_index = std.AutoHashMap(*Node, u32).init(ctx.gpa),
     };
     const root = try compileExpression(&c, expr);
@@ -371,25 +434,42 @@ pub fn compileTemplate(ctx: Ctx, expr: *Node, opcode: []const u8, operands: *con
 
 fn compileExpression(c: *Compiler, expr: *Node) Error!u32 {
     if (c.expr_index.get(expr)) |idx| return idx;
-    if (!expr.isList() or expr.items.items.len == 0) return error.ExpectedExpression;
+    if (!expr.isList() or expr.items.items.len == 0) {
+        c.rep.print("expected an expression, found {s}", .{if (expr.isList()) "an empty list" else expr.atom});
+        return error.ExpectedExpression;
+    }
     const op = expr.head();
-    if (op.len > 0 and op[0] == '&') return error.ExpectedExpression;
-    const info = c.ctx.ops.get(op) orelse return error.UnknownOperator;
+    if (op.len > 0 and op[0] == '&') {
+        c.rep.print("'{s}' is a C macro, not an expression", .{op});
+        return error.ExpectedExpression;
+    }
+    const info = c.ctx.ops.get(op) orelse {
+        c.rep.print("unknown operator '{s}'", .{op});
+        return error.UnknownOperator;
+    };
     const operands = expr.items.items[1..];
     const num_operands: usize = if (info.num_operands < 0) operands.len else @intCast(info.num_operands);
     const num_params: usize = @intCast(info.num_params);
-    if (num_operands + num_params != operands.len) return error.OperandCount;
+    if (num_operands + num_params != operands.len) {
+        c.rep.print("operator '{s}' takes {d} operands and {d} parameters, got {d} arguments", .{ op, num_operands, num_params, operands.len });
+        return error.OperandCount;
+    }
 
     var code: std.ArrayList(Code) = .empty;
     const gpa = c.ctx.gpa;
 
     // large constants are treated specially
     if (eql(op, "const_ptr") or eql(op, "const_large")) {
-        if (operands.len == 0) return error.OperandCount;
+        if (operands.len == 0) {
+            c.rep.print("operator '{s}' needs a constant operand", .{op});
+            return error.OperandCount;
+        }
         const const_op = try compileOperator(c, op, 0);
         try code.appendSlice(gpa, &const_op);
         try code.append(gpa, try compileConstant(c, operands[0]));
         // Perl pushes the size text as written (no MVM_JIT_ prefix for barewords).
+        // A list-valued size is rendered as cmacro text, a deliberate
+        // improvement over Perl, which would emit "ARRAY(0x...)".
         if (operands.len > 1) try code.append(gpa, .{
             .tag = '.',
             .value = if (operands[1].isList()) try cmacroText(c, operands[1]) else operands[1].atom,
@@ -412,21 +492,27 @@ fn compileExpression(c: *Compiler, expr: *Node) Error!u32 {
             var k: usize = 0;
             while (k + 1 < num_operands) : (k += 1) try types.append(gpa, first);
             try types.append(gpa, last);
-        } else return error.CannotMatchTypes;
+        } else {
+            c.rep.print("operator '{s}': cannot match {d} operand types to {d} operands", .{ op, types.items.len, num_operands });
+            return error.CannotMatchTypes;
+        }
     }
 
     const op_code = try compileOperator(c, op, num_operands);
     try code.appendSlice(gpa, &op_code);
     var i: usize = 0;
     while (i < num_operands) : (i += 1) {
-        _ = try checkType(try exprType(gpa, operands[i], c.operands), types.items[i], op);
+        _ = try checkType(try exprType(gpa, operands[i], c.operands, c.rep), types.items[i], op, c.rep);
         try code.append(gpa, try compileOperand(c, operands[i]));
     }
     if (op_size_param.get(op)) |param| {
         const size = operands[param - 1];
         const ok = (size.isList() and size.head().len > 0 and size.head()[0] == '&') or
             (size.kind == .atom and (looksLikeNumber(size.atom) or std.mem.endsWith(u8, size.atom, "_sz")));
-        if (!ok) return error.ExpectedSizeParameter;
+        if (!ok) {
+            c.rep.print("operator '{s}': expected a size parameter (number, *_sz or (&macro ...)), got '{s}'", .{ op, if (size.isList()) size.head() else size.atom });
+            return error.ExpectedSizeParameter;
+        }
     }
     while (i < operands.len) : (i += 1) try code.append(gpa, try compileParameter(c, operands[i]));
 
@@ -445,7 +531,10 @@ fn emit(c: *Compiler, code: []const Code) Error!u32 {
 }
 
 fn compileOperator(c: *Compiler, op: []const u8, num_operands: usize) Error![2]Code {
-    if (c.ctx.ops.get(op) == null) return error.UnknownOperator;
+    if (c.ctx.ops.get(op) == null) {
+        c.rep.print("unknown operator '{s}'", .{op});
+        return error.UnknownOperator;
+    }
     return .{
         .{ .tag = 'n', .value = try prefixed(c.ctx.gpa, op) },
         .{ .tag = 's', .value = try fmtInt(c.ctx.gpa, num_operands) },
@@ -472,20 +561,44 @@ fn compileReference(c: *Compiler, atom: []const u8) Error!Code {
         is_ref = true;
         s = s[1..];
     }
-    if (s.len < 2 or s[0] != '$') return error.ExpectedReference;
+    if (s.len < 2 or s[0] != '$') {
+        c.rep.print("expected an operand reference ($N), got '{s}'", .{atom});
+        return error.ExpectedReference;
+    }
     var end: usize = 1;
     while (end < s.len and isWordChar(s[end])) end += 1;
-    if (end == 1) return error.ExpectedReference;
+    if (end == 1) {
+        c.rep.print("expected an operand reference ($N), got '{s}'", .{atom});
+        return error.ExpectedReference;
+    }
     const name = s[1..end];
-    if (!looksLikeNumber(name)) return error.UndefinedNamedReference;
-    const idx = std.fmt.parseInt(i64, name, 10) catch return error.InvalidOperandReference;
+    if (!looksLikeNumber(name)) {
+        c.rep.print("named reference '{s}' is not bound to an operand", .{atom});
+        return error.UndefinedNamedReference;
+    }
+    const idx = std.fmt.parseInt(i64, name, 10) catch {
+        c.rep.print("invalid operand reference '{s}'", .{atom});
+        return error.InvalidOperandReference;
+    };
     if (isIncDec(c.opcode, "i") and idx <= 1) return .{ .tag = 'i', .value = name };
-    const op = c.ctx.ol.get(c.opcode) orelse return error.UnknownOpcode;
-    if (idx < 0 or idx >= op.operands.len) return error.InvalidOperandReference;
+    const op = c.ctx.ol.get(c.opcode) orelse {
+        c.rep.print("opcode '{s}' is unknown", .{c.opcode});
+        return error.UnknownOpcode;
+    };
+    if (idx < 0 or idx >= op.operands.len) {
+        c.rep.print("operand reference '{s}' is out of range: opcode '{s}' has {d} operands", .{ atom, c.opcode, op.operands.len });
+        return error.InvalidOperandReference;
+    }
     const dir = op.operands[@intCast(idx)].dir;
     if (eql(dir, "w")) {
-        if (!is_ref) return error.RequireReference;
-    } else if (is_ref) return error.NotAReference;
+        if (!is_ref) {
+            c.rep.print("operand {s} of opcode '{s}' is written and must be referenced as \\{s}", .{ atom, c.opcode, atom });
+            return error.RequireReference;
+        }
+    } else if (is_ref) {
+        c.rep.print("operand {s} of opcode '{s}' is read and must not be referenced with a backslash", .{ atom, c.opcode });
+        return error.NotAReference;
+    }
     return .{ .tag = 'i', .value = name };
 }
 
@@ -502,7 +615,10 @@ fn parameterText(c: *Compiler, expr: *Node) Error![]const u8 {
 /// `(&name p1 p2)` -> "name(p1, p2)"
 fn cmacroText(c: *Compiler, expr: *Node) Error![]const u8 {
     const name = expr.head();
-    if (name.len < 2 or name[0] != '&') return error.ExpectedMacroExpression;
+    if (name.len < 2 or name[0] != '&') {
+        c.rep.print("expected a C macro expression (&name ...), got '{s}'", .{name});
+        return error.ExpectedMacroExpression;
+    }
     var end: usize = 1;
     while (end < name.len and isWordChar(name[end])) end += 1;
     var out: std.Io.Writer.Allocating = .init(c.ctx.gpa);
@@ -521,25 +637,42 @@ fn cmacroText(c: *Compiler, expr: *Node) Error![]const u8 {
 pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringHashMap(void)) !ParsedFile {
     const gpa = ctx.gpa;
     var result: ParsedFile = .{ .info = std.StringHashMap(Info).init(gpa) };
+    const base: Report = .{ .w = ctx.diag, .file = ctx.file };
     var parser = sexpr.Parser.init(gpa, text);
-    while (try parser.next()) |tree| {
-        if (tree.items.items.len == 0) return error.MalformedStatement;
+    while (parser.next() catch |err| {
+        base.print("syntax error: {t}", .{err});
+        return err;
+    }) |tree| {
+        if (tree.items.items.len == 0) {
+            base.print("empty statement", .{});
+            return error.MalformedStatement;
+        }
         const keyword = tree.items.items[0].atom;
         const rest = tree.items.items[1..];
         if (eql(keyword, "macro:")) {
-            if (rest.len != 3 or !rest[1].isList()) return error.MalformedStatement;
+            if (rest.len != 3 or !rest[1].isList()) {
+                base.print("macro: expects a name, a parameter list and a body", .{});
+                return error.MalformedStatement;
+            }
             const name = rest[0].atom;
-            if (macros.contains(name)) return error.MacroRedeclared;
+            const rep = base.within(gpa, "macro", name);
+            if (macros.contains(name)) {
+                rep.print("macro redeclared", .{});
+                return error.MacroRedeclared;
+            }
             const body = rest[2];
             var empty = Env.init(gpa);
-            try linkDeclarations(gpa, body, &empty);
-            try applyMacros(gpa, body, macros);
-            const ty = try exprType(gpa, body, &empty);
+            try linkDeclarations(gpa, body, &empty, rep);
+            try applyMacros(gpa, body, macros, rep);
+            const ty = try exprType(gpa, body, &empty, rep);
             var params: std.ArrayList([]const u8) = .empty;
             for (rest[1].items.items) |p| try params.append(gpa, p.atom);
             try macros.put(name, .{ .params = params.items, .body = body, .ty = ty });
         } else if (eql(keyword, "template:")) {
-            if (rest.len != 2) return error.MalformedStatement;
+            if (rest.len != 2) {
+                base.print("template: expects an opcode and an expression", .{});
+                return error.MalformedStatement;
+            }
             var opcode = rest[0].atom;
             const template = rest[1];
             var destructive: u8 = 0;
@@ -547,19 +680,26 @@ pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringH
                 destructive = 1;
                 opcode = opcode[0 .. opcode.len - 1];
             }
+            const rep = base.within(gpa, "template", opcode);
             const op = ctx.ol.get(opcode) orelse {
-                if (!builtin.is_test) std.debug.print("Opcode '{s}' unknown\n", .{opcode});
+                rep.print("opcode '{s}' is unknown", .{opcode});
                 return error.UnknownOpcode;
             };
-            if (result.info.contains(opcode)) return error.OpcodeRedefined;
+            if (result.info.contains(opcode)) {
+                rep.print("template redefined", .{});
+                return error.OpcodeRedefined;
+            }
             const output = op.outputOperand();
-            if (destructive == 1 and output == null) return error.NoWriteOperand;
+            if (destructive == 1 and output == null) {
+                rep.print("destructive template '{s}!' but the opcode has no write operand", .{opcode});
+                return error.NoWriteOperand;
+            }
             var operands = try moarOperands(gpa, op);
-            try linkDeclarations(gpa, template, &operands);
-            try applyMacros(gpa, template, macros);
-            const expr_ty = try exprType(gpa, template, &operands);
+            try linkDeclarations(gpa, template, &operands, rep);
+            try applyMacros(gpa, template, macros, rep);
+            const expr_ty = try exprType(gpa, template, &operands, rep);
             const output_type: []const u8 = if (destructive == 1 or output == null) "void" else (moar_types.get(output.?) orelse "reg");
-            _ = try checkType(expr_ty, output_type, opcode);
+            _ = try checkType(expr_ty, output_type, opcode, rep);
             const compiled = try compileTemplate(ctx, template, opcode, &operands);
             try result.info.put(opcode, .{
                 .idx = result.templates.items.len,
@@ -570,18 +710,22 @@ pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringH
             });
             try result.templates.appendSlice(gpa, compiled.template);
         } else if (eql(keyword, "include:")) {
-            if (rest.len != 1) return error.MalformedStatement;
+            if (rest.len != 1) {
+                base.print("include: expects one file name", .{});
+                return error.MalformedStatement;
+            }
             const file = std.mem.trim(u8, rest[0].atom, "\"");
             if (seen.contains(file)) {
-                if (!builtin.is_test) std.debug.print("{s} already included\n", .{file});
                 continue;
             }
             try seen.put(file, {});
             const inc_text = ctx.includes.read(ctx.includes.context, gpa, file) catch |err| {
-                if (!builtin.is_test) std.debug.print("cannot read include '{s}': {t}\n", .{ file, err });
+                base.print("cannot read include '{s}': {t}", .{ file, err });
                 return err;
             };
-            var inc = try parseFile(ctx, inc_text, macros, seen);
+            var inc_ctx = ctx;
+            inc_ctx.file = file;
+            var inc = try parseFile(inc_ctx, inc_text, macros, seen);
             // Perl's `$info{keys %$inc_info} = values %$inc_info;` (line 554 of
             // expr-template-compiler.pl) is a bug: both sides are evaluated in
             // scalar context, so it stores one junk key and drops the included
@@ -590,14 +734,17 @@ pub fn parseFile(ctx: Ctx, text: []const u8, macros: *Macros, seen: *std.StringH
             // tree, has no templates, so the output is unaffected.
             var it = inc.info.iterator();
             while (it.next()) |entry| {
-                if (result.info.contains(entry.key_ptr.*)) return error.TemplateRedeclaredInInclude;
+                if (result.info.contains(entry.key_ptr.*)) {
+                    base.print("include '{s}': template '{s}' is already declared", .{ file, entry.key_ptr.* });
+                    return error.TemplateRedeclaredInInclude;
+                }
                 var info = entry.value_ptr.*;
                 info.idx += result.templates.items.len;
                 try result.info.put(entry.key_ptr.*, info);
             }
             try result.templates.appendSlice(gpa, inc.templates.items);
         } else {
-            if (!builtin.is_test) std.debug.print("I don't know what to do with '{s}'\n", .{keyword});
+            base.print("unknown statement keyword '{s}'", .{keyword});
             return error.UnknownKeyword;
         }
     }
@@ -688,12 +835,15 @@ pub fn main(init: std.process.Init) !void {
     const eo = try arena.create(expr_ops.ExprOps);
     eo.* = try expr_ops.parse(arena, try cwd.readFileAlloc(io, expr_ops_path orelse "src/jit/expr_ops.h", arena, .unlimited));
     var constants: Constants = .empty;
-    const ctx: Ctx = .{ .includes = .{ .context = &io, .read = readFromCwd }, .gpa = arena, .ops = eo, .ol = ol, .constants = &constants };
+    var err_buf: [1024]u8 = undefined;
+    var stderr: std.Io.File.Writer = .init(.stderr(), io, &err_buf);
+    const ctx: Ctx = .{ .diag = &stderr.interface, .file = in_path, .includes = .{ .context = &io, .read = readFromCwd }, .gpa = arena, .ops = eo, .ol = ol, .constants = &constants };
     var macros = Macros.init(arena);
     var seen = std.StringHashMap(void).init(arena);
     const text = try cwd.readFileAlloc(io, in_path, arena, .unlimited);
     const parsed = parseFile(ctx, text, &macros, &seen) catch |err| {
-        std.debug.print("expr_template_compiler: {s}: {t}\n", .{ in_path, err });
+        stderr.interface.print("expr_template_compiler: {s}: {t}\n", .{ in_path, err }) catch {};
+        stderr.interface.flush() catch {};
         std.process.exit(1);
     };
     var out: std.Io.Writer.Allocating = .init(arena);
@@ -837,7 +987,7 @@ test "link: single let shares the definition node (Perl test 1)" {
     // types in scope, so provide $1 here.
     var env = Env.init(a);
     try env.put("$1", .{ .ty = "reg" });
-    try linkDeclarations(a, expr, &env);
+    try linkDeclarations(a, expr, &env, .{});
     // (do (discard X) (load X 8))
     try std.testing.expectEqualStrings("do", expr.head());
     try std.testing.expect(expr.items.items[1].items.items[1] == expr.items.items[2].items.items[1]);
@@ -849,7 +999,7 @@ test "link: nested lets, left-to-right (Perl test 2)" {
     const a = arena.allocator();
     const expr = try parseOne(a, "(let: (($foo (const 1 1)) ($bar (add $foo $foo))) (let: (($foo (sub $bar (const 1 1)))) (copy $foo)))");
     var env = Env.init(a);
-    try linkDeclarations(a, expr, &env);
+    try linkDeclarations(a, expr, &env, .{});
     const it = expr.items.items;
     // forward declaration: outer $foo used twice inside $bar's definition
     try std.testing.expect(it[1].items.items[1] == it[2].items.items[1].items.items[1]);
@@ -866,18 +1016,18 @@ test "macros: expansion shares instances and keeps links (Perl test 3)" {
     const expr = try parseOne(a, "(let: (($obj (load $1))) (^foo $obj))");
     const body = try parseOne(a, "(let: (($obj (addr ,foo 8))) (add ,foo $obj))");
     var empty = Env.init(a);
-    try linkDeclarations(a, body, &empty);
-    try linkDeclarations(a, expr, &empty);
+    try linkDeclarations(a, body, &empty, .{});
+    try linkDeclarations(a, expr, &empty, .{});
     var macros = Macros.init(a);
     try macros.put("^foo", .{ .params = &.{",foo"}, .body = body, .ty = "?" });
-    try applyMacros(a, expr, &macros);
+    try applyMacros(a, expr, &macros, .{});
     const it = expr.items.items;
     // outer let: the (load $1) node is the macro's ,foo argument in (add ,foo $obj)
     try std.testing.expect(it[1].items.items[1] == it[2].items.items[2].items.items[1]);
     // macro let: (addr ...) is shared between its discard and the use in add
     try std.testing.expect(it[2].items.items[1].items.items[1] == it[2].items.items[2].items.items[2]);
-    try std.testing.expectError(error.UndefinedMacro, applyMacros(a, try parseOne(a, "(^nope 1)"), &macros));
-    try std.testing.expectError(error.MacroArity, applyMacros(a, try parseOne(a, "(^foo 1 2)"), &macros));
+    try std.testing.expectError(error.UndefinedMacro, applyMacros(a, try parseOne(a, "(^nope 1)"), &macros, .{}));
+    try std.testing.expectError(error.MacroArity, applyMacros(a, try parseOne(a, "(^foo 1 2)"), &macros, .{}));
 }
 
 test "exprType: polymorphic resolution and checks" {
@@ -887,14 +1037,14 @@ test "exprType: polymorphic resolution and checks" {
     var env = Env.init(a);
     try env.put("$1", .{ .ty = "reg" });
     try env.put("$2", .{ .ty = "num" });
-    try std.testing.expectEqualStrings("reg", try exprType(a, try parseOne(a, "(add $1 $1)"), &env));
-    try std.testing.expectEqualStrings("num", try exprType(a, try parseOne(a, "(if (nz $1) $2 $2)"), &env));
-    try std.testing.expectEqualStrings("void", try exprType(a, try parseOne(a, "(dov (discard $1))"), &env));
-    try std.testing.expectEqualStrings("?", try exprType(a, try parseOne(a, "(^macro $1)"), &env));
-    try std.testing.expectError(error.TypeMismatch, exprType(a, try parseOne(a, "(add $1 $2)"), &env));
-    try std.testing.expectError(error.TypeMismatch, exprType(a, try parseOne(a, "(if $1 $1 $1)"), &env));
-    try std.testing.expectError(error.NotDeclared, exprType(a, try parseOne(a, "(copy $9)"), &env));
-    try std.testing.expectError(error.ExpectedExpression, exprType(a, try parseOne(a, "(add ,x ,x)"), &env));
+    try std.testing.expectEqualStrings("reg", try exprType(a, try parseOne(a, "(add $1 $1)"), &env, .{}));
+    try std.testing.expectEqualStrings("num", try exprType(a, try parseOne(a, "(if (nz $1) $2 $2)"), &env, .{}));
+    try std.testing.expectEqualStrings("void", try exprType(a, try parseOne(a, "(dov (discard $1))"), &env, .{}));
+    try std.testing.expectEqualStrings("?", try exprType(a, try parseOne(a, "(^macro $1)"), &env, .{}));
+    try std.testing.expectError(error.TypeMismatch, exprType(a, try parseOne(a, "(add $1 $2)"), &env, .{}));
+    try std.testing.expectError(error.TypeMismatch, exprType(a, try parseOne(a, "(if $1 $1 $1)"), &env, .{}));
+    try std.testing.expectError(error.NotDeclared, exprType(a, try parseOne(a, "(copy $9)"), &env, .{}));
+    try std.testing.expectError(error.ExpectedExpression, exprType(a, try parseOne(a, "(add ,x ,x)"), &env, .{}));
 }
 
 test "output: template array wraps after 75 columns like the Perl loop" {
@@ -952,4 +1102,36 @@ test "include: templates merge with shifted indices, SEEN skips, redeclaration e
     var macros2 = Macros.init(a);
     var seen2 = std.StringHashMap(void).init(a);
     try std.testing.expectError(error.TemplateRedeclaredInInclude, parseFile(ctx, "(template: const_i64 (copy $1))\n(include: \"dup.expr\")", &macros2, &seen2));
+}
+
+test "diagnostics: messages name the template and the construct" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var constants: Constants = .empty;
+    var ctx = try testCtx(a, &constants);
+    var sink: std.Io.Writer.Allocating = .init(a);
+    ctx.diag = &sink.writer;
+    ctx.file = "t.expr";
+
+    var macros = Macros.init(a);
+    var seen = std.StringHashMap(void).init(a);
+    try std.testing.expectError(error.NotDeclared, parseFile(ctx, "(template: add_i (add $1 $3))", &macros, &seen));
+    try std.testing.expectEqualStrings("t.expr: template 'add_i': $3 is not declared\n", sink.written());
+
+    sink.writer.end = 0;
+    try std.testing.expectError(error.UnknownOperator, parseFile(ctx, "(template: add_i (bogus $1 $2))", &macros, &seen));
+    try std.testing.expectEqualStrings("t.expr: template 'add_i': unknown operator 'bogus'\n", sink.written());
+
+    sink.writer.end = 0;
+    try std.testing.expectError(error.UnknownOpcode, parseFile(ctx, "(template: nosuch (copy $1))", &macros, &seen));
+    try std.testing.expectEqualStrings("t.expr: template 'nosuch': opcode 'nosuch' is unknown\n", sink.written());
+
+    sink.writer.end = 0;
+    try std.testing.expectError(error.UnknownKeyword, parseFile(ctx, "(bogus: x)", &macros, &seen));
+    try std.testing.expectEqualStrings("t.expr: unknown statement keyword 'bogus:'\n", sink.written());
+
+    sink.writer.end = 0;
+    try std.testing.expectError(error.MacroArity, parseFile(ctx, "(macro: ^m (,a) (copy (load ,a 8)))\n(template: set (^m $1 $2))", &macros, &seen));
+    try std.testing.expectEqualStrings("t.expr: template 'set': macro '^m' takes 1 arguments, got 2\n", sink.written());
 }
