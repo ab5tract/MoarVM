@@ -71,10 +71,10 @@ const linux: Facts = .{
 
 /// UV_UNIX in build/Makefile.in, relative to 3rdparty/libuv/src.
 pub const libuv_unix_sources = [_][]const u8{
-    "strscpy.c",       "strtok.c",         "fs-poll.c",      "inet.c",
-    "uv-common.c",     "version.c",        "timer.c",        "threadpool.c",
-    "unix/async.c",    "unix/core.c",      "unix/dl.c",      "unix/fs.c",
-    "unix/getaddrinfo.c", "unix/loop-watcher.c", "unix/loop.c", "unix/pipe.c",
-    "unix/poll.c",     "unix/process.c",   "unix/signal.c",  "unix/stream.c",
-    "unix/tcp.c",      "unix/thread.c",    "unix/tty.c",     "unix/udp.c",
+    "strscpy.c",          "strtok.c",            "fs-poll.c",     "inet.c",
+    "uv-common.c",        "version.c",           "timer.c",       "threadpool.c",
+    "unix/async.c",       "unix/core.c",         "unix/dl.c",     "unix/fs.c",
+    "unix/getaddrinfo.c", "unix/loop-watcher.c", "unix/loop.c",   "unix/pipe.c",
+    "unix/poll.c",        "unix/process.c",      "unix/signal.c", "unix/stream.c",
+    "unix/tcp.c",         "unix/thread.c",       "unix/tty.c",    "unix/udp.c",
 };
