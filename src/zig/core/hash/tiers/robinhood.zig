@@ -97,6 +97,8 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
         const Key = Spec.Key;
         const Ctx = Spec.Ctx;
         const key_size = @sizeOf(Key);
+        /// The key's bytes as one unsigned integer, for the zero-key test.
+        const KeyBits = std.meta.Int(.unsigned, key_size * 8);
 
         pub const LvalueResult = union(enum) { found: [*]u8, inserted: [*]u8, full };
 
@@ -145,8 +147,57 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
             return std.mem.bytesToValue(Key, entry[0..key_size]);
         }
 
+        /// One unsigned load and compare of the key bytes (not a byte
+        /// chain). Lookups apply it only after a metadata match, where the
+        /// C compares the key directly (a zero key exists only between an
+        /// insert and the caller filling the key in).
         fn isZeroKey(entry: [*]u8) bool {
-            return std.mem.allEqual(u8, entry[0..key_size], 0);
+            return std.mem.bytesToValue(KeyBits, entry[0..key_size]) == 0;
+        }
+
+        // The make-room and back-shift memmoves of str_hash_table.c. Two-
+        // pointer entries, the common size (the C's `sizeof(MVMHashEntry)`
+        // fast path, str_hash_table.c:419), are copied 16 bytes at a time
+        // inline, walking a pointer from `entry` so that the copy needs no
+        // address arithmetic carried through the probe loop; other sizes go
+        // to `@memmove`. `entry_size` is comptime-known for every Spec but
+        // the string table's, so the test folds away there.
+
+        /// Make room at `entry`: the `n` entries at and below `entry` (in
+        /// memory) move one entry downwards, lowest first.
+        inline fn shiftDown(entry: [*]u8, n: usize, entry_size: usize) void {
+            const size = entry_size * n;
+            const dest = entry - size;
+            if (entry_size == 16) {
+                var p: [*]align(8) u8 = @alignCast(dest);
+                for (0..n) |_| {
+                    p[0..16].* = (p + 16)[0..16].*;
+                    p += 16;
+                }
+            } else {
+                @memmove(dest[0..size], (dest + entry_size)[0..size]);
+            }
+        }
+
+        /// Close the gap at `entry`: the `n` entries below it (in memory)
+        /// move one entry upwards, highest first.
+        inline fn shiftUp(entry: [*]u8, n: usize, entry_size: usize) void {
+            if (entry_size == 16) {
+                var p: [*]align(8) u8 = @alignCast(entry);
+                for (0..n) |_| {
+                    p[0..16].* = (p - 16)[0..16].*;
+                    p -= 16;
+                }
+            } else {
+                const size = entry_size * n;
+                const src = entry - size;
+                @memmove((src + entry_size)[0..size], src[0..size]);
+            }
+        }
+
+        /// Copies one entry (no overlap), inline for 16 bytes.
+        inline fn copyEntry(dest: [*]u8, src: [*]u8, entry_size: usize) void {
+            if (entry_size == 16) dest[0..16].* = src[0..16].* else @memcpy(dest[0..entry_size], src[0..entry_size]);
         }
 
         fn blockSize(entry_size: usize, allocated_items: u32) usize {
@@ -330,11 +381,9 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
                             if (old_probe_distance == 0) break;
                         }
                         const entries_to_move = @intFromPtr(gap) - @intFromPtr(ls.metadata);
-                        const size_to_move = ls.entry_size * entries_to_move;
                         // Entries descend in memory: move everything at and
                         // before `ls.entry` one entry downwards.
-                        const dest = ls.entry - size_to_move;
-                        std.mem.copyForwards(u8, dest[0..size_to_move], (dest + ls.entry_size)[0..size_to_move]);
+                        shiftDown(ls.entry, entries_to_move, ls.entry_size);
                     }
                     if (ls.probe_distance >> ls.shift == ls.max_probe_distance) c.max_items = 0;
                     header.cur_items += 1;
@@ -382,11 +431,9 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
                     }
                     const entries_to_move = @intFromPtr(target) - @intFromPtr(ls.metadata);
                     if (entries_to_move != 0) {
-                        const size_to_move = ls.entry_size * entries_to_move;
                         // Move everything before `ls.entry` one entry upwards
                         // to close the gap.
-                        const src = ls.entry - size_to_move;
-                        std.mem.copyBackwards(u8, (src + ls.entry_size)[0..size_to_move], src[0..size_to_move]);
+                        shiftUp(ls.entry, entries_to_move, ls.entry_size);
                     }
                     target[0] = 0;
                     header.cur_items -= 1;
@@ -453,7 +500,7 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
                 if (isZeroKey(old_entry)) continue;
                 const key = keyAt(old_entry);
                 const new_entry = insertInternal(new, ctx, key, Spec.hash(ctx, key));
-                @memcpy(new_entry[0..entry_size], old_entry[0..entry_size]);
+                copyEntry(new_entry, old_entry, entry_size);
                 // Probably the probe limit; possibly one doubling was not
                 // enough. An intermediate block is ours to free.
                 if (ctrl(new).max_items == 0) {
@@ -792,4 +839,57 @@ test "fsck reports no errors on a consistent table" {
     try testing.expect(S.fsck(h, {}, 0) > 0);
     md[0] = saved;
     try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+}
+
+test "make-room and back-shift move runs of entries intact, 16-byte and generic sizes" {
+    // 16 takes the inline two-word copies, 24 the `@memmove` fallback.
+    inline for (.{ 16, 24 }) |es| {
+        var h = try S.init(testing.allocator, .{ .tier = 1, .set = 0, .entry_size = es, .stale = 0, .cur_items = 0 }, 96);
+        defer testFree(h);
+        const n: u64 = 300;
+        for (1..n + 1) |k| {
+            while (true) {
+                switch (S.lvalueFetch(h, {}, k, S.hash({}, k))) {
+                    .inserted => |e| {
+                        try testing.expectEqual(@as(u64, 0), keyOf(e));
+                        for (0..es / 8) |w| std.mem.writeInt(u64, e[w * 8 ..][0..8], k * 10 + w, .little);
+                        std.mem.writeInt(u64, e[0..8], k, .little);
+                        break;
+                    },
+                    .found => return error.TestUnexpectedResult,
+                    .full => {
+                        const old = h;
+                        h = (try S.grow(old, {}, testing.allocator)).?;
+                        if (h != old) testFree(old);
+                    },
+                }
+            }
+        }
+        try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+        var longest_shift: u32 = 0;
+        // Delete in an order unrelated to the buckets, checking everything
+        // after each delete.
+        for (0..n) |i| {
+            const k = i * 97 % n + 1;
+            const e = get(h, k).?;
+            const bucket: u32 = @intCast((@intFromPtr(h) - @intFromPtr(e)) / es - 1);
+            const md = S.metadata(h);
+            const can_move = 2 * (@as(u32, 1) << @intCast(S.ctrl(h).metadata_hash_bits));
+            var run: u32 = 0;
+            while (md[bucket + 1 + run] >= can_move) run += 1;
+            longest_shift = @max(longest_shift, run);
+            try testing.expect(del(h, k));
+            try testing.expectEqual(@as(?[*]u8, null), get(h, k));
+            try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+            var pos = S.first(h);
+            while (pos != 0) : (pos = S.next(h, pos)) {
+                const live = S.entryAt(h, pos);
+                const key = keyOf(live);
+                try testing.expectEqual(@as(?[*]u8, live), get(h, key));
+                for (1..es / 8) |w| try testing.expectEqual(key * 10 + w, std.mem.readInt(u64, live[w * 8 ..][0..8], .little));
+            }
+        }
+        try testing.expectEqual(@as(u32, 0), h.cur_items);
+        try testing.expect(longest_shift >= 3);
+    }
 }
