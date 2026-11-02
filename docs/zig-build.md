@@ -75,7 +75,7 @@ absent or with `-Djit=false`. `check-jit-tools` exists only when the JIT is on.
 ## Zig implementations
 
 Parts of the VM are being ported to Zig, one C file at a time
-(`docs/superpowers/specs/2026-11-02-zig-port-step0-design.md`). The
+(`traces/llm/specs/2026-11-02-zig-port-step0-design.md`). The
 `[zig]` section of `build/sources.list` lists each Zig file and the C
 files it replaces:
 

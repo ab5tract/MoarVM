@@ -38,3 +38,6 @@
 # from `git submodule` to `git fetch` because `git submodule` takes a different
 # code path from the default case. *Even though* the submodule fetch it invokes
 # isn't shallow!
+[submodule "traces/llm"]
+	path = traces/llm
+	url = git@github.com:ab5tract/moarvm-traces.git
