@@ -75,6 +75,9 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
         .link_libc = true,
         .imports = &.{.{ .name = "c", .module = c_mod }},
     });
+    // Read by src/zig/core/hash/*_exports.zig for the exports' visibility.
+    const zig_opts = b.addOptions();
+    zig_opts.addOption(bool, "lto", opts.lto);
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/zig/root.zig"),
         .target = opts.target,
@@ -84,9 +87,13 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
         // Match thirdparty.newCModule for the optimize mode.
         .strip = opts.strip orelse (opts.optimize != .Debug),
         .omit_frame_pointer = opts.optimize != .Debug,
-        .imports = &.{.{ .name = "moar", .module = moar_mod }},
+        .imports = &.{
+            .{ .name = "moar", .module = moar_mod },
+            .{ .name = "zig_options", .module = zig_opts.createModule() },
+        },
     });
     const object = b.addObject(.{ .name = "moar_zig", .root_module = root_mod });
+    if (opts.lto) object.lto = .full;
 
     return .{ .translate = translate, .c_mod = c_mod, .moar_mod = moar_mod, .object = object };
 }

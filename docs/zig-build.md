@@ -21,6 +21,7 @@ Options (`zig build --help` lists them):
 | `-Dzstd=` | `true` | link the system libzstd for heap snapshot format 3 |
 | `-Dnqp-stage0=` | `../src/vm/moar/stage0` | where `zig build test` finds nqp's stage0 bytecode |
 | `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
+| `-Dlto=` | `false` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the hash engine's exports are inlined into their C callers; the link takes about three times as long (see "Hash engine") |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
@@ -104,7 +105,10 @@ The C files stay in the tree and are still compiled with
 which runs `zig build zig-objects -Dconfig-h=src/gen/config.h ...` from the
 Makefile (the Zig code is then translated against the Perl build's
 `config.h`). `--zig` is independent of `--cc=zig`, which selects zig as the
-C compiler.
+C compiler. `--zig-lto` (with `--zig` and `--cc=zig`) is the Perl build's
+`-Dlto`: it adds `-flto` to the C compile and link flags and `-Dlto=true`
+to the `zig build zig-objects` call; with any other compiler Configure.pl
+refuses it, because gcc cannot link the LLVM bitcode object.
 
 ## Hash engine
 
@@ -142,6 +146,24 @@ define `src/core/*_hash_table.h` declare the control structs incomplete and
 defining them inline, and the exports in `src/zig/core/hash/*_exports.zig`
 provide them under the C names (plus `MVM_round_up_log_base2`). Without the
 define the C files compile as before.
+
+The exports are separate functions in libmoar, so without LTO every call
+from the C code (the `MVMHash` REPR, the interpreter, spesh) is a call
+through the PLT that the C compiler cannot inline. `-Dlto` (`--zig-lto` in
+the Perl build) links libmoar and the Zig object with full LTO and gives the
+exports protected visibility: they stay in libmoar's dynamic symbol table
+(`nm -D`), so the microbenchmark and anything else outside libmoar still
+link against them, but calls from inside libmoar bind to them locally,
+which is what lets the LTO link inline them (default-visibility symbols are
+interposable, and LTO keeps calling them through the PLT).
+`tools/check-lto-binding.sh <libmoar.so>` shows the binding: PLT calls to
+`MVM_str_hash_*` (0 under LTO) and the call sites left of
+`MVM_str_hash_fetch_nocheck` (0 once it is inlined everywhere). Without
+`-Dlto` the exports have default visibility and the link is unchanged. The
+LTO link takes about three times as long (about a minute against 20 seconds
+for `zig build install`), and the whole C side gains from it too, so the
+option is off by default. gcc builds cannot use it: gcc cannot link the
+Zig object's LLVM bitcode, so `--zig-lto` requires `--cc=zig`.
 
 Two benchmarks compare the engines, both run by `tools/bench/hash-bench.sh`,
 which writes `traces/llm/bench/hash-<date>.md` with the raw TSVs beside it:

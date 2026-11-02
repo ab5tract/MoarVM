@@ -106,6 +106,7 @@ pub fn addLibmoar(b: *std.Build, in: LibInputs) *std.Build.Step.Compile {
         .linkage = if (in.opts.static) .static else .dynamic,
         .root_module = mod,
     });
+    if (in.opts.lto) lib.lto = .full;
     // Generated JIT headers must come before `src`, where the Perl build
     // leaves its own copies (gitignored), so "jit/core_templates.h" and
     // "jit/x64/tile_pattern.h" resolve to ours.

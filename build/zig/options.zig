@@ -17,6 +17,9 @@ pub const Options = struct {
     /// the default (strip unless Debug). `-Dstrip=false` keeps them for
     /// `perf report`/`perf annotate` without changing the generated code.
     strip: ?bool,
+    /// Full link-time optimisation for libmoar and the moar_zig object, so
+    /// the hash engine's exports can be inlined into their C callers.
+    lto: bool,
 };
 
 pub fn parse(b: *std.Build) Options {
@@ -50,5 +53,6 @@ pub fn parse(b: *std.Build) Options {
         .zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true,
         .config_h = config_h,
         .strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=Debug); false keeps them for perf"),
+        .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default false); needs about three times the link time") orelse false,
     };
 }

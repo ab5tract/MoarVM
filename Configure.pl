@@ -43,7 +43,7 @@ GetOptions(\%args, qw(
     help|?
     debug:s optimize:s coverage
     os=s shell=s toolchain=s compiler=s
-    ar=s cc=s ld=s make=s zig=s has-sha has-libuv
+    ar=s cc=s ld=s make=s zig=s zig-lto has-sha has-libuv
     static has-libtommath has-libatomic_ops
     has-dyncall has-libffi pkgconfig=s
     build=s host=s big-endian jit! enable-jit
@@ -491,6 +491,16 @@ $config{ldoptiflags}  = sprintf $config{ldoptiflags},  defined_or $args{optimize
 $config{lddebugflags} = sprintf $config{lddebugflags}, defined_or $args{debug},    3 if $config{lddebugflags} =~ /%s/;
 
 
+# --zig-lto: full LTO of libmoar together with the Zig object. The object is
+# LLVM bitcode then, which only zig cc (clang) can link; the hash engine's
+# exports are protected under it, so libmoar's calls bind to them locally and
+# the LTO link can inline them.
+if ($args{'zig-lto'}) {
+    hardfail("--zig-lto needs --zig=PATH") unless defined $args{zig};
+    hardfail("--zig-lto needs --cc=zig (gcc cannot consume the LTO object)")
+        unless (defined_or $args{compiler}, '') eq 'zig';
+}
+
 # generate CFLAGS
 my @cflags;
 push @cflags, '-std=c99' if $defaults{os} eq 'mingw32';
@@ -543,6 +553,7 @@ push @cflags, $ENV{CPPFLAGS} if $ENV{CPPFLAGS};
 # The fix was to bracket those definitions with
 # #ifdef _GNU_SOURCE/#endif.
 push @cflags, '-D_GNU_SOURCE' unless $args{'has-libuv'};
+push @cflags, '-flto' if $args{'zig-lto'};
 
 $config{cflags} = join ' ', uniq(@cflags);
 
@@ -557,6 +568,7 @@ if (not $args{static} and $config{prefix} ne '/usr') {
 }
 push @ldflags, '-fsanitize=address'  if $args{asan};
 push @ldflags, '-fsanitize=thread'  if $args{tsan};
+push @ldflags, '-flto'               if $args{'zig-lto'};
 push @ldflags, $ENV{LDFLAGS}         if $ENV{LDFLAGS};
 $config{ldflags} = join ' ', @ldflags;
 
@@ -827,6 +839,7 @@ if (defined $args{zig}) {
     my $zstd = $config{heapsnapformat} == 3 ? 'true' : 'false';
     my $optimize = $args{debug} ? 'Debug' : 'ReleaseFast';
     $config{zig_build_flags} = "-Dconfig-h=src/gen/config.h -Dzstd=$zstd -Doptimize=$optimize -Djit=$jit";
+    $config{zig_build_flags} .= ' -Dlto=true' if $args{'zig-lto'};
     $config{zig_objects} = '$(ZIG_OUT)/lib/moar_zig@obj@';
     $config{zig_clean}   = '$(RM_RF) zig-out .zig-cache';
 }
@@ -1278,7 +1291,7 @@ __END__
 
     ./Configure.pl [--os <os>] [--shell <shell>]
                    [--toolchain <toolchain>] [--compiler <compiler>]
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--has-libtommath] [--has-sha] [--has-libuv]
@@ -1287,7 +1300,7 @@ __END__
                    [--telemeh] [--git-cache-dir <path>]
 
     ./Configure.pl --build <build-triple> --host <host-triple>
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--big-endian] [--make-install]
@@ -1382,6 +1395,14 @@ F<build/sources.list> with the given zig binary (0.16.0), in place of the C
 files they replace. The object is produced by C<zig build zig-objects> from
 F<build.zig>. Independent of C<--cc=zig>, which only selects zig as the C
 compiler.
+
+=item --zig-lto
+
+With C<--zig> and C<--cc=zig>: build libmoar with full link-time
+optimisation (C<-flto>) together with the Zig object (C<-Dlto=true>), so the
+Zig implementations' exports can be inlined into their C callers. The link
+takes about three times as long. Refused with any other compiler: gcc cannot
+link the LLVM bitcode object.
 
 =item --show-autovect
 
