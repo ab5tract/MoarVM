@@ -58,6 +58,33 @@ Verified facts the design relies on (Zig 0.16.0, this checkout):
   (The installed `moar` deliberately avoids this by linking the `.so` with
   `addObjectFile`; that stays as is.)
 
+### 2.1 Amendments after prototyping (2026-11-02)
+
+Compiling a Zig object against the raw translate-c output failed, so the
+pipeline has two extra pieces, both small and both unit-tested:
+
+- **`src/zig/moar_c.h`** is the translate-c entry point instead of
+  `src/moar.h`. It does `#define _Atomic(T) T` and includes `moar.h`. Zig
+  cannot express C11 `_Atomic`, and `MVMThreadContext` carries `AO_t`
+  fields, so without this the translated `MVMThreadContext` is unusable.
+  Size and alignment are unchanged for the word-sized types MoarVM makes
+  atomic; the shim unit tests compare `@sizeOf`/`@offsetOf` of
+  `MVMThreadContext`, `MVMInstance` and `MVMObject` against a C probe
+  (`src/zig/test/layout_probe.c`) compiled with libmoar's flags.
+- **`build/zig/fixup_translated.zig`** rewrites the four lines of the form
+  `@as(c_int, x) += 1;` that translate-c 0.16.0 emits for `x++` on narrow
+  integers (in `MVM_callsite_num_nameds` and the grapheme iterator) to
+  `x += 1;`. They are AstGen errors, so the whole translated file is
+  rejected until fixed. The fixup runs as a build step between translate-c
+  and the `c` module.
+
+Other corrections: `isConcrete(VMNull)` is false (VMNull is a type object),
+so the test asserts that and checks a freshly allocated `BOOTArray` instead;
+`--cc=zig` is implemented as shorthand for `--compiler=zig` because `--cc`
+sets the compiler command verbatim and `zig cc` is two words; `make clean`
+removes `zig-out` and `.zig-cache` only when configured with `--zig`, so a
+developer using the zig build in the same checkout does not lose the cache.
+
 ## 3. Layout
 
 ```
