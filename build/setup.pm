@@ -29,7 +29,9 @@ my %TP_TOM = (
 my %TP_DC = (
     name  => 'dyncall_s',
     path  => '3rdparty/dyncall/dyncall',
-    rule  => 'cd 3rdparty/dyncall &&  ./configure && CC=\'$(CC)\' CFLAGS=\'-fPIC\' $(MAKE) -f Makefile ',
+    # CFLAGS goes to configure too: it writes CFLAGS=-fPIC into Makefile.config
+    # (overriding the environment) unless CFLAGS is already set.
+    rule  => 'cd 3rdparty/dyncall && CFLAGS=\'-fPIC @dyncall_cflags@\' ./configure && CC=\'$(CC)\' CFLAGS=\'-fPIC @dyncall_cflags@\' $(MAKE) -f Makefile ',
     clean => 'cd 3rdparty/dyncall && $(MAKE) -f Makefile clean',
 );
 
@@ -476,6 +478,8 @@ our %COMPILERS = (
         # flag zig cc compiles in Debug mode with UBSan on, and lua_number2int
         # traps on its out-of-range double-to-int conversion.
         minilua_ldflags => '-fno-sanitize=undefined',
+        # dyncall's own build gets CFLAGS=-fPIC only, for the same reason.
+        dyncall_cflags  => '-fno-sanitize=undefined',
 
         ccmiscflags  => '-optimize=ReleaseFast -fno-omit-frame-pointer -fno-optimize-sibling-calls',
         ccwarnflags  => '-Wno-logical-op-parentheses',

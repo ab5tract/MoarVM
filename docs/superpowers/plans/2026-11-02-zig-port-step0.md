@@ -1599,3 +1599,13 @@ Recorded during execution on 2026-11-02:
 - Task 8: `[--zig <path>]` was added to both SYNOPSIS blocks. `make realclean`
   leaves `moar` and `libmoar.so` in place (only `distclean` removes them), so
   the acceptance runs delete them explicitly before trusting a smoke test.
+- Final review fix pass: (1) the PR #1971 cherry-pick's Darwin toolchain
+  check compared a boolean with the tool count, so `--toolchain=gnu` on
+  Darwin always failed; restored a list count. (2) `root`/`rootN`/`assignRef`
+  now require a pointer to a collectable (`MVMCollectable`, or a struct that
+  begins with `header: MVMCollectable` or `common: MVMObject`), as spec §4.1
+  requires; `assignRef` accepts `null`. (3) The assignRef test restores
+  `num_gen2roots` and clears `MVM_CF_REF_FROM_GEN2` on the value after
+  faking a gen2 holder. (4) `--cc=zig --zig` now yields a loadable moar: a
+  `dyncall_cflags` key (`-fno-sanitize=undefined` on the zig entry) is
+  exported to dyncall's configure and make.

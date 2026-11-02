@@ -31,13 +31,54 @@ pub inline fn isConcrete(o: *Object) bool {
     return (o.header.flags1 & c.MVM_CF_TYPE_OBJECT) == 0;
 }
 
+// ---- collectable type checks -------------------------------------------
+
+/// True for MVMCollectable and for every struct that begins with one, either
+/// directly (`header: MVMCollectable`: MVMObject, MVMSTable, MVMFrame, ...)
+/// or through an embedded MVMObject (`common: MVMObject`: MVMString and the
+/// REPR bodies). Being a prefix is what makes the C casts to MVMCollectable*
+/// valid, so that is the test.
+fn isCollectable(comptime T: type) bool {
+    if (T == Collectable) return true;
+    const info = @typeInfo(T);
+    if (info != .@"struct") return false;
+    const fields = info.@"struct".fields;
+    if (fields.len == 0) return false;
+    const first = fields[0];
+    if (std.mem.eql(u8, first.name, "header") and first.type == Collectable) return true;
+    if (std.mem.eql(u8, first.name, "common") and isCollectable(first.type)) return true;
+    return false;
+}
+
+/// The type a `*T`, `?*T` or `[*c]T` points at; null for anything else.
+fn pointee(comptime P: type) ?type {
+    var T = P;
+    if (@typeInfo(T) == .optional) T = @typeInfo(T).optional.child;
+    const info = @typeInfo(T);
+    if (info != .pointer or info.pointer.size == .slice) return null;
+    return info.pointer.child;
+}
+
+/// A collectable pointer: `*T`, `?*T` or `[*c]T` with T collectable.
+fn isCollectablePtr(comptime P: type) bool {
+    const T = pointee(P) orelse return false;
+    return isCollectable(T);
+}
+
 // ---- MVM_ASSIGN_REF from src/gc/wb.h ------------------------------------
 
 /// MVM_ASSIGN_REF(tc, update_root, update_addr, referenced): write barrier,
 /// then the store. `addr` is a pointer to the slot (`*?*T` or `*[*c]T`);
-/// `v` is the collectable pointer being stored.
+/// `v` is the collectable pointer being stored, or `null`.
 pub inline fn assignRef(tc: *ThreadContext, update_root: *Collectable, addr: anytype, v: anytype) void {
-    const referenced: ?*Collectable = @ptrCast(v);
+    const V = @TypeOf(v);
+    const referenced: ?*Collectable = if (V == @TypeOf(null)) null else blk: {
+        if (comptime !isCollectablePtr(V)) @compileError("assignRef: expected a collectable pointer or null, got " ++ @typeName(V));
+        break :blk @ptrCast(v);
+    };
+    const A = @TypeOf(addr);
+    if (comptime (@typeInfo(A) != .pointer or @typeInfo(A).pointer.size != .one or !isCollectablePtr(@typeInfo(A).pointer.child)))
+        @compileError("assignRef: expected a pointer to a collectable pointer slot, got " ++ @typeName(A));
     if (c.MVM_GC_DEBUG != 0) {
         if (referenced) |r| {
             if (r.owner == 0) c.MVM_panic(1, "Invalid assignment (maybe of heap frame to stack frame?)");
@@ -57,13 +98,13 @@ pub const Root = struct {
     }
 };
 
+/// The argument of `root`/`rootN` must be the address of a collectable
+/// pointer variable (`*?*T`, `**T` or `*[*c]T` with T collectable); the
+/// collector reads and updates the pointee through it.
 inline fn checkRef(comptime T: type) void {
     const info = @typeInfo(T);
-    const ok = info == .pointer and switch (@typeInfo(info.pointer.child)) {
-        .pointer, .optional => true,
-        else => false,
-    };
-    if (!ok) @compileError("root: expected a pointer to a collectable pointer, got " ++ @typeName(T));
+    const ok = comptime (info == .pointer and info.pointer.size == .one and isCollectablePtr(info.pointer.child));
+    if (!ok) @compileError("root: expected a pointer to a collectable pointer (e.g. *?*MVMObject), got " ++ @typeName(T));
 }
 
 /// MVMROOT(tc, obj) { ... }  ->  const r = root(tc, &obj); defer r.pop(tc);
@@ -147,8 +188,15 @@ test "assignRef stores and applies the write barrier" {
     assignRef(tc, @ptrCast(holder.?), &slot, value);
     try std.testing.expectEqual(gen2_before + 1, tc.num_gen2roots);
     try std.testing.expect((holder.?.header.flags2 & c.MVM_CF_IN_GEN2_ROOT_LIST) != 0);
-    // Undo so the nursery collector at destroy time sees an ordinary object.
+    // Undo so the destroy-time collection sees two ordinary nursery objects:
+    // clear the flags, take the holder off the gen2 root list the barrier put
+    // it on, and clear the "referenced from gen2" mark on the value. (The
+    // root handle's defer pops before the destroy defer runs, so the holder
+    // is unrooted by then, as any ordinary nursery object would be.)
     holder.?.header.flags2 &= ~@as(u8, c.MVM_CF_SECOND_GEN | c.MVM_CF_IN_GEN2_ROOT_LIST);
+    tc.num_gen2roots = gen2_before;
+    value.?.header.flags2 &= ~@as(u8, c.MVM_CF_REF_FROM_GEN2);
+    try std.testing.expectEqual(gen2_before, tc.num_gen2roots);
 }
 
 test "stable, repr, objectBody and isConcrete" {

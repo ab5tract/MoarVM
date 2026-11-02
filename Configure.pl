@@ -156,6 +156,7 @@ $config{syslibs}                  = [] unless defined $config{syslibs};
 $config{usrlibs}                  = [] unless defined $config{usrlibs};
 $config{platform}                 = '' unless defined $config{platform};
 $config{minilua_ldflags}          = '' unless defined $config{minilua_ldflags};
+$config{dyncall_cflags}           = '' unless defined $config{dyncall_cflags};
 $config{crossconf}                = '' unless defined $config{crossconf};
 $config{dllimport}                = '' unless defined $config{dllimport};
 $config{dllexport}                = '' unless defined $config{dllexport};
@@ -175,7 +176,7 @@ $config{as}           = $config{cc} unless defined $config{as};
 
 # If we're in macOS, let's verify that the toolchain is consistent.
 if ($^O eq 'darwin' && (defined_or $config{compiler}, '') ne 'zig') {
-    my %gnu_tools;
+    my @gnu_tools;
     my $gnu_toolchain = (exists $args{toolchain}) && ($args{toolchain} eq 'gnu');
 
     unless ($gnu_toolchain) {
@@ -191,20 +192,20 @@ if ($^O eq 'darwin' && (defined_or $config{compiler}, '') ne 'zig') {
         chomp $tool;
         system "grep -b 'gnu' '$tool'"; # Apple utilities don't match `gnu`
         if ($? == 0) {
-            $gnu_tools{$tool} = 1;
+            push @gnu_tools, $tool;
         }
     }
 
     ## For a GNU toolchain, make sure that they're all GNU.
-    if ($gnu_toolchain && 0+!!(keys %gnu_tools) != scalar @check_tools) {
-        print "\nNot all tools in the toolchain are GNU (GNU: @{[ join(',', keys %gnu_tools) ]}). Please correct this and retry.\n"
+    if ($gnu_toolchain && @gnu_tools != @check_tools) {
+        print "\nNot all tools in the toolchain are GNU (GNU: @{[ join(',', @gnu_tools) ]}). Please correct this and retry.\n"
             . "See README.markdown for more details.\n\n";
         exit -1;
     }
 
     ## Otherwise, make sure that none of them are GNU
-    elsif (!$gnu_toolchain && keys %gnu_tools) {
-        print "\nGNU tools detected (@{[ join(',', keys %gnu_tools) ]}), despite this not being a GNU-oriented build.\n"
+    elsif (!$gnu_toolchain && @gnu_tools) {
+        print "\nGNU tools detected (@{[ join(',', @gnu_tools) ]}), despite this not being a GNU-oriented build.\n"
             . " Please correct this and retry. See README.markdown for more details.\n\n";
         exit -1;
     }
