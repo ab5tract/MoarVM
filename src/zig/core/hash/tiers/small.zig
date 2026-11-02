@@ -5,7 +5,9 @@
 //! the header, which is also the block start):
 //!
 //!     Header              8 bytes (tier.Header)
-//!     capacity: u32       4 bytes, the tier's payload
+//!     Payload             8 bytes, the tier's payload:
+//!       capacity: u32
+//!       entries_offset: u32   byte offset of entries[0] from the block start
 //!     tags[capacity]      top byte of each entry's hash
 //!     padding             up to the next multiple of 8
 //!     entries[capacity]   entry_size bytes each, key first
@@ -49,7 +51,20 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         const Key = Spec.Key;
         const Ctx = Spec.Ctx;
         const key_size = @sizeOf(Key);
-        const tags_offset = @sizeOf(Header) + @sizeOf(u32);
+        /// The key read as one unsigned integer, for the zero-key test.
+        const KeyBits = std.meta.Int(.unsigned, key_size * 8);
+        const tags_offset = @sizeOf(Header) + @sizeOf(Payload);
+        /// `find`'s result for an absent key. Returning a plain index (not
+        /// `?u32`) keeps the result in a register: an optional comes back
+        /// through memory as a value and a flag and stalls the caller's
+        /// wider reload (store-to-load forwarding).
+        const absent: u32 = std.math.maxInt(u32);
+
+        const Payload = extern struct {
+            capacity: u32,
+            /// `entriesOffset(capacity)`, cached so lookups do not recompute it.
+            entries_offset: u32,
+        };
 
         pub const LvalueResult = union(enum) { found: [*]u8, inserted: [*]u8, full };
 
@@ -65,8 +80,16 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             return entriesOffset(cap) + cap * entry_size;
         }
 
-        fn capPtr(header: *Header) *u32 {
+        fn payload(header: *Header) *Payload {
             return @ptrCast(@alignCast(blockStart(header) + @sizeOf(Header)));
+        }
+
+        fn setCapacity(header: *Header, cap: u32) void {
+            payload(header).* = .{ .capacity = cap, .entries_offset = @intCast(entriesOffset(cap)) };
+        }
+
+        fn entries(header: *Header) [*]u8 {
+            return blockStart(header) + payload(header).entries_offset;
         }
 
         fn tags(header: *Header) [*]u8 {
@@ -74,7 +97,7 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         }
 
         fn entryAtIndex(header: *Header, i: u32) [*]u8 {
-            return blockStart(header) + entriesOffset(capacity(header)) + i * entrySize(header);
+            return entries(header) + i * entrySize(header);
         }
 
         fn keyAt(entry: [*]u8) Key {
@@ -82,7 +105,7 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         }
 
         fn isZeroKey(entry: [*]u8) bool {
-            return std.mem.allEqual(u8, entry[0..key_size], 0);
+            return std.mem.bytesToValue(KeyBits, entry[0..key_size]) == 0;
         }
 
         fn tagOf(h: u64) u8 {
@@ -99,12 +122,12 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             const rounded = std.math.ceilPowerOfTwoAssert(u32, @max(cap, 8));
             const header = try alloc(allocator, rounded, if (Spec.runtime_entry_size) header_init.entry_size else Spec.entry_size);
             header.* = header_init;
-            capPtr(header).* = rounded;
+            setCapacity(header, rounded);
             return header;
         }
 
         pub fn capacity(header: *Header) u32 {
-            return capPtr(header).*;
+            return payload(header).capacity;
         }
 
         pub fn isFull(header: *Header) bool {
@@ -115,11 +138,14 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             return Spec.hash(ctx, key);
         }
 
-        /// Index of `key`'s entry, comparing tags `N` at a time.
-        fn findIn(comptime N: comptime_int, header: *Header, ctx: Ctx, key: Key, tag: u8) ?u32 {
+        /// Index of `key`'s entry, or `absent`, comparing tags `N` at a time.
+        /// The zero-key test runs only on tag-matched candidates.
+        fn findIn(comptime N: comptime_int, header: *Header, ctx: Ctx, key: Key, tag: u8) u32 {
             const Mask = std.meta.Int(.unsigned, N);
             const t = tags(header);
             const n = header.cur_items;
+            const base_entry = entries(header);
+            const es = entrySize(header);
             var base: u32 = 0;
             while (base < n) : (base += N) {
                 const chunk: @Vector(N, u8) = t[base..][0..N].*;
@@ -127,14 +153,14 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
                 if (n - base < N) mask &= (@as(Mask, 1) << @intCast(n - base)) - 1;
                 while (mask != 0) : (mask &= mask - 1) {
                     const i = base + @ctz(mask);
-                    const e = entryAtIndex(header, i);
+                    const e = base_entry + i * es;
                     if (!isZeroKey(e) and Spec.eql(ctx, keyAt(e), key)) return i;
                 }
             }
-            return null;
+            return absent;
         }
 
-        fn find(header: *Header, ctx: Ctx, key: Key, h: u64) ?u32 {
+        fn find(header: *Header, ctx: Ctx, key: Key, h: u64) u32 {
             const tag = tagOf(h);
             return switch (capacity(header)) {
                 8 => findIn(8, header, ctx, key, tag),
@@ -145,12 +171,14 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         }
 
         pub fn fetch(header: *Header, ctx: Ctx, key: Key, h: u64) ?[*]u8 {
-            const i = find(header, ctx, key, h) orelse return null;
+            const i = find(header, ctx, key, h);
+            if (i == absent) return null;
             return entryAtIndex(header, i);
         }
 
         pub fn lvalueFetch(header: *Header, ctx: Ctx, key: Key, h: u64) LvalueResult {
-            if (find(header, ctx, key, h)) |i| return .{ .found = entryAtIndex(header, i) };
+            const f = find(header, ctx, key, h);
+            if (f != absent) return .{ .found = entryAtIndex(header, f) };
             if (isFull(header)) return .full;
             const i = header.cur_items;
             tags(header)[i] = tagOf(h);
@@ -161,13 +189,19 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         }
 
         pub fn delete(header: *Header, ctx: Ctx, key: Key, h: u64) bool {
-            const i = find(header, ctx, key, h) orelse return false;
+            const i = find(header, ctx, key, h);
+            if (i == absent) return false;
             const last = header.cur_items - 1;
             if (i != last) {
                 const t = tags(header);
                 t[i] = t[last];
                 const es = entrySize(header);
-                @memcpy(entryAtIndex(header, i)[0..es], entryAtIndex(header, last)[0..es]);
+                const base_entry = entries(header);
+                const dst = base_entry + i * es;
+                const src = base_entry + last * es;
+                // The common entry size (a key and one pointer) copies inline
+                // instead of through a `memcpy` call.
+                if (es == 16) dst[0..16].* = src[0..16].* else @memcpy(dst[0..es], src[0..es]);
             }
             header.cur_items = last;
             return true;
@@ -185,7 +219,7 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             const es = entrySize(header);
             const new = try alloc(allocator, cap * 2, es);
             new.* = header.*;
-            capPtr(new).* = cap * 2;
+            setCapacity(new, cap * 2);
             const n = header.cur_items;
             @memcpy(tags(new)[0..n], tags(header)[0..n]);
             @memcpy(entryAtIndex(new, 0)[0 .. n * es], entryAtIndex(header, 0)[0 .. n * es]);
@@ -435,4 +469,17 @@ test "tag collisions fall through to key equality" {
     try testing.expect(del(h, a));
     try testing.expectEqual(b, keyOf(get(h, b).?));
     try testing.expectEqual(@as(?[*]u8, null), get(h, a));
+}
+
+test "entry base survives grow" {
+    var h = try testInit(8);
+    defer testFree(h);
+    try testing.expectEqual(@as(u32, 8), S.capacity(h));
+    for (1..9) |k| try put(h, k);
+    h = (try grown(h)).?;
+    try testing.expectEqual(@as(u32, 16), S.capacity(h));
+    for (9..17) |k| try put(h, k);
+    for (1..17) |k| try testing.expectEqual(@as(u64, k * 10), std.mem.readInt(u64, get(h, k).?[8..16], .little));
+    try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+    try testing.expectEqual(@as(u32, @intCast(S.entriesOffset(16))), S.payload(h).entries_offset);
 }
