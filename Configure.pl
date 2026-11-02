@@ -42,7 +42,7 @@ GetOptions(\%args, qw(
     help|?
     debug:s optimize:s coverage
     os=s shell=s toolchain=s compiler=s
-    ar=s cc=s ld=s make=s has-sha has-libuv
+    ar=s cc=s ld=s make=s zig=s has-sha has-libuv
     static has-libtommath has-libatomic_ops
     has-dyncall has-libffi pkgconfig=s
     build=s host=s big-endian jit! enable-jit
@@ -155,6 +155,7 @@ $config{defs}                     = [] unless defined $config{defs};
 $config{syslibs}                  = [] unless defined $config{syslibs};
 $config{usrlibs}                  = [] unless defined $config{usrlibs};
 $config{platform}                 = '' unless defined $config{platform};
+$config{minilua_ldflags}          = '' unless defined $config{minilua_ldflags};
 $config{crossconf}                = '' unless defined $config{crossconf};
 $config{dllimport}                = '' unless defined $config{dllimport};
 $config{dllexport}                = '' unless defined $config{dllexport};
@@ -810,6 +811,22 @@ if ($config{os} eq 'mingw32') {
 }
 
 # Object lists are shared with build.zig through build/sources.list.
+# With --zig=PATH the [zig] section applies: the Zig implementations are
+# built into one object by `zig build zig-objects` and the C files they
+# replace are left out.
+$config{zig} = $config{zig_out} = $config{zig_build_flags} = $config{zig_sources} = $config{zig_objects} = '';
+$config{zig_clean} = '@:';
+if (defined $args{zig}) {
+    hardfail("--zig=$args{zig} is not an executable") unless -x $args{zig};
+    $config{zig}     = $args{zig};
+    $config{zig_out} = File::Spec->rel2abs('zig-out');
+    my $jit = $config{jit_obj} =~ /JIT_ARCH_X64/ ? 'true' : 'false';
+    my $zstd = $config{heapsnapformat} == 3 ? 'true' : 'false';
+    my $optimize = $args{debug} ? 'Debug' : 'ReleaseFast';
+    $config{zig_build_flags} = "-Dconfig-h=src/gen/config.h -Dzstd=$zstd -Doptimize=$optimize -Djit=$jit";
+    $config{zig_objects} = '$(ZIG_OUT)/lib/moar_zig@obj@';
+    $config{zig_clean}   = '$(RM_RF) zig-out .zig-cache';
+}
 {
     my %sections = read_sources_list('build/sources.list', defined $args{zig});
     # Split [core] in half (OBJECTS1/OBJECTS2) so that nmake's
@@ -823,6 +840,9 @@ if ($config{os} eq 'mingw32') {
     $config{objects_jit_x64}        = objlist($sections{'jit-x64'});
     $config{objects_jit_stub}       = objlist($sections{'jit-stub'});
     $config{objects_main}           = objlist($sections{'main'});
+    if ($sections{zig_files}) {
+        $config{zig_sources} = join " \\\n          ", 'src/zig/root.zig', 'src/zig/moar.zig', 'src/zig/moar_c.h', @{ $sections{zig_files} };
+    }
 }
 
 # read list of files to generate
@@ -1249,7 +1269,7 @@ __END__
 
     ./Configure.pl [--os <os>] [--shell <shell>]
                    [--toolchain <toolchain>] [--compiler <compiler>]
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--has-libtommath] [--has-sha] [--has-libuv]
@@ -1258,7 +1278,7 @@ __END__
                    [--telemeh] [--git-cache-dir <path>]
 
     ./Configure.pl --build <build-triple> --host <host-triple>
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--big-endian] [--make-install]
@@ -1345,6 +1365,14 @@ options.
 
 Explicitly set the compiler without affecting other configuration
 options.
+
+=item --zig <path>
+
+Build the Zig implementations listed in the C<[zig]> section of
+F<build/sources.list> with the given zig binary (0.16.0), in place of the C
+files they replace. The object is produced by C<zig build zig-objects> from
+F<build.zig>. Independent of C<--cc=zig>, which only selects zig as the C
+compiler.
 
 =item --show-autovect
 

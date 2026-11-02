@@ -472,7 +472,12 @@ our %COMPILERS = (
         ld => undef,
         as => 'as',
 
-        ccmiscflags  => '-optimize=ReleaseFast -fno-omit-frame-pointer -fno-optimize-sibling-calls -Werror=vla',
+        # minilua (the DynASM host) is built with bare $(CC): without an -O
+        # flag zig cc compiles in Debug mode with UBSan on, and lua_number2int
+        # traps on its out-of-range double-to-int conversion.
+        minilua_ldflags => '-fno-sanitize=undefined',
+
+        ccmiscflags  => '-optimize=ReleaseFast -fno-omit-frame-pointer -fno-optimize-sibling-calls',
         ccwarnflags  => '-Wno-logical-op-parentheses',
         ccoptiflags  => '-O%s -DNDEBUG',
         ccdebugflags => '-g%s',

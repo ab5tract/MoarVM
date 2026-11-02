@@ -15,6 +15,13 @@ RM_F   = $(PERL) -MExtUtils::Command -e rm_f
 
 MINGW_UNICODE = @mingw_unicode@
 
+# Zig implementations (perl Configure.pl --zig=PATH); empty otherwise.
+ZIG             = @zig@
+ZIG_OUT         = @zig_out@
+ZIG_BUILD_FLAGS = @zig_build_flags@
+ZIG_SOURCES     = @zig_sources@
+ZIG_OBJECTS     = @zig_objects@
+
 
 CONFIG    = @config@
 ADDCONFIG =
@@ -82,7 +89,8 @@ OBJECTS2 = @objects_core2@ \
           @zmij_object@ \
           @mimalloc_object@ \
           @platform@ \
-          @jit_obj@
+          @jit_obj@ \
+          $(ZIG_OBJECTS)
 
 HEADERS = src/moar.h \
           src/types.h \
@@ -359,6 +367,7 @@ THIRDPARTY = @thirdpartylibs@
 
 MINILUA = 3rdparty/dynasm/minilua@exe@
 MINILUA_LDLIBS = -lm
+MINILUA_LDFLAGS = @minilua_ldflags@
 DYNASM  = $(MINILUA) 3rdparty/dynasm/dynasm.lua
 DYNASM_SCRIPTS = 3rdparty/dynasm/dynasm.lua 3rdparty/dynasm/dasm_x86.lua
 DYNASM_HEADERS = 3rdparty/dynasm/dasm_proto.h 3rdparty/dynasm/dasm_x86.h
@@ -443,6 +452,11 @@ moar@exe@: $(MAIN_OBJECTS) @moar@
 @moardll@: $(OBJECTS) $(THIRDPARTY)
 	$(MSG) linking $@
 	$(CMD)$(LD) @ldout@$@ $(LDFLAGS) @ldshared@ @moarshared@ $(OBJECTS) $(DLL_LIBS)
+
+# One object for every Zig implementation; build.zig owns the recipe.
+$(ZIG_OUT)/lib/moar_zig@obj@: src/gen/config.h build.zig build.zig.zon build/sources.list build/zig/zigimpl.zig $(ZIG_SOURCES)
+	$(MSG) building the Zig implementations with zig
+	$(CMD)$(ZIG) build zig-objects --prefix $(ZIG_OUT) $(ZIG_BUILD_FLAGS)
 
 libuv: @uvlib@
 
@@ -565,6 +579,7 @@ clean:
 	-$(CMD)$(RM) $(MAIN_OBJECTS) $(JIT_INTERMEDIATES) $(NOOUT) $(NOERR)
 	-$(CMD)$(RM) $(OBJECTS1) $(NOOUT) $(NOERR)
 	-$(CMD)$(RM) $(OBJECTS2) $(NOOUT) $(NOERR)
+	-$(CMD)@zig_clean@ $(NOOUT) $(NOERR)
 
 realclean: clean
 	$(MSG) remove auxiliary files
