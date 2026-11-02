@@ -1,26 +1,16 @@
-//! The libmoar-linked test root of the hash engine (`zig build unit-test`,
-//! binary `hash-str-test`): the string table of `../str.zig` driven through
-//! its C-shaped API on real `MVMString`s, each test in its own instance, as
-//! `src/zig/moar.zig`'s tests are. Also runs `../rng.zig`'s self-test, which
-//! needs the `moar` module and so has no pure-Zig test step.
-//!
-//! A module's files must lie under its root file's directory, so this root
-//! cannot `@import("../str.zig")`: the build gives it `../str.zig` as the
-//! module `hash_str` (build.zig), and `str.zig` re-exports what the tests
-//! need of its neighbours (`rng`, `Header`).
+//! The string table of `../str.zig` driven through its C-shaped API on real
+//! `MVMString`s, each test in its own instance, as `src/zig/moar.zig`'s tests
+//! are. Runs in the libmoar-linked `hash-str-test` binary, whose root is
+//! `../hash_test.zig`.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
-const str = @import("hash_str");
+const str = @import("../str.zig");
 const keys = @import("keys.zig");
-const Header = str.Header;
+const Header = @import("../tier.zig").Header;
 
 const testing = std.testing;
 const ThreadContext = moar.ThreadContext;
-
-test {
-    _ = str.rng;
-}
 
 /// What the tests store: the C's `MVMHashEntry` shape (key first, 16 bytes),
 /// with the value word used as a plain number.

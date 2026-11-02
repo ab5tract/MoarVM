@@ -14,13 +14,13 @@
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
-pub const tier = @import("tier.zig");
-pub const table = @import("table.zig");
-pub const rng = @import("rng.zig");
+const tier = @import("tier.zig");
+const table = @import("table.zig");
+const rng = @import("rng.zig");
 const small = @import("tiers/small.zig");
 const robinhood = @import("tiers/robinhood.zig");
 
-pub const Header = table.Header;
+const Header = table.Header;
 const ThreadContext = moar.ThreadContext;
 
 /// The entry count at which a table leaves the Small tier (the plan's

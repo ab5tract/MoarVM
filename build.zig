@@ -128,19 +128,10 @@ pub fn build(b: *std.Build) void {
     if (zig_impl) |impl| {
         if (opts.config_h == null) {
             // Test roots linked against libmoar: the shims, and the hash
-            // engine's string table on real MVMStrings. A module's files
-            // must lie under its root file's directory, so the hash test
-            // root (src/zig/core/hash/test/) gets src/zig/core/hash/str.zig
-            // as the module `hash_str`.
-            const hash_str = b.createModule(.{
-                .root_source_file = b.path("src/zig/core/hash/str.zig"),
-                .target = opts.target,
-                .optimize = opts.optimize,
-                .imports = &.{.{ .name = "moar", .module = impl.moar_mod }},
-            });
+            // engine's string table on real MVMStrings.
             const roots = [_]struct { []const u8, []const u8, []const std.Build.Module.Import }{
                 .{ "src/zig/moar.zig", "shim-test", &.{} },
-                .{ "src/zig/core/hash/test/str_test.zig", "hash-str-test", &.{.{ .name = "hash_str", .module = hash_str }} },
+                .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{} },
             };
             for (roots) |root| {
                 const t = zigimpl.addShimTests(b, opts, impl, libmoar, config_h, moar.cflags(b, opts), root[0], root[1], root[2]);
