@@ -43,7 +43,7 @@ GetOptions(\%args, qw(
     help|?
     debug:s optimize:s coverage
     os=s shell=s toolchain=s compiler=s
-    ar=s cc=s ld=s make=s zig=s zig-lto has-sha has-libuv
+    ar=s cc=s ld=s make=s zig=s zig-lto! has-sha has-libuv
     static has-libtommath has-libatomic_ops
     has-dyncall has-libffi pkgconfig=s
     build=s host=s big-endian jit! enable-jit
@@ -494,11 +494,18 @@ $config{lddebugflags} = sprintf $config{lddebugflags}, defined_or $args{debug}, 
 # --zig-lto: full LTO of libmoar together with the Zig object. The object is
 # LLVM bitcode then, which only zig cc (clang) can link; the hash engine's
 # exports are protected under it, so libmoar's calls bind to them locally and
-# the LTO link can inline them.
+# the LTO link can inline them. On by default whenever it can apply (--zig
+# with --cc=zig, not --debug), matching the zig build's -Dlto default, so
+# the LTO path is the one a zig toolchain build exercises; --no-zig-lto turns
+# it off. Asked for explicitly, it is refused where it cannot apply.
+my $zig_cc = (defined_or $args{compiler}, '') eq 'zig';
 if ($args{'zig-lto'}) {
     hardfail("--zig-lto needs --zig=PATH") unless defined $args{zig};
     hardfail("--zig-lto needs --cc=zig (gcc cannot consume the LTO object)")
-        unless (defined_or $args{compiler}, '') eq 'zig';
+        unless $zig_cc;
+}
+elsif (!defined $args{'zig-lto'}) {
+    $args{'zig-lto'} = (defined $args{zig} && $zig_cc && !$args{debug}) ? 1 : 0;
 }
 
 # generate CFLAGS
@@ -839,7 +846,9 @@ if (defined $args{zig}) {
     my $zstd = $config{heapsnapformat} == 3 ? 'true' : 'false';
     my $optimize = $args{debug} ? 'Debug' : 'ReleaseFast';
     $config{zig_build_flags} = "-Dconfig-h=src/gen/config.h -Dzstd=$zstd -Doptimize=$optimize -Djit=$jit";
-    $config{zig_build_flags} .= ' -Dlto=true' if $args{'zig-lto'};
+    # Always explicit: the zig build's own default is LTO on, which a gcc
+    # link cannot consume.
+    $config{zig_build_flags} .= $args{'zig-lto'} ? ' -Dlto=true' : ' -Dlto=false';
     $config{zig_objects} = '$(ZIG_OUT)/lib/moar_zig@obj@';
     $config{zig_clean}   = '$(RM_RF) zig-out .zig-cache';
 }
@@ -1291,7 +1300,7 @@ __END__
 
     ./Configure.pl [--os <os>] [--shell <shell>]
                    [--toolchain <toolchain>] [--compiler <compiler>]
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto|--no-zig-lto]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--has-libtommath] [--has-sha] [--has-libuv]
@@ -1300,7 +1309,7 @@ __END__
                    [--telemeh] [--git-cache-dir <path>]
 
     ./Configure.pl --build <build-triple> --host <host-triple>
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto|--no-zig-lto]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--big-endian] [--make-install]
@@ -1398,12 +1407,16 @@ compiler.
 
 =item --zig-lto
 
+=item --no-zig-lto
+
 With C<--zig> and C<--cc=zig>: build libmoar with full link-time
 optimisation (C<-flto>) together with the Zig object (C<-Dlto=true>), so the
 LTO link binds the Zig implementations' exports locally and can inline the
-small ones (iteration); the lookup exports are still called. The link
-takes about three times as long. Refused with any other compiler: gcc cannot
-link the LLVM bitcode object.
+small ones (iteration); the lookup exports are still called. On by default
+when both are given and C<--debug> is not, like the zig build's C<-Dlto>;
+C<--no-zig-lto> turns it off, which makes the link about three times
+faster. C<--zig-lto> given explicitly is refused with any other compiler:
+gcc cannot link the LLVM bitcode object.
 
 =item --show-autovect
 

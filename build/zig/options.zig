@@ -20,6 +20,9 @@ pub const Options = struct {
     /// Full link-time optimisation for libmoar and the moar_zig object, so
     /// the LTO link binds the hash engine's exports locally and can inline
     /// the small ones (iteration); the lookup exports are still called.
+    /// On by default except in Debug, so the LTO path (protected exports,
+    /// bitcode object) is the one every build exercises; `-Dlto=false`
+    /// turns it off for a faster link.
     lto: bool,
 };
 
@@ -54,6 +57,6 @@ pub fn parse(b: *std.Build) Options {
         .zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true,
         .config_h = config_h,
         .strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=Debug); false keeps them for perf"),
-        .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default false); needs about three times the link time") orelse false,
+        .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default: true unless -Doptimize=Debug); false links about three times faster") orelse (optimize != .Debug),
     };
 }

@@ -21,7 +21,7 @@ Options (`zig build --help` lists them):
 | `-Dzstd=` | `true` | link the system libzstd for heap snapshot format 3 |
 | `-Dnqp-stage0=` | `../src/vm/moar/stage0` | where `zig build test` finds nqp's stage0 bytecode |
 | `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
-| `-Dlto=` | `false` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; the link takes about three times as long (see "Hash engine") |
+| `-Dlto=` | `true` unless `-Doptimize=Debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
@@ -107,8 +107,11 @@ Makefile (the Zig code is then translated against the Perl build's
 `config.h`). `--zig` is independent of `--cc=zig`, which selects zig as the
 C compiler. `--zig-lto` (with `--zig` and `--cc=zig`) is the Perl build's
 `-Dlto`: it adds `-flto` to the C compile and link flags and `-Dlto=true`
-to the `zig build zig-objects` call; with any other compiler Configure.pl
-refuses it, because gcc cannot link the LLVM bitcode object.
+to the `zig build zig-objects` call. It is on by default when both are
+given and `--debug` is not; `--no-zig-lto` turns it off. With any other
+compiler it stays off (the Makefile passes `-Dlto=false`, because gcc
+cannot link the LLVM bitcode object), and asking for it explicitly is
+refused.
 
 ## Hash engine
 
@@ -150,7 +153,8 @@ define the C files compile as before.
 The exports are separate functions in libmoar, so without LTO every call
 from the C code (the `MVMHash` REPR, the interpreter, spesh) is a call
 through the PLT that the C compiler cannot inline. `-Dlto` (`--zig-lto`
-with `--cc=zig` in the Perl build) links libmoar and the Zig object with
+with `--cc=zig` in the Perl build), on by default outside Debug builds,
+links libmoar and the Zig object with
 full LTO and gives the exports protected visibility: they stay in libmoar's
 dynamic symbol table (`nm -D`), so the microbenchmark and anything else
 outside libmoar still link against them, but calls from inside libmoar bind
@@ -169,11 +173,15 @@ and delete still run in 0.90-0.93 of the plain C engine's time under
 `MVM_str_hash_fetch_nocheck`. Without `-Dlto` the exports have default
 visibility and the link is unchanged. LTO also speeds up the C side (with
 the C engine, the hash operations at the nqp level run in 0.94-0.96 of
-their time without it), but the link takes about three times as long
-(about a minute against 20 seconds for `zig build install`), so the option
-is off by default. gcc builds cannot use it, because gcc cannot link the
-Zig object's LLVM bitcode. So `--zig-lto` requires both `--zig=PATH` and
-`--cc=zig`, and Configure.pl refuses it otherwise, naming the missing one.
+their time without it). The link takes about three times as long (about a
+minute against 20 seconds for `zig build install`); `-Dlto=false` buys that
+time back, and Debug builds leave it off. It is on by default so that the
+LTO path (protected exports, bitcode object) is the one every build
+exercises rather than an option that drifts untested. gcc builds cannot
+use it, because gcc cannot link the Zig object's LLVM bitcode. So
+`--zig-lto` requires both `--zig=PATH` and `--cc=zig`; Configure.pl leaves
+it off otherwise and refuses an explicit `--zig-lto`, naming the missing
+one.
 
 Two benchmarks compare the engines, both run by `tools/bench/hash-bench.sh`,
 which writes `traces/llm/bench/hash-<date>.md` with the raw TSVs beside it:
