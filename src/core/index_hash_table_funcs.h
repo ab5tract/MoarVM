@@ -4,6 +4,7 @@
  * load factor, or INDEX_MIN_SIZE_BASE_2 or MVM_HASH_INITIAL_BITS_IN_METADATA,
  * and test with assertions enabled. The current choices permit certain
  * optimisation assumptions in parts of the code. */
+#if !MVM_ZIG_IMPL
 #define MVM_INDEX_HASH_LOAD_FACTOR 0.75
 MVM_STATIC_INLINE MVMuint32 MVM_index_hash_official_size(const struct MVMIndexHashTableControl *control) {
     return 1 << (MVMuint32)control->official_size_log2;
@@ -44,6 +45,9 @@ MVM_STATIC_INLINE size_t MVM_index_hash_allocated_size(MVMThreadContext *tc, MVM
     size_t metadata_size = MVM_hash_round_size_up(allocated_items + 1);
     return entries_size + sizeof(struct MVMIndexHashTableControl) + metadata_size;
 }
+#else
+size_t MVM_index_hash_allocated_size(MVMThreadContext *tc, MVMIndexHashTable *hashtable);
+#endif
 
 /* Frees the entire contents of the hash, leaving you just the hashtable itself,
    which you allocated (heap, stack, inside another struct, wherever) */
@@ -58,6 +62,7 @@ void MVM_index_hash_build(MVMThreadContext *tc,
                           MVMIndexHashTable *hashtable,
                           MVMuint32 entries);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE int MVM_index_hash_is_empty(MVMThreadContext *tc,
                                               MVMIndexHashTable *hashtable) {
     struct MVMIndexHashTableControl *control = hashtable->table;
@@ -82,6 +87,16 @@ MVM_STATIC_INLINE void MVM_index_hash_shallow_copy(MVMThreadContext *tc,
     memcpy(target, start, total_size);
     dest->table = (struct MVMIndexHashTableControl *)(target + entries_size);
 }
+#else
+int MVM_index_hash_is_empty(MVMThreadContext *tc,
+                            MVMIndexHashTable *hashtable);
+
+/* This code assumes that the destination hash is uninitialised - ie not even
+ * MVM_index_hash_build has been called upon it. */
+void MVM_index_hash_shallow_copy(MVMThreadContext *tc,
+                                 MVMIndexHashTable *source,
+                                 MVMIndexHashTable *dest);
+#endif
 
 /* UNCONDITIONALLY creates a new hash entry with the given key and value.
  * Doesn't check if the key already exists. Use with care. */
@@ -90,6 +105,7 @@ void MVM_index_hash_insert_nocheck(MVMThreadContext *tc,
                                    MVMString **list,
                                    MVMuint32 idx);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE struct MVM_hash_loop_state
 MVM_index_hash_create_loop_state(MVMThreadContext *tc,
                                  struct MVMIndexHashTableControl *control,
@@ -172,3 +188,17 @@ MVM_STATIC_INLINE int MVM_index_hash_built(MVMThreadContext *tc,
                                            MVMIndexHashTable *hashtable) {
     return !!hashtable->table;
 }
+#else
+MVMuint32 MVM_index_hash_fetch_nocheck(MVMThreadContext *tc,
+                                       MVMIndexHashTable *hashtable,
+                                       MVMString **list,
+                                       MVMString *want);
+
+MVMuint32 MVM_index_hash_fetch(MVMThreadContext *tc,
+                               MVMIndexHashTable *hashtable,
+                               MVMString **list,
+                               MVMString *want);
+
+int MVM_index_hash_built(MVMThreadContext *tc,
+                         MVMIndexHashTable *hashtable);
+#endif

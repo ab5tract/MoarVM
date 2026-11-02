@@ -8,6 +8,7 @@ test {
     _ = @import("test/str_test.zig");
     _ = @import("test/ptr_test.zig");
     _ = @import("test/fixkey_test.zig");
+    _ = @import("test/index_test.zig");
     _ = @import("rng.zig");
     _ = @import("str.zig");
 }
