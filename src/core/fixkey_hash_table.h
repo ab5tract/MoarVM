@@ -79,6 +79,7 @@ Not all the optimisations described above are in place yet. Starting with
  * that it could be freed correctly. But no code needs this (yet).
  */
 
+#if !MVM_ZIG_IMPL
 struct MVMFixKeyHashTableControl {
     MVMHashNumItems cur_items;
     MVMHashNumItems max_items; /* hit this and we grow */
@@ -98,6 +99,11 @@ struct MVMFixKeyHashTableControl {
     MVMuint8 max_probe_distance_limit;
     MVMuint8 metadata_hash_bits;
 };
+#else
+/* The Zig hash engine (src/zig/core/hash/fixkey.zig) owns the control
+ * structure (which keeps the entry_size); C only ever holds the pointer. */
+struct MVMFixKeyHashTableControl;
+#endif
 
 struct MVMFixKeyHashTable {
     struct MVMFixKeyHashTableControl *table;

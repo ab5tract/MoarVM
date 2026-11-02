@@ -4,6 +4,7 @@
  * load factor, or FIXKEY_MIN_SIZE_BASE_2 or MVM_HASH_INITIAL_BITS_IN_METADATA,
  * and test with assertions enabled. The current choices permit certain
  * optimisation assumptions in parts of the code. */
+#if !MVM_ZIG_IMPL
 #define MVM_FIXKEY_HASH_LOAD_FACTOR 0.75
 MVM_STATIC_INLINE MVMuint32 MVM_fixkey_hash_official_size(const struct MVMFixKeyHashTableControl *control) {
     return 1 << (MVMuint32)control->official_size_log2;
@@ -30,6 +31,7 @@ MVM_STATIC_INLINE MVMuint8 *MVM_fixkey_hash_metadata(const struct MVMFixKeyHashT
 MVM_STATIC_INLINE MVMuint8 *MVM_fixkey_hash_entries(const struct MVMFixKeyHashTableControl *control) {
     return (MVMuint8 *) control - sizeof(MVMString ***);
 }
+#endif
 
 /* Frees the entire contents of the hash, leaving you just the hashtable itself,
    which you allocated (heap, stack, inside another struct, wherever) */
@@ -43,11 +45,16 @@ void MVM_fixkey_hash_demolish(MVMThreadContext *tc, MVMFixKeyHashTable *hashtabl
  */
 void MVM_fixkey_hash_build(MVMThreadContext *tc, MVMFixKeyHashTable *hashtable, MVMuint32 entry_size);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE int MVM_fixkey_hash_is_empty(MVMThreadContext *tc,
                                                MVMFixKeyHashTable *hashtable) {
     struct MVMFixKeyHashTableControl *control = hashtable->table;
     return !control || control->cur_items == 0;
 }
+#else
+int MVM_fixkey_hash_is_empty(MVMThreadContext *tc,
+                             MVMFixKeyHashTable *hashtable);
+#endif
 
 /* UNCONDITIONALLY creates a new hash entry with the given key and value.
  * Doesn't check if the key already exists. Use with care.
@@ -63,6 +70,7 @@ void *MVM_fixkey_hash_insert_nocheck(MVMThreadContext *tc,
                                      MVMString *key);
 
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE struct MVM_hash_loop_state
 MVM_fixkey_hash_create_loop_state(MVMThreadContext *tc,
                                   struct MVMFixKeyHashTableControl *control,
@@ -130,6 +138,11 @@ MVM_STATIC_INLINE void *MVM_fixkey_hash_fetch_nocheck(MVMThreadContext *tc,
         assert(ls.metadata < MVM_fixkey_hash_metadata(control) + MVM_fixkey_hash_official_size(control) + 256);
     }
 }
+#else
+void *MVM_fixkey_hash_fetch_nocheck(MVMThreadContext *tc,
+                                    MVMFixKeyHashTable *hashtable,
+                                    MVMString *key);
+#endif
 
 /* Looks up entry for key, creating it if necessary.
  * For the general case (entry_size != 0):
@@ -156,6 +169,7 @@ void *MVM_fixkey_hash_lvalue_fetch_nocheck(MVMThreadContext *tc,
  * Passes the callback (tc, entry, arg)
  * By declaring this inline, the optimiser may be able to inline the callback,
  * and hence eliminate the indirect function call. */
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE void MVM_fixkey_hash_foreach(MVMThreadContext *tc, MVMFixKeyHashTable *hashtable,
                                                void (*callback)(MVMThreadContext *, void *, void *),
                                                void *arg) {
@@ -178,3 +192,8 @@ MVM_STATIC_INLINE void MVM_fixkey_hash_foreach(MVMThreadContext *tc, MVMFixKeyHa
         entry_raw -= sizeof(MVMString ***);
     }
 }
+#else
+void MVM_fixkey_hash_foreach(MVMThreadContext *tc, MVMFixKeyHashTable *hashtable,
+                             void (*callback)(MVMThreadContext *, void *, void *),
+                             void *arg);
+#endif
