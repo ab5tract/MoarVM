@@ -17,6 +17,11 @@
 //! walk downward from `cur_items` to 1, and a delete of the current entry
 //! only moves an already visited (higher) entry.
 //!
+//! Blocks are owned by the policy layer: `init` and `grow` return a new
+//! block and never free an old one, so the caller disposes of the old block
+//! (`blockStart(old)` for `allocatedSize(old)` bytes) after publishing the
+//! new header.
+//!
 //! An inserted entry has its key bytes zeroed for the caller to fill; lookups
 //! skip zero keys without calling `Spec.eql`, and `fsck` skips them without
 //! calling `Spec.hash`.
@@ -87,11 +92,6 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         fn alloc(allocator: std.mem.Allocator, cap: u32, entry_size: usize) !*Header {
             const block = try allocator.alignedAlloc(u8, .@"8", blockSize(cap, entry_size));
             return @ptrCast(block.ptr);
-        }
-
-        fn free(header: *Header, allocator: std.mem.Allocator) void {
-            const block: [*]align(8) u8 = @alignCast(blockStart(header));
-            allocator.free(block[0..allocatedSize(header)]);
         }
 
         pub fn init(allocator: std.mem.Allocator, header_init: Header, cap: u32) !*Header {
@@ -173,7 +173,11 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             return true;
         }
 
-        /// `ctx` is unused here; Robin Hood needs it to rehash on doubling.
+        /// Doubles into a new block and returns its header, or null at the
+        /// ceiling. The old block is left untouched and allocated for the
+        /// caller to dispose of through `blockStart(old)` and
+        /// `allocatedSize(old)` once the new header is published. `ctx` is
+        /// unused here; Robin Hood needs it to rehash on doubling.
         pub fn grow(header: *Header, ctx: Ctx, allocator: std.mem.Allocator) !?*Header {
             _ = ctx;
             const cap = capacity(header);
@@ -185,7 +189,6 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             const n = header.cur_items;
             @memcpy(tags(new)[0..n], tags(header)[0..n]);
             @memcpy(entryAtIndex(new, 0)[0 .. n * es], entryAtIndex(header, 0)[0 .. n * es]);
-            free(header, allocator);
             return new;
         }
 
@@ -260,6 +263,13 @@ fn keyOf(entry: [*]u8) u64 {
     return std.mem.readInt(u64, entry[0..8], .little);
 }
 
+/// `grow`, disposing of the old block as the policy layer would.
+fn grown(header: *Header) !?*Header {
+    const new = (try S.grow(header, {}, testing.allocator)) orelse return null;
+    if (new != header) testFree(header);
+    return new;
+}
+
 /// Insert `key` with value `key * 10`; the key must be absent and fit.
 fn put(header: *Header, key: u64) !void {
     switch (S.lvalueFetch(header, {}, key, S.hash({}, key))) {
@@ -301,15 +311,15 @@ test "fills to capacity then reports full; grow doubles up to the ceiling" {
     try testing.expect(S.isFull(h));
     try testing.expect(S.lvalueFetch(h, {}, 9, S.hash({}, 9)) == .full);
     try testing.expect(S.lvalueFetch(h, {}, 3, S.hash({}, 3)) == .found);
-    h = (try S.grow(h, {}, testing.allocator)).?;
+    h = (try grown(h)).?;
     try testing.expectEqual(@as(u32, 16), S.capacity(h));
     try testing.expect(!S.isFull(h));
     for (1..9) |k| try testing.expectEqual(@as(u64, k * 10), std.mem.readInt(u64, get(h, k).?[8..16], .little));
     try put(h, 9);
-    h = (try S.grow(h, {}, testing.allocator)).?;
-    h = (try S.grow(h, {}, testing.allocator)).?;
+    h = (try grown(h)).?;
+    h = (try grown(h)).?;
     try testing.expectEqual(@as(u32, 64), S.capacity(h));
-    try testing.expectEqual(@as(?*Header, null), try S.grow(h, {}, testing.allocator));
+    try testing.expectEqual(@as(?*Header, null), try grown(h));
     for (1..10) |k| try testing.expect(get(h, k) != null);
     try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
 }

@@ -31,6 +31,11 @@
 //! entries from higher (already visited) buckets into lower ones at or above
 //! the deleted bucket.
 //!
+//! Blocks are owned by the policy layer: `init` and a reallocating `grow`
+//! return a new block and never free an old one, so the caller disposes of
+//! the old block (`blockStart(old)` for `allocatedSize(old)` bytes) after
+//! publishing the new header.
+//!
 //! An inserted entry has its key bytes zeroed for the caller to fill; lookups
 //! skip zero keys without calling `Spec.eql`, `grow` skips them, and `fsck`
 //! counts them as errors (the C's "key NULL") without calling `Spec.hash`.
@@ -403,8 +408,11 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
 
         /// maybe_grow_hash (str_hash_table.c:321-452) minus publication:
         /// below the load limit and the probe limit, trades one metadata
-        /// hash bit for double the probe distance in place; otherwise
-        /// doubles, reinserting every entry, and frees the old block. Never
+        /// hash bit for double the probe distance in place and returns the
+        /// same header; otherwise doubles, reinserting every entry, and
+        /// returns the new header, leaving the old block untouched and
+        /// allocated for the caller to dispose of through `blockStart(old)`
+        /// and `allocatedSize(old)` once the new header is published. Never
         /// returns null. `ctx` is needed to rehash the keys.
         pub fn grow(header: *Header, ctx: Ctx, allocator: std.mem.Allocator) !?*Header {
             return try growInner(header, ctx, allocator);
@@ -447,10 +455,15 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
                 const new_entry = insertInternal(new, ctx, key, Spec.hash(ctx, key));
                 @memcpy(new_entry[0..entry_size], old_entry[0..entry_size]);
                 // Probably the probe limit; possibly one doubling was not
-                // enough.
-                if (ctrl(new).max_items == 0) new = try growInner(new, ctx, allocator);
+                // enough. An intermediate block is ours to free.
+                if (ctrl(new).max_items == 0) {
+                    const bigger = try growInner(new, ctx, allocator);
+                    if (bigger != new) {
+                        free(new, allocator);
+                        new = bigger;
+                    }
+                }
             }
-            free(header, allocator);
             std.debug.assert(ctrl(new).max_items != 0);
             return new;
         }
@@ -580,7 +593,11 @@ fn putGrowing(header: **Header, key: u64) !void {
         switch (S.lvalueFetch(header.*, {}, key, S.hash({}, key))) {
             .inserted => |e| return fill(e, key),
             .found => return error.TestUnexpectedResult,
-            .full => header.* = (try S.grow(header.*, {}, testing.allocator)).?,
+            .full => {
+                const old = header.*;
+                header.* = (try S.grow(old, {}, testing.allocator)).?;
+                if (header.* != old) testFree(old);
+            },
         }
     }
 }
