@@ -1571,3 +1571,31 @@ git commit -m "Docs: Zig implementations, -Dzig-impl, -Dconfig-h, --zig=PATH"
 ## Deviations
 
 Record here, during execution, anything that differed from the plan or spec and why.
+
+Recorded during execution on 2026-11-02:
+
+- Task 4: `fixup_translated` uses Zig 0.16's `main(init: std.process.Init)`
+  entry with `init.io` and `std.Io.Dir.cwd()`, and `std.mem.trimStart`/
+  `trimEnd` (the plan's `trimLeft`/`trimRight` do not exist in 0.16). `fixup`
+  frees each rewritten line (the plan's version leaked; the testing allocator
+  caught it). The zigimpl test exercises an extracted `configDirName`
+  instead of re-implementing the trimming inline.
+- Task 5: `rootN` pushes in tuple order; the C `MVMROOT2..6` macros nest the
+  pushes so the last argument is pushed first. Unobservable to the collector.
+- Task 7: the smoke snippet boxes with `nqp::bootint()`; `NQPInt` is not a
+  boxable type at stage0.
+- Task 8: two more edits to the PR #1971 cherry-pick beyond the two the spec
+  lists, both needed for `--cc=zig` to build on Linux at all: minilua is
+  compiled with `-fno-sanitize=undefined` (new `minilua_ldflags` key; zig cc
+  without `-O` is Debug with UBSan, which traps in `lua_number2int`), and
+  `-Werror=vla` is dropped from the zig entry (libuv's `udp.c` uses VLAs).
+- Task 8: with `--cc=zig --zig`, `make` succeeds (criterion 6 as written) but
+  the resulting `moar` fails to load: `libmoar.so` has undefined
+  `__ubsan_handle_*` symbols from the dyncall objects, whose rule passes
+  `CFLAGS='-fPIC'` only, so zig cc builds them in Debug mode with UBSan.
+  Verified with `nm -u` over every object: only `3rdparty/dyncall/*` reference
+  `__ubsan`; `moar_zig.o` has none. Left for the upstream PR (its dyncall rule
+  needs `-O2` or `-fno-sanitize=undefined`).
+- Task 8: `[--zig <path>]` was added to both SYNOPSIS blocks. `make realclean`
+  leaves `moar` and `libmoar.so` in place (only `distclean` removes them), so
+  the acceptance runs delete them explicitly before trusting a smoke test.
