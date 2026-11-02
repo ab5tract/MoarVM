@@ -51,17 +51,25 @@ pub const StrSpec = struct {
     pub const publish: table.Publish = .safepoint_cas;
     pub const sets: []const tier.TierSet = &.{ &standard, &large_only };
 
-    pub fn hash(ctx: Ctx, key: Key) u64 {
-        return c.MVM_string_hash_code(ctx, key);
+    /// `MVM_string_hash_code` (`src/strings/ops.h`): the cached hash code,
+    /// or, while it is still 0 (not computed yet), the out-of-line
+    /// `MVM_string_compute_hash_code`, which computes and caches it. Written
+    /// here rather than called through translate-c, whose copy of the C
+    /// static inline is an out-of-line function the callers do not inline.
+    pub inline fn hash(ctx: Ctx, key: Key) u64 {
+        const cached = key.*.body.cached_hash_code;
+        if (cached != 0) return cached;
+        return c.MVM_string_compute_hash_code(ctx, key);
     }
 
     /// `str_hash_table_funcs.h:280-284`: pointer equality, then grapheme
     /// count, then the graphemes. The tiers pass (entry key, wanted key);
-    /// the test is symmetric.
-    pub fn eql(ctx: Ctx, a: Key, b: Key) bool {
+    /// the test is symmetric. The grapheme counts are the translated
+    /// `MVM_string_graphs_nocheck` (a field read), inlined.
+    pub inline fn eql(ctx: Ctx, a: Key, b: Key) bool {
         if (a == b) return true;
-        const graphs = c.MVM_string_graphs_nocheck(ctx, a);
-        return graphs == c.MVM_string_graphs_nocheck(ctx, b) and
+        const graphs = @call(.always_inline, c.MVM_string_graphs_nocheck, .{ ctx, a });
+        return graphs == @call(.always_inline, c.MVM_string_graphs_nocheck, .{ ctx, b }) and
             c.MVM_string_substrings_equal_nocheck(ctx, a, 0, graphs, b, 0) != 0;
     }
 
@@ -170,10 +178,12 @@ pub fn fsck(tc: *ThreadContext, ht: *c.MVMStrHashTable, mode: u32) u64 {
 
 // ---------------------------------------------------------------- keys
 
-/// MVM_str_hash_key_is_valid: non-null, an MVMString and concrete.
-pub fn keyIsValid(tc: *ThreadContext, key: [*c]c.MVMString) bool {
+/// MVM_str_hash_key_is_valid (`str_hash_table_funcs.h:366-371`), in its
+/// order: not null (`MVM_is_null`: neither NULL nor VMNull), an MVMString,
+/// concrete. All inline, no call.
+pub inline fn keyIsValid(tc: *ThreadContext, key: [*c]c.MVMString) bool {
     const obj: [*c]c.MVMObject = @ptrCast(key);
-    if (c.MVM_is_null(tc, obj) != 0) return false;
+    if (obj == null or obj == tc.instance.*.VMNull) return false;
     return moar.repr(obj).ID == c.MVM_REPR_ID_MVMString and moar.isConcrete(obj);
 }
 
@@ -188,9 +198,12 @@ inline fn checkKey(tc: *ThreadContext, key: [*c]c.MVMString) void {
 
 // -------------------------------------------------------------- access
 
-/// MVM_str_hash_fetch_nocheck: the entry, or null.
-pub fn fetchNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) ?*anyopaque {
-    return @ptrCast(StrTable.fetch(tc, handleOf(ht), key));
+/// MVM_str_hash_fetch_nocheck: the entry, or null. `inline`, as are
+/// `deleteNocheck`, `fetch` and `delete`, with the table's `fetch`/`delete`
+/// forced inline too, so each export is one function as the C's header
+/// inline is.
+pub inline fn fetchNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) ?*anyopaque {
+    return @ptrCast(@call(.always_inline, StrTable.fetch, .{ tc, handleOf(ht), key }));
 }
 
 /// MVM_str_hash_lvalue_fetch_nocheck: the entry for `key`, created with a
@@ -213,12 +226,12 @@ pub fn insertNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMS
 }
 
 /// MVM_str_hash_delete_nocheck: an absent key is a no-op.
-pub fn deleteNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) void {
-    _ = StrTable.delete(tc, handleOf(ht), key);
+pub inline fn deleteNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) void {
+    _ = @call(.always_inline, StrTable.delete, .{ tc, handleOf(ht), key });
 }
 
 /// MVM_str_hash_fetch: `fetchNocheck` of a validated key.
-pub fn fetch(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) ?*anyopaque {
+pub inline fn fetch(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) ?*anyopaque {
     checkKey(tc, key);
     return fetchNocheck(tc, ht, key);
 }
@@ -230,7 +243,7 @@ pub fn lvalueFetch(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMStr
 }
 
 /// MVM_str_hash_delete: `deleteNocheck` of a validated key.
-pub fn delete(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) void {
+pub inline fn delete(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) void {
     checkKey(tc, key);
     deleteNocheck(tc, ht, key);
 }

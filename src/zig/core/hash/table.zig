@@ -135,8 +135,10 @@ pub fn Table(comptime Spec: type) type {
         }
 
         /// Resolves the runtime pair (set index, rung index) to comptime
-        /// values and returns `op(set, rung_index, args)`.
-        fn resolve(comptime R: type, set_index: u8, rung_index: u8, comptime op: anytype, args: anytype) R {
+        /// values and returns `op(set, rung_index, args)`. `inline`, as is
+        /// `Op.f` in `dispatch`, so a `dispatch` the caller inlines (fetch,
+        /// lvalue, delete) carries the op into the caller's frame.
+        inline fn resolve(comptime R: type, set_index: u8, rung_index: u8, comptime op: anytype, args: anytype) R {
             inline for (Spec.sets, 0..) |set, si| {
                 if (set_index == si) {
                     inline for (0..set.len) |ri| {
@@ -152,7 +154,7 @@ pub fn Table(comptime Spec: type) type {
         fn dispatch(comptime R: type, header: *Header, comptime op: anytype, args: anytype) R {
             std.debug.assert(!isControlOnly(header));
             const Op = struct {
-                fn f(comptime set: tier.TierSet, comptime ri: usize, a: anytype) R {
+                inline fn f(comptime set: tier.TierSet, comptime ri: usize, a: anytype) R {
                     return op(set[ri].tier.Impl(Spec), a[0], a[1]);
                 }
             };
@@ -160,18 +162,21 @@ pub fn Table(comptime Spec: type) type {
         }
 
         const ops = struct {
-            fn fetch(comptime I: type, header: *Header, a: anytype) ?[*]u8 {
-                return I.fetch(header, a[0], a[1], I.hash(a[0], a[1]));
+            // `fetch`, `lvalue` and `delete` are `inline` so the probe lands
+            // in the caller's frame (the string table's exports) instead of
+            // a function of its own behind one more call.
+            inline fn fetch(comptime I: type, header: *Header, a: anytype) ?[*]u8 {
+                return @call(.always_inline, I.fetch, .{ header, a[0], a[1], @call(.always_inline, I.hash, .{ a[0], a[1] }) });
             }
-            fn lvalue(comptime I: type, header: *Header, a: anytype) Lvalue {
-                return switch (I.lvalueFetch(header, a[0], a[1], I.hash(a[0], a[1]))) {
+            inline fn lvalue(comptime I: type, header: *Header, a: anytype) Lvalue {
+                return switch (I.lvalueFetch(header, a[0], a[1], @call(.always_inline, I.hash, .{ a[0], a[1] }))) {
                     .found => |e| .{ .found = e },
                     .inserted => |e| .{ .inserted = e },
                     .full => .full,
                 };
             }
-            fn delete(comptime I: type, header: *Header, a: anytype) bool {
-                return I.delete(header, a[0], a[1], I.hash(a[0], a[1]));
+            inline fn delete(comptime I: type, header: *Header, a: anytype) bool {
+                return @call(.always_inline, I.delete, .{ header, a[0], a[1], @call(.always_inline, I.hash, .{ a[0], a[1] }) });
             }
             fn grow(comptime I: type, header: *Header, a: anytype) ?*Header {
                 return I.grow(header, a[0], Spec.allocator(a[0])) catch fail(a[0], oom_msg);
@@ -445,7 +450,7 @@ pub fn Table(comptime Spec: type) type {
             const header = h.* orelse return null;
             checkStale(ctx, header, "fetch");
             if (isControlOnly(header)) return null;
-            return dispatch(?[*]u8, header, ops.fetch, .{ ctx, key });
+            return @call(.always_inline, dispatch, .{ ?[*]u8, header, ops.fetch, .{ ctx, key } });
         }
 
         const Found = struct { entry: [*]u8, found: bool };
@@ -455,7 +460,7 @@ pub fn Table(comptime Spec: type) type {
             checkStale(ctx, header, who);
             if (isControlOnly(header)) header = materialise(ctx, h, header);
             const result: Found = while (true) {
-                switch (dispatch(Lvalue, header, ops.lvalue, .{ ctx, key })) {
+                switch (@call(.always_inline, dispatch, .{ Lvalue, header, ops.lvalue, .{ ctx, key } })) {
                     .found => |e| break .{ .entry = e, .found = true },
                     .inserted => |e| {
                         log(header, .insert, e);
@@ -495,7 +500,7 @@ pub fn Table(comptime Spec: type) type {
                 const removed = dispatch(bool, header, ops.delete, .{ ctx, key });
                 std.debug.assert(removed);
             } else {
-                if (!dispatch(bool, header, ops.delete, .{ ctx, key })) return false;
+                if (!@call(.always_inline, dispatch, .{ bool, header, ops.delete, .{ ctx, key } })) return false;
             }
             checkTurnedStale(ctx, header, "delete");
             return true;

@@ -409,3 +409,25 @@ test "keyIsValid rejects a type object" {
     const not_a_string: [*c]c.MVMString = @ptrCast(c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTArray));
     try testing.expect(!str.keyIsValid(tc, not_a_string));
 }
+
+test "hash of a string equals MVM_string_hash_code and is stable across calls" {
+    // `StrSpec.hash` reads the cached hash code itself and computes it only
+    // when the cache is empty (0): two fresh strings with the same text, one
+    // hashed by the Zig path and one by the C inline, must agree, and the
+    // cached second call must return the same value.
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const zig_side = c.MVM_string_ascii_decode_nt(tc, tc.instance.*.VMString, "fresh hash key");
+    const c_side = c.MVM_string_ascii_decode_nt(tc, tc.instance.*.VMString, "fresh hash key");
+    try testing.expectEqual(@as(u64, 0), zig_side.*.body.cached_hash_code);
+    try testing.expectEqual(@as(u64, 0), c_side.*.body.cached_hash_code);
+
+    const first = str.StrSpec.hash(tc, zig_side);
+    try testing.expect(first != 0);
+    try testing.expectEqual(c.MVM_string_hash_code(tc, c_side), first);
+    try testing.expectEqual(first, zig_side.*.body.cached_hash_code);
+
+    try testing.expectEqual(first, str.StrSpec.hash(tc, zig_side));
+    try testing.expectEqual(c.MVM_string_hash_code(tc, zig_side), str.StrSpec.hash(tc, zig_side));
+}
