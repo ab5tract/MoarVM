@@ -8,6 +8,7 @@ use Cwd;
 use Getopt::Long;
 use Pod::Usage;
 use File::Spec;
+use File::Find;
 
 use lib '.';
 use build::setup;
@@ -817,6 +818,7 @@ if ($config{os} eq 'mingw32') {
 # replace are left out.
 $config{zig} = $config{zig_out} = $config{zig_build_flags} = $config{zig_sources} = $config{zig_objects} = '';
 $config{zig_clean} = '@:';
+$config{zig_impl} = defined $args{zig} ? 1 : 0;
 if (defined $args{zig}) {
     hardfail("--zig=$args{zig} is not an executable") unless -x $args{zig};
     $config{zig}     = $args{zig};
@@ -842,7 +844,13 @@ if (defined $args{zig}) {
     $config{objects_jit_stub}       = objlist($sections{'jit-stub'});
     $config{objects_main}           = objlist($sections{'main'});
     if ($sections{zig_files}) {
-        $config{zig_sources} = join " \\\n          ", 'src/zig/root.zig', 'src/zig/moar.zig', 'src/zig/moar_c.h', @{ $sections{zig_files} };
+        # Every .zig and .h file under src/zig is a Makefile dependency of the
+        # Zig object: the [zig] files import helper modules (the hash engine's
+        # tiers) that no section lists. Enumerated here, as nmake has no
+        # $(wildcard).
+        my @zig_sources;
+        find({ wanted => sub { push @zig_sources, $File::Find::name if -f $_ && /\.(?:zig|h)\z/ }, no_chdir => 1 }, 'src/zig');
+        $config{zig_sources} = join " \\\n          ", sort @zig_sources;
     }
 }
 

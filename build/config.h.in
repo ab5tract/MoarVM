@@ -29,6 +29,13 @@
 #define MVM_BIGENDIAN @be@
 #endif
 
+/* The Zig implementations from build/sources.list's [zig] section are built
+ * in place of the C files they replace; the hash table headers then declare
+ * their functions extern instead of defining them inline. */
+#if @zig_impl@
+#define MVM_ZIG_IMPL 1
+#endif
+
 /* pthread_yield() detection */
 #if @has_pthread_yield@
 #define MVM_HAS_PTHREAD_YIELD @has_pthread_yield@

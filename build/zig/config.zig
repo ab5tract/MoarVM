@@ -21,7 +21,7 @@ pub fn jitPlatform(opts: Options) []const u8 {
 
 /// Renders build/config.h.in. The step fails if a template variable is
 /// missing here or a value here is unused by the template, so this list
-/// must match the `@var@` set in build/config.h.in exactly (44 variables).
+/// must match the `@var@` set in build/config.h.in exactly (45 variables).
 pub fn configHeader(b: *std.Build, in: Inputs) *std.Build.Step.ConfigHeader {
     const S = []const u8;
     return b.addConfigHeader(.{
@@ -71,6 +71,7 @@ pub fn configHeader(b: *std.Build, in: Inputs) *std.Build.Step.ConfigHeader {
         .do_pty_ourself = in.facts.do_pty_ourself,
         .use_mimalloc = in.opts.mimalloc,
         .use_c11_atomics = true,
+        .zig_impl = in.opts.zig_impl,
         .translate_newline_output = in.facts.translate_newline_output,
 
         .jit_arch = jitArch(in.opts),

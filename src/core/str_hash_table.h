@@ -411,6 +411,7 @@ be worth it.
  * of, and it might only be a CPU for "last level cache miss" trade off.
  */
 
+#if !MVM_ZIG_IMPL
 struct MVMStrHashTableControl {
     MVMuint64 salt;
 #if HASH_DEBUG_ITER
@@ -447,6 +448,11 @@ struct MVMStrHashTableControl {
      * least some cases and fault them, often enough for bugs to be noticed. */
     volatile MVMuint8 stale;
 };
+#else
+/* The Zig hash engine (src/zig/core/hash/str.zig) owns the control structure;
+ * C only ever holds the pointer. */
+struct MVMStrHashTableControl;
+#endif
 
 struct MVMStrHashTable {
     struct MVMStrHashTableControl *table;
@@ -465,6 +471,10 @@ typedef struct {
 }  MVMStrHashIterator;
 
 MVMuint32 MVM_round_up_log_base2(MVMuint32 v);
+
+#if MVM_ZIG_IMPL && HASH_DEBUG_ITER
+#error "HASH_DEBUG_ITER is not available with the Zig hash engine"
+#endif
 
 #if HASH_DEBUG_ITER
 MVM_STATIC_INLINE int MVM_str_hash_iterator_target_deleted(MVMThreadContext *tc,
@@ -493,6 +503,11 @@ MVM_STATIC_INLINE int MVM_str_hash_iterator_target_deleted(MVMThreadContext *tc,
 MVM_STATIC_INLINE int MVM_str_hash_at_end(MVMThreadContext *tc,
                                            MVMStrHashTable *hashtable,
                                            MVMStrHashIterator iterator) {
+#if MVM_ZIG_IMPL
+    /* The control structure is the Zig engine's and incomplete here, so there
+     * is no stale read; every other call checks on the Zig side. */
+    return iterator.pos == 0;
+#else
     if (MVM_UNLIKELY(hashtable->table && hashtable->table->stale)) {
         MVM_oops(tc, "MVM_str_hash_at_end called with a stale hashtable pointer");
     }
@@ -511,4 +526,5 @@ MVM_STATIC_INLINE int MVM_str_hash_at_end(MVMThreadContext *tc,
     }
 #endif
     return iterator.pos == 0;
+#endif
 }

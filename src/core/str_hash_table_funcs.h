@@ -4,6 +4,7 @@
  * load factor, or STR_MIN_SIZE_BASE_2 or MVM_HASH_INITIAL_BITS_IN_METADATA,
  * and test with assertions enabled. The current choices permit certain
  * optimisation assumptions in parts of the code. */
+#if !MVM_ZIG_IMPL
 #define MVM_STR_HASH_LOAD_FACTOR 0.75
 MVM_STATIC_INLINE MVMuint32 MVM_str_hash_official_size(const struct MVMStrHashTableControl *control) {
     assert(!(control->cur_items == 0 && control->max_items == 0));
@@ -42,6 +43,7 @@ MVM_STATIC_INLINE MVMuint8 *MVM_str_hash_entries(const struct MVMStrHashTableCon
     assert(!(control->cur_items == 0 && control->max_items == 0));
     return (MVMuint8 *) control - control->entry_size;
 }
+#endif
 
 /* round up to a multiple of sizeof(long). My assumption is that this is won't
  * cause any extra allocation, but will both be faster for memcpy/memset, and
@@ -51,6 +53,7 @@ MVM_STATIC_INLINE size_t MVM_hash_round_size_up(size_t wanted) {
     return (wanted - 1 + sizeof(long)) & ~(sizeof(long) - 1);
 }
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE size_t MVM_str_hash_allocated_size(MVMThreadContext *tc, MVMStrHashTable *hashtable) {
     struct MVMStrHashTableControl *control = hashtable->table;
     if (!control)
@@ -67,6 +70,9 @@ MVM_STATIC_INLINE size_t MVM_str_hash_allocated_size(MVMThreadContext *tc, MVMSt
     size_t metadata_size = MVM_hash_round_size_up(allocated_items + 1);
     return entries_size + sizeof(struct MVMStrHashTableControl) + metadata_size;
 }
+#else
+size_t MVM_str_hash_allocated_size(MVMThreadContext *tc, MVMStrHashTable *hashtable);
+#endif
 
 /* Frees the entire contents of the hash, leaving you just the hashtable itself,
    which you allocated (heap, stack, inside another struct, wherever) */
@@ -79,6 +85,7 @@ void MVM_str_hash_build(MVMThreadContext *tc,
                         MVMuint32 entry_size,
                         MVMuint32 entries);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE int MVM_str_hash_is_empty(MVMThreadContext *tc,
                                             MVMStrHashTable *hashtable) {
     struct MVMStrHashTableControl *control = hashtable->table;
@@ -127,6 +134,16 @@ MVM_STATIC_INLINE MVMuint64 MVM_str_hash_code(MVMThreadContext *tc,
                                               MVMString *key) {
     return (MVM_string_hash_code(tc, key) ^ salt) * UINT64_C(11400714819323198485);
 }
+#else
+int MVM_str_hash_is_empty(MVMThreadContext *tc,
+                          MVMStrHashTable *hashtable);
+
+/* This code assumes that the destination hash is uninitialised - ie not even
+ * MVM_str_hash_build has been called upon it. */
+void MVM_str_hash_shallow_copy(MVMThreadContext *tc,
+                               MVMStrHashTable *source,
+                               MVMStrHashTable *dest);
+#endif
 
 /* UNCONDITIONALLY creates a new hash entry with the given key and value.
  * Doesn't check if the key already exists. Use with care. */
@@ -145,6 +162,7 @@ struct MVM_hash_loop_state {
     MVMuint16 entry_size;
 };
 
+#if !MVM_ZIG_IMPL
 /* This function turns out to be quite hot. We initialise looping on a *lot* of
  * hashes. Removing a branch from this function reduced the instruction dispatch
  * by over 0.1% for a non-trivial program (according to cachegrind. Sure, it
@@ -318,6 +336,11 @@ MVM_STATIC_INLINE void *MVM_str_hash_fetch_nocheck(MVMThreadContext *tc,
         assert(ls.metadata < MVM_str_hash_metadata(control) + MVM_str_hash_official_size(control) + 256);
     }
 }
+#else
+void *MVM_str_hash_fetch_nocheck(MVMThreadContext *tc,
+                                 MVMStrHashTable *hashtable,
+                                 MVMString *key);
+#endif
 
 /* Looks up entry for key, creating it if necessary.
  * Returns the structure we indirect to.
@@ -353,6 +376,7 @@ MVM_STATIC_INLINE void MVM_str_hash_key_throw_invalid(MVMThreadContext *tc,
                               MVM_6model_get_debug_name(tc, (MVMObject *)key));
 }
 
+#if !MVM_ZIG_IMPL
 /* Looks up entry for key, creating it if necessary.
  * Returns an entry.
  * If it's freshly allocated, then entry->key is NULL (you need to fill this in)
@@ -386,6 +410,24 @@ MVM_STATIC_INLINE void MVM_str_hash_delete(MVMThreadContext *tc,
     }
     MVM_str_hash_delete_nocheck(tc, hashtable, want);
 }
+#else
+/* Looks up entry for key, creating it if necessary.
+ * Returns an entry.
+ * If it's freshly allocated, then entry->key is NULL (you need to fill this in)
+ * and everything else is uninitialised.
+ * DON'T FORGET to fill in the NULL key. */
+void *MVM_str_hash_lvalue_fetch(MVMThreadContext *tc,
+                                MVMStrHashTable *hashtable,
+                                MVMString *key);
+
+void *MVM_str_hash_fetch(MVMThreadContext *tc,
+                         MVMStrHashTable *hashtable,
+                         MVMString *want);
+
+void MVM_str_hash_delete(MVMThreadContext *tc,
+                         MVMStrHashTable *hashtable,
+                         MVMString *want);
+#endif
 
 /* This is not part of the public API, and subject to change at any point.
  * (possibly in ways that are actually incompatible but won't generate compiler
@@ -403,6 +445,7 @@ enum {
 
 MVMuint64 MVM_str_hash_fsck(MVMThreadContext *tc, MVMStrHashTable *hashtable, MVMuint32 mode);
 
+#if !MVM_ZIG_IMPL
 /* iterators are stored as unsigned values, metadata index plus one.
  * This is clearly an internal implementation detail. Don't cheat.
  */
@@ -606,3 +649,42 @@ MVM_STATIC_INLINE MVMHashNumItems MVM_str_hash_entry_size(MVMThreadContext *tc,
 
     return control ? control->entry_size : 0;
 }
+#else
+/* Iterators are the Zig engine's positions: 0 is the end. */
+
+/* Only call this if MVM_str_hash_at_end returns false. */
+MVMStrHashIterator MVM_str_hash_next_nocheck(MVMThreadContext *tc,
+                                             MVMStrHashTable *hashtable,
+                                             MVMStrHashIterator iterator);
+
+MVMStrHashIterator MVM_str_hash_next(MVMThreadContext *tc,
+                                     MVMStrHashTable *hashtable,
+                                     MVMStrHashIterator iterator);
+
+MVMStrHashIterator MVM_str_hash_first(MVMThreadContext *tc,
+                                      MVMStrHashTable *hashtable);
+
+MVMStrHashIterator MVM_str_hash_start(MVMThreadContext *tc,
+                                      MVMStrHashTable *hashtable);
+
+int MVM_str_hash_at_start(MVMThreadContext *tc,
+                          MVMStrHashTable *hashtable,
+                          MVMStrHashIterator iterator);
+
+/* Only call this if MVM_str_hash_at_end returns false. */
+void *MVM_str_hash_current_nocheck(MVMThreadContext *tc,
+                                   MVMStrHashTable *hashtable,
+                                   MVMStrHashIterator iterator);
+
+/* NULL at the end: part of the de-facto API. */
+void *MVM_str_hash_current(MVMThreadContext *tc,
+                           MVMStrHashTable *hashtable,
+                           MVMStrHashIterator iterator);
+
+MVMHashNumItems MVM_str_hash_count(MVMThreadContext *tc,
+                                   MVMStrHashTable *hashtable);
+
+/* If this returns 0, then you have not yet called MVM_str_hash_build */
+MVMHashNumItems MVM_str_hash_entry_size(MVMThreadContext *tc,
+                                        MVMStrHashTable *hashtable);
+#endif

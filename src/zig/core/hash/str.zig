@@ -102,6 +102,17 @@ inline fn checkStale(tc: *ThreadContext, h: StrTable.Handle, comptime who: []con
     }
 }
 
+// -------------------------------------------------------------- sizing
+
+/// MVM_round_up_log_base2 (`str_hash_table.c:12`, used by the index and
+/// uni tables for their initial size): the log2 of `v` rounded up to a power
+/// of two, with the De Bruijn table's results at the edges: 1 for `v == 1`
+/// and 32 for `v == 0`.
+pub fn roundUpLog2(v: u32) u32 {
+    const w = v -% 1;
+    return if (w == 0) 1 else 1 + @as(u32, std.math.log2_int(u32, w));
+}
+
 // ------------------------------------------------------------ lifetime
 
 /// MVM_str_hash_build (`str_hash_table.c:158-200`).
@@ -283,4 +294,14 @@ pub fn currentNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MV
 pub fn current(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) ?*anyopaque {
     if (iterator.pos == 0) return null;
     return currentNocheck(tc, ht, iterator);
+}
+
+test "roundUpLog2 matches MVM_round_up_log_base2" {
+    // The C's De Bruijn table (`str_hash_table.c:12`) returns 1 for v == 1
+    // and 32 for v == 0 (which it says not to call it with); the tables that
+    // use it only pass sizes.
+    const cases = [_][2]u32{
+        .{ 0, 32 }, .{ 1, 1 }, .{ 2, 1 }, .{ 3, 2 }, .{ 4, 2 }, .{ 5, 3 }, .{ 133, 8 }, .{ 1 << 31, 31 }, .{ (1 << 31) + 1, 32 },
+    };
+    for (cases) |case| try std.testing.expectEqual(case[1], roundUpLog2(case[0]));
 }

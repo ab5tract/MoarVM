@@ -6,4 +6,5 @@
 test {
     _ = @import("test/str_test.zig");
     _ = @import("rng.zig");
+    _ = @import("str.zig");
 }
