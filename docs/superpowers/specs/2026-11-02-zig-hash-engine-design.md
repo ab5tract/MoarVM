@@ -1,7 +1,7 @@
 # Zig hash engine: a tiered string-keyed table and the generic base for the other four
 
 **Date:** 2026-11-02
-**Status:** draft, awaiting builder check and user approval
+**Status:** builder-checked; awaiting user approval
 **Builds on:** Zig port step zero (`docs/superpowers/specs/2026-11-02-zig-port-step0-design.md`, branch `zig-port-step0`): the `[zig]` section of `build/sources.list`, the translate-c `moar` module and its shims, `-Dzig-impl` and `--zig=PATH`. Appendix A of that spec, items 1 and 2, is the origin of this one.
 
 ## 1. Intent
@@ -270,14 +270,19 @@ stale:       u8   volatile, as today
 cur_items:   u32
 ```
 
-followed by the tier's own payload (the tier decides where its entries,
-tags or metadata live relative to the header; the Robin Hood tier may keep
-the C layout with entries before the header). Position of the header within
-the block is the tier's choice; the policy layer reaches it through a tier
-function, so "control pointer" means "pointer to wherever this tier keeps the
-header". The control-only state (built with 0 entries) is a header alone with
-`cur_items == 0` and a tier payload that reports zero capacity; the first
-insert allocates the first rung.
+followed by the tier's own payload. The stored `MVMStrHashTable.table`
+pointer points at this header; the tier decides what lies on either side of
+it (the Robin Hood tier keeps the C layout with entries before the header and
+metadata after it; Small puts tags and entries after it). The control-only
+state (built with 0 entries) is a header alone with `cur_items == 0` and a
+tier payload that reports zero capacity; the first insert allocates the first
+rung.
+
+The `entry_size: u8` field is authoritative for the string, pointer and
+index tables. The fixkey table keeps its own `u16` entry size in its payload,
+because its callers pass sizes up to 1024 (`sizeof(MVMHLLConfig)`,
+`src/moar.c:186`) and `entry_size == 0` is a legitimate mode there; the
+header byte is unused for it.
 
 The control block is opaque to C (§7); the HASH_DEBUG_ITER fields are not
 provided (§8).
@@ -334,9 +339,11 @@ On an insert that the current rung reports as full, the policy layer:
    with `MVM_free_at_safepoint`, `MVM_trycas` the new pointer, `MVM_oops` on a
    lost race.
 
-The Small rung never grows within itself: it has exactly `small_threshold`
-slots, so its first "full" is the migration. Migration is upward only;
-deletes never change rung. The reserved log hook is called by the policy
+The Small rung starts at 8 slots (today's first allocation holds 13) and
+doubles within the rung, 8, 16, 32, up to `small_threshold`; a hash that
+never grows past a handful of keys costs about what it costs today. Only
+when it is full at `small_threshold` slots does an insert migrate. Migration
+is upward only; deletes never change rung. The reserved log hook is called by the policy
 layer on every insert and delete with the entry and the operation, and is a
 comptime no-op in this campaign.
 
@@ -364,8 +371,9 @@ an opaque byte range of `entry_size` beginning with the key:
   as today; `full` is returned instead of inserting when `isFull`.
 - `delete(header, ctx, key, h) bool`.
 - `grow(header, allocator) ?*Header`: in-place or reallocated growth within
-  the rung, or null if the rung cannot grow (Small). Robin Hood implements
-  the metadata-bit trade and doubling here.
+  the rung, or null when the rung is at its ceiling (Small at
+  `small_threshold` slots). Robin Hood implements the metadata-bit trade and
+  doubling here; Small implements doubling up to the threshold.
 - Iteration by position: `first(header) u32`, `next(header, pos) u32`,
   `entryAt(header, pos) *Entry`, `start(header) u32`. Positions are
   `u32`, `0` means end, and the walk visits positions in strictly decreasing
@@ -384,13 +392,15 @@ The policy layer, not the tier, owns `cur_items` and the `stale` checks.
 
 ### 6.1 Small
 
-Fixed capacity `small_threshold` entries. Block: header, a tag array of
-`small_threshold` bytes, then entries. Tag of an entry is the top byte of its
-hash code (cached rapidhash of the string). Lookup: splat the key's tag
-across a `@Vector(small_threshold, u8)` (or chunks of 32 when the threshold
-exceeds what the target vectorises well; the builder decides, measured),
-compare against the tag array for a candidate bitmask, then for each
-candidate the C equality (pointer, grapheme count, substrings). Insert
+Capacity a power of two from 8 up to `small_threshold`, chosen at `init`
+from the expected count and doubled by `grow` (a new block, entries and tags
+copied verbatim, published through the policy layer like any growth).
+Block: header, a tag array of `capacity` bytes, then entries. Tag of an
+entry is the top byte of its hash code (cached rapidhash of the string).
+Lookup: splat the key's tag across a vector and compare against the tag
+array in chunks matching the current capacity (8, 16 or 32 lanes; the
+builder picks the chunking, measured) for a candidate bitmask, then for
+each candidate the C equality (pointer, grapheme count, substrings). Insert
 appends at index `cur_items`. Delete moves the entry and tag at index
 `cur_items - 1` into the hole. Iteration position of index `i` is `i + 1`;
 `first` returns `cur_items`; `next` returns `pos - 1`; `start` returns
@@ -416,7 +426,8 @@ algorithm; later campaigns may replace it.
 **Salt source changes.** The salt is drawn from an engine RNG kept on the
 instance and seeded from `hashSeed`, not from `tc->rand_state`, so hash
 creation and resizes no longer advance the user-visible `nqp::rand`
-sequence. Observable: programs that seed with `nqp::srand` and then create
+sequence. The engine RNG is a Zig-side atomic counter mixed with
+`instance->hashSeed` on each draw (lock-free, no new fields in `instance.h`). Observable: programs that seed with `nqp::srand` and then create
 or grow hashes see a different `rand` sequence than today. The per-process
 `hashSeed` and the cached string hash codes are untouched.
 
@@ -435,8 +446,9 @@ build's config renderer does the same from `-Dzig-impl`). Under
 
 - `str_hash_table.h` keeps the public structs (`MVMStrHashTable`,
   `MVMStrHashIterator`, `MVMStrHashHandle`), keeps `MVM_str_hash_at_end`
-  inline (the `pos == 0` convention is part of the tier interface), and
-  declares `MVMStrHashTableControl` as an incomplete type.
+  inline as the bare `pos == 0` test (its stale read goes, since the control
+  type is incomplete there; every other call keeps its stale checks on the
+  Zig side), and declares `MVMStrHashTableControl` as an incomplete type.
 - `str_hash_table_funcs.h` declares every function of §3.1 as an extern
   function with its current signature, implemented in `str.zig`, instead of
   defining it inline. The pure helpers that the other four tables and other
@@ -452,6 +464,11 @@ microbenchmark measures.
 
 `HASH_DEBUG_ITER` with `MVM_ZIG_IMPL` is a compile error (`#error` in
 `str_hash_table.h`): the Zig engine does not provide `ht_id`/`serial`.
+
+**Makefile dependencies.** Only `[zig]`-listed files reach the Perl
+Makefile's `ZIG_SOURCES` today. Configure extends that list with every file
+under `src/zig/core/hash/` (enumerated at configure time, no `$(wildcard)`),
+so editing a tier module re-runs `zig build zig-objects`.
 
 ## 8. Preserved guarantees
 
@@ -492,9 +509,12 @@ entry counts per table at demolish (bucketed 0, 1-4, 5-16, 17-64, 65-128,
 (`MVMHash`, `HashAttrStore`, others), printed at instance exit under an
 environment variable, hook points `hash_allocate_common`,
 `hash_demolish_internal` and the control-only build. Run the rakudo
-spectest once and the rakudo build once, record the histograms in the plan,
-and choose `small_threshold` from them. The instrumentation is throwaway
-(a scratch branch or a patch kept under `tools/`), not merged.
+spectest once and the rakudo build once and record the histograms in the
+plan. **Decision rule:** `small_threshold` is the smallest of 64, 128 and
+256 that covers at least 95 percent of string-table final sizes counted over
+all callers together; the plan records the coverage of all three. The
+instrumentation is throwaway (a scratch branch or a patch kept under
+`tools/`), not merged.
 
 ## 10. Benchmarks
 
@@ -505,6 +525,10 @@ size and operation, nanoseconds per operation for the C engine and the Zig
 engine and the ratio, for: insert of N fresh keys, lookup hit, lookup miss,
 delete of all keys, full iteration, and for sizes just above the threshold
 the cost of the N-th insert alone (the migration). Three runs, median.
+Both also report memory: the microbenchmark records `allocated_size` per
+table at each ladder size for both engines; the spectest run records peak
+RSS of the process for each engine, so a memory regression is caught
+alongside time.
 
 1. **C-API microbenchmark**: `src/zig/core/hash/bench.zig`, a `zig build
    hash-bench` step that builds an executable linked against the shared
@@ -531,7 +555,9 @@ current algorithm and API (§3.1): pointer keys (`ptr_hash_table`, with
 `foreach`, entries are pointers to stable structs), index (keys are indices
 into a `MVMString **` list, no salt), Unicode (C string keys, no salt).
 Behaviour, including the absence of salts where there is none today, is
-unchanged. These ports come after the string table and are verified by the
+unchanged. The stale/CAS/free-at-safepoint discipline of §4.4 is a `Spec`
+option: on for the string table, off for these four, which today use plain
+`MVM_free` and no CAS (`ptr/fixkey/index/uni_hash_table.c:10`). These ports come after the string table and are verified by the
 stage0 smoke test, `zig build test` and the rakudo build, since they have no
 Raku-visible surface of their own.
 
@@ -549,8 +575,8 @@ Raku-visible surface of their own.
    no new failures against the C-engine baseline.
 5. The §8 guarantees are covered by unit tests in `zig build unit-test`
    (shim-test style, against a real instance).
-6. Both benchmarks exist, run against both engines, and their tables plus the
-   spectest timings are recorded.
+6. Both benchmarks exist, run against both engines, and their tables
+   (time and memory) plus the spectest timings and peak RSS are recorded.
 7. `zig fmt --check`, `perl -c Configure.pl` clean.
 
 ## 13. Observable changes
@@ -575,8 +601,8 @@ Raku-visible surface of their own.
 
 - Exact Zig generics and signatures for `Table`, `Spec` and the tier
   interface, as long as §5's operations and invariants hold.
-- Block layouts of each tier, the vector width strategy in Small, and
-  whether the Small tag uses 8 or 7 bits.
+- Block layouts of each tier, the vector chunking in Small, and whether the
+  Small tag uses 8 or 7 bits.
 - How `drain` and `shallowCopy` are implemented per tier.
 - Depth of `fsck` for each tier.
 - The engine RNG's algorithm (anything seeded from `hashSeed` with
