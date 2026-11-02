@@ -811,7 +811,7 @@ if ($config{os} eq 'mingw32') {
 
 # Object lists are shared with build.zig through build/sources.list.
 {
-    my %sections = read_sources_list('build/sources.list');
+    my %sections = read_sources_list('build/sources.list', defined $args{zig});
     # Split [core] in half (OBJECTS1/OBJECTS2) so that nmake's
     # `$(RM) $(OBJECTS1)` stays under its command-line length limit.
     my @core  = @{ $sections{'core'} };
@@ -1052,11 +1052,15 @@ sub configure {
 }
 
 # Parse build/sources.list: '[section]' headers, one path per line,
-# '#' comments and blank lines ignored.
+# '#' comments and blank lines ignored. The [zig] section lists
+# '<zig file>: <c file> [<c file> ...]' lines; with $apply_zig true the
+# C files named there are removed from their sections and the Zig files
+# are returned under the 'zig_files' key. Without it the section is
+# validated and dropped. Mirrors build/zig/sources.zig.
 sub read_sources_list {
-    my ($file) = @_;
+    my ($file, $apply_zig) = @_;
     open my $fh, '<', $file or hardfail("cannot open $file: $!");
-    my (%sections, $current);
+    my (%sections, $current, @zig);
     while (my $line = <$fh>) {
         $line =~ s/^\s+|\s+$//g;
         next if $line eq '' || $line =~ /^#/;
@@ -1066,9 +1070,19 @@ sub read_sources_list {
             next;
         }
         hardfail("$file: entry '$line' before any [section]") unless defined $current;
+        if ($current eq 'zig') {
+            my ($zig_file, $rest) = $line =~ /^([^:]+):(.*)$/
+                or hardfail("$file: [zig] line '$line' must read '<zig file>: <c file> ...'");
+            $zig_file =~ s/\s+$//;
+            my @replaces = split ' ', $rest;
+            hardfail("$file: [zig] line '$line' names no C file") unless @replaces;
+            push @zig, [ $zig_file, @replaces ];
+            next;
+        }
         push @{ $sections{$current} }, $line;
     }
     close $fh;
+    delete $sections{zig};
     my %known = map { $_ => 1 } qw(core platform-posix jit jit-x64 jit-stub main);
     for my $name (sort keys %sections) {
         hardfail("$file: unknown section [$name]") unless $known{$name};
@@ -1076,6 +1090,22 @@ sub read_sources_list {
     for my $name (qw(core main)) {
         hardfail("$file: section [$name] is missing or empty")
             unless $sections{$name} && @{ $sections{$name} };
+    }
+
+    my %replaced;
+    for my $entry (@zig) {
+        my ($zig_file, @replaces) = @$entry;
+        for my $c (@replaces) {
+            hardfail("$file: [zig] replaces '$c' twice") if $replaced{$c}++;
+            my $found = grep { $_ eq $c } map { @$_ } values %sections;
+            hardfail("$file: [zig] replaces '$c', which no section lists") unless $found;
+        }
+    }
+    if ($apply_zig) {
+        for my $name (keys %sections) {
+            $sections{$name} = [ grep { !$replaced{$_} } @{ $sections{$name} } ];
+        }
+        $sections{zig_files} = [ map { $_->[0] } @zig ];
     }
     return %sections;
 }
