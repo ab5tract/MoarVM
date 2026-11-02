@@ -12,4 +12,5 @@ test {
     _ = @import("test/uni_test.zig");
     _ = @import("rng.zig");
     _ = @import("str.zig");
+    _ = @import("bench.zig");
 }

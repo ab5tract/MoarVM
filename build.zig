@@ -125,13 +125,18 @@ pub fn build(b: *std.Build) void {
         }) });
         unit_step.dependOn(&b.addRunArtifact(t).step);
     }
+    // The hash microbenchmark reads the engine it is timing from here.
+    const bench_opts = b.addOptions();
+    bench_opts.addOption(bool, "zig_impl", opts.zig_impl);
+    const bench_options = bench_opts.createModule();
     if (zig_impl) |impl| {
         if (opts.config_h == null) {
             // Test roots linked against libmoar: the shims, and the hash
-            // engine's string table on real MVMStrings.
+            // engine's string table on real MVMStrings (plus the
+            // microbenchmark's ladder test, hence build_options).
             const roots = [_]struct { []const u8, []const u8, []const std.Build.Module.Import }{
                 .{ "src/zig/moar.zig", "shim-test", &.{} },
-                .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{} },
+                .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{.{ .name = "build_options", .module = bench_options }} },
             };
             for (roots) |root| {
                 const t = zigimpl.addShimTests(b, opts, impl, libmoar, config_h, moar.cflags(b, opts), root[0], root[1], root[2]);
@@ -140,6 +145,19 @@ pub fn build(b: *std.Build) void {
         }
     }
     test_step.dependOn(unit_step);
+
+    // `zig build hash-bench -- <args>`: the string table microbenchmark
+    // against this build's libmoar, Zig engine or C tables as -Dzig-impl
+    // says. With the Zig groups off the `moar` module is still needed for
+    // the benchmark's keys and types, so the translation is set up here too.
+    if (opts.config_h == null) {
+        const bench_impl = zig_impl orelse zigimpl.add(b, opts, .{ .generated = config_h });
+        const bench = zigimpl.addHashBench(b, opts, bench_impl, libmoar, config_h, moar.cflags(b, opts), bench_options);
+        const run = b.addRunArtifact(bench);
+        if (b.args) |args| run.addArgs(args);
+        const bench_step = b.step("hash-bench", "Run the string hash table microbenchmark against this build's engine (args after --: --sizes=, --runs=, --max-size=)");
+        bench_step.dependOn(&run.step);
+    }
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");
     for (tp.all()) |lib| tp_step.dependOn(&lib.step);
