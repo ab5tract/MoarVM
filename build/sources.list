@@ -198,3 +198,8 @@ src/jit/stub.c
 
 [main]
 src/main.c
+
+[zig]
+# <zig file>: <c file> [<c file> ...]  -- the Zig file replaces those C files
+# when the Zig implementations are built (zig build -Dzig-impl=true, the
+# default; perl Configure.pl --zig=PATH). Entries are added by later tasks.
