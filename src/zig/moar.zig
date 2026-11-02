@@ -282,3 +282,18 @@ test "mvm_allocator allocates and frees through MVM_malloc" {
     @memset(buf, 0xAB);
     try std.testing.expectEqual(@as(u8, 0xAB), buf[4095]);
 }
+
+test "trycas swaps pointer slots" {
+    var x: u32 = 0;
+    var y: u32 = 0;
+    var opt: ?*u32 = null;
+    try std.testing.expect(trycas(&opt, @as(?*u32, null), @as(?*u32, &x)));
+    try std.testing.expectEqual(@as(?*u32, &x), opt);
+    try std.testing.expect(!trycas(&opt, @as(?*u32, null), @as(?*u32, &y)));
+    try std.testing.expectEqual(@as(?*u32, &x), opt);
+    var cptr: [*c]u32 = &x;
+    try std.testing.expect(trycas(&cptr, @as([*c]u32, &x), @as([*c]u32, &y)));
+    try std.testing.expect(cptr == &y);
+    try std.testing.expect(!trycas(&cptr, @as([*c]u32, &x), @as([*c]u32, &x)));
+    try std.testing.expect(cptr == &y);
+}
