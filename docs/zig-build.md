@@ -202,24 +202,27 @@ their spreads, and what each change did, are in
 first written is measured in `2026-11-02-zig-hash-engine.md`). The
 scoreboard is the nqp-level harness `tools/bench/hash-bench.nqp`
 (`hash-bench.sh --nqp`), read from interleaved runs on the same binaries,
-Zig time over C time. Both engines built with the defaults, so with LTO
-(the re-run after LTO became the default; the per-cell tables are in
+Zig time over C time, both engines built the same way: with LTO (the
+default) and with `-Dlto=false`, from the same interleaved rounds after
+LTO became the default (the per-cell tables are in
 `traces/llm/bench/tuning-lto-default-nqp.md`):
 
-| Operation | Small (16-64 entries) | Robin Hood (65-16384 entries) |
-|---|---|---|
-| insert | 0.36-0.44 | 0.75-1.03 |
-| lookup hit | 0.75-0.92 | 0.95-1.03 |
-| lookup miss | 0.74-0.93 | 0.96-0.98 |
-| delete | 0.74-0.95 | 0.95-0.97 |
-| iterate | 0.56-0.65 | 1.02-1.04 |
-| N-th insert | 0.24-0.62 | 1.06-1.16 (128-16384, inside the C's spread) |
+| Operation | Small, LTO | Small, no LTO | Robin Hood, LTO | Robin Hood, no LTO |
+|---|---|---|---|---|
+| insert | 0.36-0.44 | 0.39-0.46 | 0.75-1.03 | 0.77-1.05 |
+| lookup hit | 0.75-0.92 | 0.84-1.07 | 0.95-1.03 | 0.99-1.08 |
+| lookup miss | 0.74-0.93 | 0.78-1.13 | 0.96-0.98 | 1.02-1.03 |
+| delete | 0.74-0.95 | 0.75-1.05 | 0.95-0.97 | 0.97-0.99 |
+| iterate | 0.56-0.65 | 0.64-0.72 | 1.02-1.04 | 1.03-1.07 |
+| N-th insert | 0.24-0.62 | 0.26-0.70 | 1.06-1.16 | 1.00-1.10 |
 
-Against a C engine built without LTO the default Zig build is faster
-still (Robin Hood lookups and delete 0.90-0.97, iterate 0.95-0.98). With
-`-Dlto=false` on both sides (the campaign's own ladder) the Robin Hood
-lookups sit at 0.98-1.08, iterate at 1.02-1.07 and Small lookup miss at
-63-64 entries at 1.08-1.13, the only cells over the 5 percent line.
+Small is 16-64 entries, Robin Hood 65-16384 (N-th insert 128-16384; the
+Robin Hood N-th insert ranges sit inside the C's own spread). Without LTO
+five cells miss the 5 percent line in that run: the Small lookup miss at
+63 and 64 entries (1.10 and 1.13), insert at 1024 (1.05) and the N-th
+insert at 128 and 256 (1.10 and 1.09); with LTO every cell passes. Against a C engine built without LTO the default Zig
+build reads lower still (Robin Hood lookups and delete 0.90-0.97, iterate
+0.95-0.98).
 
 The Small tier allocates 0.29-0.30 of the C engine's block. The insert that
 migrates a table from Small to Robin Hood, the 65th, costs 0.54 of the C
