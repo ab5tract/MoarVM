@@ -3,4 +3,5 @@
 //! `export fn`s are emitted; the build checks this.
 comptime {
     _ = @import("platform/time.zig");
+    _ = @import("core/intcache.zig");
 }

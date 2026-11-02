@@ -204,3 +204,4 @@ src/main.c
 # when the Zig implementations are built (zig build -Dzig-impl=true, the
 # default; perl Configure.pl --zig=PATH).
 src/zig/platform/time.zig: src/platform/posix/time.c
+src/zig/core/intcache.zig: src/core/intcache.c
