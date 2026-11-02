@@ -32,7 +32,7 @@ for a in "$@"; do
         *) echo "hash-bench.sh: unknown argument $a" >&2; exit 2 ;;
     esac
 done
-if [ -n "$raku_c" ] && [ -z "$raku_zig" ] || [ -z "$raku_c" ] && [ -n "$raku_zig" ]; then
+if { [ -n "$raku_c" ] && [ -z "$raku_zig" ]; } || { [ -z "$raku_c" ] && [ -n "$raku_zig" ]; }; then
     echo "hash-bench.sh: --raku-c and --raku-zig go together" >&2
     exit 2
 fi

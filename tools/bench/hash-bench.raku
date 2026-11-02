@@ -4,7 +4,8 @@
 #
 # Per size N and run: insert N fresh keys (%h{$k} = $v), lookup hit
 # (%h{$k}:exists for N present keys), lookup miss (N keys never inserted),
-# full iteration (for %h.kv), delete N (%h{$k}:delete). Small sizes are
+# full iteration (for %h.kv), delete N (%h{$k}:delete), and for sizes T and
+# T+1 (T = --threshold) the N-th insert alone into hashes of N-1. Small sizes are
 # measured over a batch of (65536 div N) hashes handled in turn inside one
 # timed region, as the microbenchmark does, so a clock read is amortised
 # over at least 65536 operations; the figure is nanoseconds per operation.
@@ -85,6 +86,21 @@ sub MAIN(Str :$engine = 'raku', Str :$sizes, Int :$runs = 3, Int :$threshold = 6
         my $rss = maxrss-bytes() - $rss-before;
         for (insert => @insert, lookup_hit => @hit, lookup_miss => @missed, delete => @delete, iterate => @iterate) -> $op {
             say join "\t", $engine, $n, $op.key, median($op.value).fmt('%.2f'), $rss;
+        }
+        if $n == $threshold || $n == $threshold + 1 {
+            # The N-th insert alone: hashes of N-1 keys, then one insert each.
+            my @nth;
+            my @first = @keys[^($n - 1)];
+            my $last = @keys[$n - 1];
+            for ^$runs {
+                my @tables = Hash.new xx $reps;
+                for @tables -> %h { for @first -> $k { %h{$k} = 1 } }
+                my $t0 = now;
+                for @tables -> %h { %h{$last} = 1 }
+                @nth.push: (now - $t0) * 1e9 / $reps;
+                die "size $n: a hash has {@tables[0].elems} keys after the N-th insert" unless @tables.all.elems == $n;
+            }
+            say join "\t", $engine, $n, 'insert_nth', median(@nth).fmt('%.2f'), $rss;
         }
     }
 }
