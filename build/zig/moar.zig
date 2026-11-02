@@ -40,23 +40,49 @@ fn gnu11(b: *std.Build, flags: []const []const u8) []const []const u8 {
     return out;
 }
 
-/// CINCLUDES from the generated Makefile.
+/// CINCLUDES from the generated Makefile, in order.
+pub const include_paths = [_][]const u8{
+    "src",
+    "3rdparty/libuv/include",
+    "3rdparty/libuv/src",
+    "3rdparty/libtommath",
+    "3rdparty/dyncall/dynload",
+    "3rdparty/dyncall/dyncall",
+    "3rdparty/dyncall/dyncallback",
+    "3rdparty/mimalloc/include",
+    "3rdparty/mimalloc/src",
+    "3rdparty/sha1",
+};
+pub const system_include_paths = [_][]const u8{
+    "3rdparty/mimalloc",
+    "3rdparty/zmij",
+    "3rdparty/dynasm",
+    "3rdparty/cmp",
+    "3rdparty",
+};
+
 pub fn addIncludes(b: *std.Build, mod: *std.Build.Module) void {
-    mod.addIncludePath(b.path("src"));
-    mod.addIncludePath(b.path("3rdparty/libuv/include"));
-    mod.addIncludePath(b.path("3rdparty/libuv/src"));
-    mod.addIncludePath(b.path("3rdparty/libtommath"));
-    mod.addIncludePath(b.path("3rdparty/dyncall/dynload"));
-    mod.addIncludePath(b.path("3rdparty/dyncall/dyncall"));
-    mod.addIncludePath(b.path("3rdparty/dyncall/dyncallback"));
-    mod.addIncludePath(b.path("3rdparty/mimalloc/include"));
-    mod.addIncludePath(b.path("3rdparty/mimalloc/src"));
-    mod.addIncludePath(b.path("3rdparty/sha1"));
-    mod.addSystemIncludePath(b.path("3rdparty/mimalloc"));
-    mod.addSystemIncludePath(b.path("3rdparty/zmij"));
-    mod.addSystemIncludePath(b.path("3rdparty/dynasm"));
-    mod.addSystemIncludePath(b.path("3rdparty/cmp"));
-    mod.addSystemIncludePath(b.path("3rdparty"));
+    for (include_paths) |p| mod.addIncludePath(b.path(p));
+    for (system_include_paths) |p| mod.addSystemIncludePath(b.path(p));
+}
+
+pub const Define = struct { name: []const u8, value: ?[]const u8 };
+
+/// The -D flags a libmoar object is compiled with, as name/value pairs for
+/// translate-c. Keep in step with `cflags` and thirdparty.base_cflags.
+pub fn defines(b: *std.Build, opts: Options) []const Define {
+    var out: std.ArrayList(Define) = .empty;
+    out.appendSlice(b.allocator, &.{
+        .{ .name = "_REENTRANT", .value = null },
+        .{ .name = "_FILE_OFFSET_BITS", .value = "64" },
+        .{ .name = "_GNU_SOURCE", .value = null },
+        .{ .name = "MVM_TRACING", .value = "0" },
+        .{ .name = "MVM_CGOTO", .value = "1" },
+        .{ .name = "MVM_HEAPSNAPSHOT_FORMAT", .value = b.fmt("{d}", .{heapSnapshotFormat(opts)}) },
+        .{ .name = "MVM_BUILD_SHARED", .value = null },
+    }) catch @panic("OOM");
+    if (opts.optimize != .Debug) out.append(b.allocator, .{ .name = "NDEBUG", .value = null }) catch @panic("OOM");
+    return out.items;
 }
 
 pub const LibInputs = struct {
@@ -69,6 +95,8 @@ pub const LibInputs = struct {
     config_c: std.Build.LazyPath,
     tp: thirdparty.Libs,
     jit: ?jit.Jit,
+    /// The Zig implementations object (build/zig/zigimpl.zig), or null with -Dzig-impl=false.
+    zig_object: ?*std.Build.Step.Compile,
 };
 
 pub fn addLibmoar(b: *std.Build, in: LibInputs) *std.Build.Step.Compile {
@@ -108,6 +136,7 @@ pub fn addLibmoar(b: *std.Build, in: LibInputs) *std.Build.Step.Compile {
     if (in.opts.mimalloc)
         mod.addCSourceFile(.{ .file = b.path("3rdparty/mimalloc/src/static.c"), .flags = flags });
     mod.addCSourceFile(.{ .file = in.config_c, .flags = flags });
+    if (in.zig_object) |obj| mod.addObject(obj);
 
     for (in.tp.all()) |tp_lib| mod.linkLibrary(tp_lib);
     for (in.facts.system_libs) |name| mod.linkSystemLibrary(name, .{});

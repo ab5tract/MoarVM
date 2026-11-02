@@ -7,6 +7,12 @@ pub const Options = struct {
     static: bool,
     mimalloc: bool,
     zstd: bool,
+    /// Compile the Zig implementations listed in build/sources.list's [zig]
+    /// section and drop the C files they replace.
+    zig_impl: bool,
+    /// Use an existing <dir>/gen/config.h (the Perl build's) instead of the
+    /// generated one. Only the `zig-objects` step is supported in this mode.
+    config_h: ?[]const u8,
 };
 
 pub fn parse(b: *std.Build) Options {
@@ -25,6 +31,11 @@ pub fn parse(b: *std.Build) Options {
         .{@tagName(target.result.cpu.arch)},
     );
 
+    const config_h = b.option([]const u8, "config-h", "Path to an existing gen/config.h to build the Zig implementations against (the Perl build passes src/gen/config.h); only `zig build zig-objects` is supported with it");
+    if (config_h) |p| {
+        if (!std.mem.endsWith(u8, p, "gen/config.h")) std.process.fatal("-Dconfig-h must end in gen/config.h, got {s}", .{p});
+    }
+
     return .{
         .target = target,
         .optimize = optimize,
@@ -32,5 +43,7 @@ pub fn parse(b: *std.Build) Options {
         .static = b.option(bool, "static", "Build libmoar as a static library (default: shared)") orelse false,
         .mimalloc = b.option(bool, "mimalloc", "Use the bundled mimalloc allocator (default true)") orelse true,
         .zstd = b.option(bool, "zstd", "Link the system libzstd and use heap snapshot format 3 (default true)") orelse true,
+        .zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true,
+        .config_h = config_h,
     };
 }

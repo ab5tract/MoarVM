@@ -8,25 +8,38 @@ const thirdparty = @import("build/zig/thirdparty.zig");
 const jit = @import("build/zig/jit.zig");
 const moar = @import("build/zig/moar.zig");
 const install = @import("build/zig/install.zig");
+const zigimpl = @import("build/zig/zigimpl.zig");
 
 pub fn build(b: *std.Build) void {
     const opts = options.parse(b);
     // The Perl build writes src/gen/config.h next to the sources. A quote
     // include searches the including file's directory first, so that file
-    // would silently shadow the config.h this build generates.
-    if (b.build_root.handle.access(b.graph.io, "src/gen/config.h", .{})) |_| {
-        std.process.fatal(
-            "src/gen/config.h exists (written by perl Configure.pl) and would shadow the zig-generated config.h.\n" ++
-                "Remove the Perl-generated files first:  rm -f src/gen/config.h src/gen/config.c src/gen/config.o\n" ++
-                "(perl Configure.pl recreates them when you go back to the Perl build.)",
-            .{},
-        );
-    } else |_| {}
+    // would silently shadow the config.h this build generates. With
+    // -Dconfig-h that file is the intended input, so the check is skipped.
+    if (opts.config_h == null) {
+        if (b.build_root.handle.access(b.graph.io, "src/gen/config.h", .{})) |_| {
+            std.process.fatal(
+                "src/gen/config.h exists (written by perl Configure.pl) and would shadow the zig-generated config.h.\n" ++
+                    "Remove the Perl-generated files first:  rm -f src/gen/config.h src/gen/config.c src/gen/config.o\n" ++
+                    "(perl Configure.pl recreates them when you go back to the Perl build.)",
+                .{},
+            );
+        } else |_| {}
+    }
     const facts = platform.facts(&opts.target.result);
     const ver = version.detect(b);
-    const lists = sources.load(b, "build/sources.list");
+    const raw_lists = sources.load(b, "build/sources.list");
+    const lists = if (opts.zig_impl) sources.applyZig(b.allocator, raw_lists) catch |err|
+        std.process.fatal("cannot apply the [zig] section: {t}", .{err}) else raw_lists;
+    if (opts.zig_impl) zigimpl.checkRootImports(b, lists);
 
     const config_h = config.configHeader(b, .{ .opts = opts, .facts = facts, .version = ver });
+
+    const zig_impl: ?zigimpl.Impl = if (opts.zig_impl) zigimpl.add(b, opts, if (opts.config_h) |p|
+        .{ .existing = zigimpl.configDir(b, p) }
+    else
+        .{ .generated = config_h }) else null;
+    if (zig_impl) |impl| _ = zigimpl.addObjectsStep(b, impl);
 
     const tp = thirdparty.addAll(b, opts, facts);
 
@@ -47,6 +60,7 @@ pub fn build(b: *std.Build) void {
         .config_c = config_c,
         .tp = tp,
         .jit = jit_build,
+        .zig_object = if (zig_impl) |impl| impl.object else null,
     });
     const exe = moar.addMoar(b, opts, libmoar, lists, config_h, paths);
     b.installArtifact(libmoar);
@@ -104,7 +118,7 @@ pub fn build(b: *std.Build) void {
 
     // Unit tests of the build helpers; `test` runs them first.
     const unit_step = b.step("unit-test", "Run the unit tests of the build helpers");
-    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig", "tools/zig/sexpr.zig", "tools/zig/oplist.zig", "tools/zig/expr_ops.zig", "tools/zig/expr_template_compiler.zig", "tools/zig/tiler_table_generator.zig" }) |path| {
+    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig", "build/zig/fixup_translated.zig", "build/zig/zigimpl.zig", "tools/zig/sexpr.zig", "tools/zig/oplist.zig", "tools/zig/expr_ops.zig", "tools/zig/expr_template_compiler.zig", "tools/zig/tiler_table_generator.zig" }) |path| {
         const t = b.addTest(.{ .root_module = b.createModule(.{
             .root_source_file = b.path(path),
             .target = b.graph.host,
