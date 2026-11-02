@@ -251,15 +251,19 @@ the benchmark, Small lookups at 63-64 entries cost 1.09-1.13 of the C time,
 a Small delete there 1.23, Robin Hood lookups up to 1.10 and a Robin Hood
 iterate 1.32-1.33 (two calls per element).
 
-At the Raku level (a `Hash` on a rakudo built on each engine, five
-invocations each) every operation runs in 0.66-1.07 of the C engine's time,
-except the 65th insert, which costs 3.75 times the C engine's ordinary
-insert there (4.29 before the tuning). The rakudo spectest passes on both
-engines with no new failure. The runs (C first, then Zig) drifted over
-the session, so the Zig engine's 0.89 of the C's wall time reads as
-parity. Its peak RSS measured 3 percent above the C engine in this
-campaign's runs, the Zig runs climbing 686 to 725 MB across the session
-while the C runs stayed flat; not yet investigated.
+At the Raku level (a `Hash` on a rakudo built on each engine, eleven
+invocations each, both engines the default LTO build) the operations run
+in 0.73-1.04 of the C engine's time, except the 65th insert, which costs
+2.84 times the C engine's ordinary insert there (4.29 before the tuning),
+and four insert and lookup cells (insert at 63, 256 and 65536 entries,
+lookup hit at 65) that read 1.18-1.52 because they are bimodal between
+invocations on both engines: a spesh timing race in the benchmark loop,
+which blocking spesh removes (the Zig engine then reads about 0.72 at 63)
+and which builds without LTO did not hit in six reps. The rakudo spectest
+passes on both engines with no new failure; in six interleaved runs on the
+default builds the Zig engine's wall time is 0.99 of the C's and its peak
+RSS 0.98 (the campaign's own sequential runs had read 0.89 with session
+drift and RSS 3 percent above).
 
 Observable changes with the Zig engine:
 
