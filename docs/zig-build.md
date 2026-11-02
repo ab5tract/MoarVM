@@ -149,21 +149,28 @@ define the C files compile as before.
 
 The exports are separate functions in libmoar, so without LTO every call
 from the C code (the `MVMHash` REPR, the interpreter, spesh) is a call
-through the PLT that the C compiler cannot inline. `-Dlto` (`--zig-lto` in
-the Perl build) links libmoar and the Zig object with full LTO and gives the
-exports protected visibility: they stay in libmoar's dynamic symbol table
-(`nm -D`), so the microbenchmark and anything else outside libmoar still
-link against them, but calls from inside libmoar bind to them locally,
-which is what lets the LTO link inline them (default-visibility symbols are
-interposable, and LTO keeps calling them through the PLT).
+through the PLT that the C compiler cannot inline. `-Dlto` (`--zig-lto`
+with `--cc=zig` in the Perl build) links libmoar and the Zig object with
+full LTO and gives the exports protected visibility: they stay in libmoar's
+dynamic symbol table (`nm -D`), so the microbenchmark and anything else
+outside libmoar still link against them, but calls from inside libmoar bind
+to them locally (default-visibility symbols are interposable, and LTO keeps
+calling them through the PLT). With that binding the LTO link inlines the
+iteration exports (`next`, `current_nocheck`) into their callers, and a
+Robin Hood iterate at the nqp level goes from 1.02-1.05 of the C engine's
+time to 0.97-0.98 (1.00-1.02 against a C build that also uses LTO). The
+lookup and delete exports are one large function each, so LTO mostly calls
+them directly rather than inlining them: no PLT, but still a call.
 `tools/check-lto-binding.sh <libmoar.so>` shows the binding: PLT calls to
 `MVM_str_hash_*` (0 under LTO) and the call sites left of
-`MVM_str_hash_fetch_nocheck` (0 once it is inlined everywhere). Without
-`-Dlto` the exports have default visibility and the link is unchanged. The
-LTO link takes about three times as long (about a minute against 20 seconds
-for `zig build install`), and the whole C side gains from it too, so the
-option is off by default. gcc builds cannot use it: gcc cannot link the
-Zig object's LLVM bitcode, so `--zig-lto` requires `--cc=zig`.
+`MVM_str_hash_fetch_nocheck`. Without `-Dlto` the exports have default
+visibility and the link is unchanged. LTO also speeds up the C side (the
+C engine's hash operations at the nqp level run in 0.87-0.98 of their
+time without it), but the link takes about three times as long (about a
+minute against 20 seconds for `zig build install`), so the option is off
+by default. gcc builds cannot use it: gcc cannot link the Zig object's
+LLVM bitcode, so `--zig-lto` requires `--cc=zig`, and Configure.pl refuses
+it otherwise.
 
 Two benchmarks compare the engines, both run by `tools/bench/hash-bench.sh`,
 which writes `traces/llm/bench/hash-<date>.md` with the raw TSVs beside it:
@@ -178,28 +185,61 @@ the threshold, bytes allocated); the Raku script does the same on a `Hash`
 and reports the peak-RSS delta. The script removes the Perl build's
 `src/gen/config.{h,c,o}` before it starts.
 
-Measured on 2026-11-02 (the full tables, and the rakudo spectest timings,
-are in `traces/llm/plans/2026-11-02-zig-hash-engine.md`, "Benchmark
-results"). At the Raku level (a `Hash` on a rakudo built on each engine)
-small hashes of up to 64 entries run in 0.80-1.04 of the C engine's time
-on every operation (insert 0.80-0.83, lookup hit 0.87-0.97, delete
-0.83-1.01; up to 1.23 at size 4), and the 64th insert alone costs 0.76.
-Large hashes run in 0.92-1.17 of the C engine's time (insert 1.61 at
-65536 entries, iterate 0.66 at a million), and the 65th insert, which
-migrates the table to Robin Hood, costs 4.29 times the C engine's ordinary
-insert. At the C API the Small tier inserts in 0.29-0.35 of the C time
-(0.98 at size 4), iterates in 0.69-0.74 and allocates under a third of the
-C block (0.61 at size 4), but a lookup hit costs 1.43-1.94 and a delete
-2.90-3.37 times the C engine; the Robin Hood tier, at 128 entries and up,
-costs 1.14-1.79 times the C time on lookup, delete and iterate, and
-0.64-1.17 on insert (at 65, just past the migration, a hit is 1.03 and a
-miss 0.88). Part of the measured small-tier deficit is the call boundary
-itself: the C column is inlined into the benchmark shim, while every Zig
-operation crosses from the C-shaped wrapper into libmoar's exported
-function, a boundary production callers of the Zig engine pay too. So at
-the C API small-tier lookup hit and delete, and large-hash lookup, delete
-and iterate, are currently slower than the C engine; tuning them is a
-follow-up campaign and nothing in the engine is tuned yet.
+Measured on 2026-11-02 after the tuning campaign (the full tables with
+their spreads, and what each change did, are in
+`traces/llm/plans/2026-11-02-zig-hash-tuning.md`, "Results"; the engine as
+first written is measured in `2026-11-02-zig-hash-engine.md`). The
+scoreboard is the nqp-level harness `tools/bench/hash-bench.nqp`
+(`hash-bench.sh --nqp`), read from interleaved runs on the same binaries,
+Zig time over C time:
+
+| Operation | Small (16-64 entries) | Robin Hood (65-16384 entries) |
+|---|---|---|
+| insert | 0.38-0.45 | 0.71-1.00 |
+| lookup hit | 0.82-1.02 | 0.98-1.02 |
+| lookup miss | 0.79-1.08 | 1.02-1.03 |
+| delete | 0.76-1.03 | 0.95-0.99 |
+| iterate | 0.67-0.71 | 1.02-1.07 (0.97-0.98 with `-Dlto`) |
+| N-th insert | 0.26-0.69 | 0.76-1.13 (128-16384) |
+
+The Small tier allocates 0.29-0.30 of the C engine's block. The insert that
+migrates a table from Small to Robin Hood, the 65th, costs 0.54 of the C
+engine's own resize at its 97th insert (about 1050 against 1940 ns). The
+migration builds the Robin Hood block at the size the C engine uses for 65
+entries (128 slots) and moves the entries in without looking them up, so
+the Zig engine, like the C, then resizes at the 97th insert, at the C's
+cost.
+
+What the tuning changed: the Small tier's scan returns a plain index, loads
+the entry base once and compares an 8-byte key in one load. The Robin Hood
+tier does the same key test and moves 16-byte entries inline instead of
+byte by byte. Each string-table export runs the whole lookup in one
+function, with the cached hash read inline as the C header does. The
+policy layer reads the tier, set and stale bytes in one load and switches
+on the tier directly for the standard tier set. The migration is sized and
+filled as above. Two further attempts did not move their targets and were
+reverted: an extra cached-hash test in key equality, and forcing the Small
+scan inline at every capacity.
+
+Still above the line at the nqp level: a Small lookup miss at 63 entries
+(1.08: a miss scans all 64 tags, and the few false tag matches reach the
+out-of-line string compare), and the N-th insert into a Robin Hood table
+of 128 and 256 entries (1.13 and 1.11, about 3.5 ns on an insert into a
+cold table; no single cause was found). A miss at 64 entries passes only
+marginally (1.05). At the C API (`zig build hash-bench`), where every Zig
+call crosses from the benchmark into libmoar while the C is inlined into
+the benchmark, Small lookups at 63-64 entries cost 1.09-1.13 of the C time,
+a Small delete there 1.23, Robin Hood lookups up to 1.10 and a Robin Hood
+iterate 1.32-1.33 (two calls per element).
+
+At the Raku level (a `Hash` on a rakudo built on each engine, five
+invocations each) every operation runs in 0.66-1.07 of the C engine's time,
+except the 65th insert, which costs 3.75 times the C engine's ordinary
+insert there (4.29 before the tuning). The rakudo spectest passes on both
+engines with no new failure, and its wall time on the Zig engine is not
+above the C's. Its peak RSS measured 3 percent above the C engine in this
+campaign's runs, the Zig runs climbing 686 to 725 MB across the session
+while the C runs stayed flat; not yet investigated.
 
 Observable changes with the Zig engine:
 
@@ -212,7 +252,8 @@ Observable changes with the Zig engine:
 - Hash creation and growth no longer consume the user-visible RNG (the
   Robin Hood salt comes from the engine's own generator, `rng.zig`).
 - `HASH_DEBUG_ITER` is unavailable (`#error` at compile time).
-- Large hashes may be slower by the measured ratio above.
+- Some operations are still slower than with the C engine, by the
+  measured ratios above.
 
 ## Not yet supported
 
