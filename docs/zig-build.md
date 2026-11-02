@@ -164,13 +164,13 @@ on every operation (insert 0.80-0.83, lookup hit 0.87-0.97, delete
 engine's time (insert 1.61 at 65536 entries, iterate 0.66 at a million),
 and the 65th insert, which migrates the table to Robin Hood, costs 4.29
 times the C engine's ordinary insert. At the C API the Small tier inserts
-in 0.3-0.35 of the C time, iterates in 0.7 and allocates a third to a half
-of the C block, but a lookup hit costs 1.4-1.9 and a delete 2.9-3.4 times
-the C engine, and the Robin Hood tier is 1.1-1.8 times slower than the C
-engine on every operation. So at the C API small-tier lookup hit and
-delete, and large hashes across the board, are currently slower than the C
-engine; tuning them is a follow-up campaign and nothing in the engine is
-tuned yet.
+in 0.3-0.35 of the C time, iterates in 0.7 and allocates under a third of
+the C block (0.61 at size 4), but a lookup hit costs 1.4-1.9 and a delete
+2.9-3.4 times the C engine; the Robin Hood tier costs 1.1-1.8 times the C
+time on lookup, delete and iterate, and 0.64-1.17 on insert. So at the C
+API small-tier lookup hit and delete, and large-hash lookup, delete and
+iterate, are currently slower than the C engine; tuning them is a
+follow-up campaign and nothing in the engine is tuned yet.
 
 Observable changes with the Zig engine:
 
