@@ -21,7 +21,7 @@ Options (`zig build --help` lists them):
 | `-Dzstd=` | `true` | link the system libzstd for heap snapshot format 3 |
 | `-Dnqp-stage0=` | `../src/vm/moar/stage0` | where `zig build test` finds nqp's stage0 bytecode |
 | `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
-| `-Dlto=` | `false` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the hash engine's exports are inlined into their C callers; the link takes about three times as long (see "Hash engine") |
+| `-Dlto=` | `false` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; the link takes about three times as long (see "Hash engine") |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 

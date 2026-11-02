@@ -1400,7 +1400,8 @@ compiler.
 
 With C<--zig> and C<--cc=zig>: build libmoar with full link-time
 optimisation (C<-flto>) together with the Zig object (C<-Dlto=true>), so the
-Zig implementations' exports can be inlined into their C callers. The link
+LTO link binds the Zig implementations' exports locally and can inline the
+small ones (iteration); the lookup exports are still called. The link
 takes about three times as long. Refused with any other compiler: gcc cannot
 link the LLVM bitcode object.
 

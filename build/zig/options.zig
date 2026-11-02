@@ -18,7 +18,8 @@ pub const Options = struct {
     /// `perf report`/`perf annotate` without changing the generated code.
     strip: ?bool,
     /// Full link-time optimisation for libmoar and the moar_zig object, so
-    /// the hash engine's exports can be inlined into their C callers.
+    /// the LTO link binds the hash engine's exports locally and can inline
+    /// the small ones (iteration); the lookup exports are still called.
     lto: bool,
 };
 

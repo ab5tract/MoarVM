@@ -13,8 +13,11 @@
 #                                            stays while it is exported)
 #   call sites of MVM_str_hash_fetch_nocheck   calls or tail jumps to its
 #                                            entry, through the PLT or
-#                                            direct (0 once LTO has inlined
-#                                            it into every caller)
+#                                            direct (5 in the current LTO
+#                                            build: the lookup exports are
+#                                            called, only the iteration
+#                                            exports inline; see the tuning
+#                                            plan, Task 9)
 set -eu
 
 if [ $# -ne 1 ] || [ ! -f "$1" ]; then
