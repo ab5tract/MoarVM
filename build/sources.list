@@ -206,3 +206,4 @@ src/main.c
 src/zig/platform/time.zig: src/platform/posix/time.c
 src/zig/core/intcache.zig: src/core/intcache.c
 src/zig/core/hash/str_exports.zig: src/core/str_hash_table.c
+src/zig/core/hash/ptr_exports.zig: src/core/ptr_hash_table.c

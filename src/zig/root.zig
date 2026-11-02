@@ -5,4 +5,5 @@ comptime {
     _ = @import("platform/time.zig");
     _ = @import("core/intcache.zig");
     _ = @import("core/hash/str_exports.zig");
+    _ = @import("core/hash/ptr_exports.zig");
 }

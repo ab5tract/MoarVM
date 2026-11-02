@@ -4,6 +4,7 @@
  * load factor, or PTR_MIN_SIZE_BASE_2 or MVM_HASH_INITIAL_BITS_IN_METADATA,
  * and test with assertions enabled. The current choices permit certain
  * optimisation assumptions in parts of the code. */
+#if !MVM_ZIG_IMPL
 #define MVM_PTR_HASH_LOAD_FACTOR 0.75
 MVM_STATIC_INLINE MVMuint32 MVM_ptr_hash_official_size(const struct MVMPtrHashTableControl *control) {
     return 1 << (MVMuint32)control->official_size_log2;
@@ -27,6 +28,7 @@ MVM_STATIC_INLINE MVMuint8 *MVM_ptr_hash_metadata(const struct MVMPtrHashTableCo
 MVM_STATIC_INLINE MVMuint8 *MVM_ptr_hash_entries(const struct MVMPtrHashTableControl *control) {
     return (MVMuint8 *) control - sizeof(struct MVMPtrHashEntry);
 }
+#endif
 
 /* Frees the entire contents of the hash, leaving you just the hashtable itself,
    which you allocated (heap, stack, inside another struct, wherever) */
@@ -37,6 +39,7 @@ void MVM_ptr_hash_demolish(MVMThreadContext *tc, MVMPtrHashTable *hashtable);
  * Doesn't allocate memory - you can embed the struct within a larger struct if
  * you wish.
  */
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE void MVM_ptr_hash_build(MVMThreadContext *tc, MVMPtrHashTable *hashtable) {
     hashtable->table = NULL;
 }
@@ -46,6 +49,12 @@ MVM_STATIC_INLINE int MVM_ptr_hash_is_empty(MVMThreadContext *tc,
     struct MVMPtrHashTableControl *control = hashtable->table;
     return !control || control->cur_items == 0;
 }
+#else
+void MVM_ptr_hash_build(MVMThreadContext *tc, MVMPtrHashTable *hashtable);
+
+int MVM_ptr_hash_is_empty(MVMThreadContext *tc,
+                          MVMPtrHashTable *hashtable);
+#endif
 
 /* Fibonacci bucket determination.
  * pointers are not under the control of the external (ab)user, so we don't need
@@ -73,6 +82,7 @@ MVM_STATIC_INLINE MVMuint32 MVM_ptr_hash_code(const void *ptr) {
 }
 #endif
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE struct MVM_hash_loop_state
 MVM_ptr_hash_create_loop_state(struct MVMPtrHashTableControl *control,
                                const void *key) {
@@ -97,6 +107,7 @@ MVM_ptr_hash_create_loop_state(struct MVMPtrHashTableControl *control,
     retval.metadata = MVM_ptr_hash_metadata(control) + bucket;
     return retval;
 }
+#endif
 
 /* UNCONDITIONALLY creates a new hash entry with the given key and value.
  * Doesn't check if the key already exists. Use with care. */
@@ -105,6 +116,7 @@ void MVM_ptr_hash_insert(MVMThreadContext *tc,
                          const void *key,
                          uintptr_t value);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE struct MVMPtrHashEntry *MVM_ptr_hash_fetch(MVMThreadContext *tc,
                                                              MVMPtrHashTable *hashtable,
                                                              const void *key) {
@@ -140,6 +152,11 @@ MVM_STATIC_INLINE struct MVMPtrHashEntry *MVM_ptr_hash_fetch(MVMThreadContext *t
         assert(ls.metadata < MVM_ptr_hash_metadata(control) + MVM_ptr_hash_official_size(control) + 256);
     }
 }
+#else
+struct MVMPtrHashEntry *MVM_ptr_hash_fetch(MVMThreadContext *tc,
+                                           MVMPtrHashTable *hashtable,
+                                           const void *key);
+#endif
 
 struct MVMPtrHashEntry *MVM_ptr_hash_lvalue_fetch(MVMThreadContext *tc,
                                                   MVMPtrHashTable *hashtable,
