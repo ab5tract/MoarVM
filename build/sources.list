@@ -209,3 +209,4 @@ src/zig/core/hash/str_exports.zig: src/core/str_hash_table.c
 src/zig/core/hash/ptr_exports.zig: src/core/ptr_hash_table.c
 src/zig/core/hash/fixkey_exports.zig: src/core/fixkey_hash_table.c
 src/zig/core/hash/index_exports.zig: src/core/index_hash_table.c
+src/zig/core/hash/uni_exports.zig: src/core/uni_hash_table.c

@@ -8,4 +8,5 @@ comptime {
     _ = @import("core/hash/ptr_exports.zig");
     _ = @import("core/hash/fixkey_exports.zig");
     _ = @import("core/hash/index_exports.zig");
+    _ = @import("core/hash/uni_exports.zig");
 }

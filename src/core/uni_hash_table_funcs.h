@@ -4,6 +4,7 @@
  * load factor, or UNI_MIN_SIZE_BASE_2 or MVM_HASH_INITIAL_BITS_IN_METADATA,
  * and test with assertions enabled. The current choices permit certain
  * optimisation assumptions in parts of the code. */
+#if !MVM_ZIG_IMPL
 #define MVM_UNI_HASH_LOAD_FACTOR 0.75
 MVM_STATIC_INLINE MVMuint32 MVM_uni_hash_official_size(const struct MVMUniHashTableControl *control) {
     return 1 << (MVMuint32)control->official_size_log2;
@@ -27,6 +28,7 @@ MVM_STATIC_INLINE MVMuint8 *MVM_uni_hash_metadata(const struct MVMUniHashTableCo
 MVM_STATIC_INLINE MVMuint8 *MVM_uni_hash_entries(const struct MVMUniHashTableControl *control) {
     return (MVMuint8 *) control - sizeof(struct MVMUniHashEntry);
 }
+#endif
 
 /* Frees the entire contents of the hash, leaving you just the hashtable itself,
  * which you allocated (heap, stack, inside another struct, wherever) */
@@ -37,11 +39,16 @@ void MVM_uni_hash_build(MVMThreadContext *tc,
                         struct MVMUniHashTable *hashtable,
                         MVMuint32 entries);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE int MVM_uni_hash_is_empty(MVMThreadContext *tc,
                                             MVMUniHashTable *hashtable) {
     struct MVMUniHashTableControl *control = hashtable->table;
     return !control || control->cur_items == 0;
 }
+#else
+int MVM_uni_hash_is_empty(MVMThreadContext *tc,
+                          MVMUniHashTable *hashtable);
+#endif
 
 /* Unicode names (etc) are not under the control of an external attacker [:-)]
  * so we don't need a cryptographic hash function here. I'm assuming that
@@ -58,6 +65,7 @@ MVM_STATIC_INLINE MVMuint32 MVM_uni_hash_code(const char *key, size_t len) {
     return hash * 0x9e3779b7;
 }
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE struct MVM_hash_loop_state
 MVM_uni_hash_create_loop_state(struct MVMUniHashTableControl *control,
                                MVMuint32 hash_val) {
@@ -81,6 +89,7 @@ MVM_uni_hash_create_loop_state(struct MVMUniHashTableControl *control,
     retval.metadata = MVM_uni_hash_metadata(control) + bucket;
     return retval;
 }
+#endif
 
 /* UNCONDITIONALLY creates a new hash entry with the given key and value.
  * Doesn't check if the key already exists. Use with care. */
@@ -89,6 +98,7 @@ void MVM_uni_hash_insert(MVMThreadContext *tc,
                          const char *key,
                          MVMint32 value);
 
+#if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE struct MVMUniHashEntry *MVM_uni_hash_fetch(MVMThreadContext *tc,
                                                               MVMUniHashTable *hashtable,
                                                               const char *key) {
@@ -126,3 +136,8 @@ MVM_STATIC_INLINE struct MVMUniHashEntry *MVM_uni_hash_fetch(MVMThreadContext *t
         assert(ls.metadata < MVM_uni_hash_metadata(control) + MVM_uni_hash_official_size(control) + 256);
     }
 }
+#else
+struct MVMUniHashEntry *MVM_uni_hash_fetch(MVMThreadContext *tc,
+                                           MVMUniHashTable *hashtable,
+                                           const char *key);
+#endif

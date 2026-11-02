@@ -43,6 +43,7 @@ Not all the optimisations described above are in place yet. Starting with
 
 */
 
+#if !MVM_ZIG_IMPL
 struct MVMUniHashTableControl {
     MVMHashNumItems cur_items;
     MVMHashNumItems max_items; /* hit this and we grow */
@@ -58,6 +59,11 @@ struct MVMUniHashTableControl {
     MVMuint8 max_probe_distance_limit;
     MVMuint8 metadata_hash_bits;
 };
+#else
+/* The Zig hash engine (src/zig/core/hash/uni.zig) owns the control structure;
+ * C only ever holds the pointer. */
+struct MVMUniHashTableControl;
+#endif
 
 struct MVMUniHashTable {
     struct MVMUniHashTableControl *table;
