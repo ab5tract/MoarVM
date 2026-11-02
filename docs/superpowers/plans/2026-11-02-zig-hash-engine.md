@@ -587,7 +587,65 @@ git commit -m "Docs and results: Zig hash engine on nqp and rakudo, spectest and
 
 ## Spike results
 
-(Task 1 fills this in: the three histogram tables, the coverages at 64, 128 and 256, the chosen `small_threshold`.)
+Measured on the C engine with `MVM_str_hash_demolish` instrumented (throwaway branch `zig-hash-spike`, since deleted): one histogram of final `cur_items` per table at the moment it is freed, summed over every moar process of the rakudo build (45 processes) and of `make spectest` (1503 processes, 1365 test files, result PASS, 0 failures). Output of `tools/hash-size-histogram.pl` follows. Buckets are final item counts; bucket 0 includes unbuilt and control-only tables; coverage is of tables with at least one entry.
+
+Caveats: only tables freed by the GC (MVMHash and HashAttrStore `gc_free`) or at teardown are counted; tables still alive at process exit are not. HashAttrStore tables were never freed in this workload (row all-zero), so every counted table is an MVMHash. The counters are plain non-atomic increments, so a few thousand counts (0.003 percent) are lost to races between threads; that is why `others` shows small negatives in the spectest data and is not meaningful.
+
+### Build only (rakudo `make install`)
+
+```
+processes: 45
+row                 0        1-4       5-16      17-64     65-128    129-256   257-1024      1025+      total
+all           8338776    5416324     592154      84539      21500       9600       2401         29   14465323
+mvmhash       8338776    5416324     592154      84539      21500       9600       2401         29   14465323
+attrstore           0          0          0          0          0          0          0          0          0
+others              0          0          0          0          0          0          0          0          0
+
+coverage of sizes 1..N among non-empty tables
+row          nonempty     <=64    <=128    <=256
+all           6126547  99.453%  99.804%  99.960%
+mvmhash       6126547  99.453%  99.804%  99.960%
+attrstore           0      n/a      n/a      n/a
+others              0      n/a      n/a      n/a
+```
+
+### Spectest only
+
+```
+processes: 1503
+row                 0        1-4       5-16      17-64     65-128    129-256   257-1024      1025+      total
+all         135287737   21488009   17162792     462880      80629       4683       3580          7  174490317
+mvmhash     135291761   21488479   17162867     462880      80629       4683       3580          7  174494886
+attrstore           0          0          0          0          0          0          0          0          0
+others          -4024       -470        -75          0          0          0          0          0      -4569
+
+coverage of sizes 1..N among non-empty tables
+row          nonempty     <=64    <=128    <=256
+all          39202580  99.773%  99.979%  99.991%
+mvmhash      39203125  99.773%  99.979%  99.991%
+attrstore           0      n/a      n/a      n/a
+others           -545 100.000% 100.000% 100.000%
+```
+
+### Combined (decision data)
+
+```
+processes: 1548
+row                 0        1-4       5-16      17-64     65-128    129-256   257-1024      1025+      total
+all         143626513   26904333   17754946     547419     102129      14283       5981         36  188955640
+mvmhash     143630537   26904803   17755021     547419     102129      14283       5981         36  188960209
+attrstore           0          0          0          0          0          0          0          0          0
+others          -4024       -470        -75          0          0          0          0          0      -4569
+
+coverage of sizes 1..N among non-empty tables
+row          nonempty     <=64    <=128    <=256
+all          45329127  99.730%  99.955%  99.987%
+mvmhash      45329672  99.730%  99.955%  99.987%
+attrstore           0      n/a      n/a      n/a
+others           -545 100.000% 100.000% 100.000%
+```
+
+**Chosen `small_threshold` = 64.** Rule applied: the smallest of 64, 128, 256 whose cumulative coverage over all callers (row `all`) in the combined data is at least 95 percent; sizes 1-64 cover 99.730 percent, so 64 qualifies.
 
 ## Benchmark results
 
