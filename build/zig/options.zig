@@ -13,6 +13,10 @@ pub const Options = struct {
     /// Use an existing <dir>/gen/config.h (the Perl build's) instead of the
     /// generated one. Only the `zig-objects` step is supported in this mode.
     config_h: ?[]const u8,
+    /// Strip symbols from libmoar's C objects and the Zig object; null means
+    /// the default (strip unless Debug). `-Dstrip=false` keeps them for
+    /// `perf report`/`perf annotate` without changing the generated code.
+    strip: ?bool,
 };
 
 pub fn parse(b: *std.Build) Options {
@@ -45,5 +49,6 @@ pub fn parse(b: *std.Build) Options {
         .zstd = b.option(bool, "zstd", "Link the system libzstd and use heap snapshot format 3 (default true)") orelse true,
         .zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true,
         .config_h = config_h,
+        .strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=Debug); false keeps them for perf"),
     };
 }

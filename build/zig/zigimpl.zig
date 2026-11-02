@@ -82,7 +82,7 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
         .link_libc = true,
         .pic = true,
         // Match thirdparty.newCModule for the optimize mode.
-        .strip = opts.optimize != .Debug,
+        .strip = opts.strip orelse (opts.optimize != .Debug),
         .omit_frame_pointer = opts.optimize != .Debug,
         .imports = &.{.{ .name = "moar", .module = moar_mod }},
     });

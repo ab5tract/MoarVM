@@ -1,5 +1,6 @@
 //! The C-API microbenchmark of the string hash table (`zig build hash-bench
-//! -- [--sizes=4,16,...] [--runs=3] [--max-size=1048576]`), spec §10.
+//! -- [--sizes=4,16,...] [--runs=3] [--max-size=1048576] [--ops=a,b]
+//! [--op-repeat=K] [--nth=all|threshold]`), spec §10.
 //!
 //! Times whichever engine libmoar was built with (`-Dzig-impl=true`: the
 //! Zig engine of `str.zig`; `false`: the C tables) through `bench_shim.c`,
@@ -9,8 +10,10 @@
 //! insert N fresh keys (`lvalue_fetch_nocheck` + key fill into tables built
 //! with 0 entries), lookup hit (N `fetch_nocheck` of present keys), lookup
 //! miss (N of a disjoint key set), full iteration, delete N; for sizes T and
-//! T+1 (T = `str.small_threshold`) the N-th insert alone, into a table of
-//! N-1. Small sizes are measured over a batch of `batch_ops / N` tables
+//! T+1 (T = `str.small_threshold`), or every size with `--nth=all`, the N-th
+//! insert alone, into a table of N-1. `--ops` restricts the timed phases
+//! (insert always runs as the setup) and `--op-repeat` repeats the read-only
+//! ones, for isolating one operation under `perf`. Small sizes are measured over a batch of `batch_ops / N` tables
 //! handled in turn inside one timed region, so a clock read is amortised
 //! over at least `batch_ops` operations; the figure is always nanoseconds
 //! per operation (for the N-th insert, per insert). `alloc_bytes` is
@@ -20,7 +23,11 @@
 //! (`test/keys.zig`), so a collection cannot move or free them; the tables
 //! hold only key pointers and null values and are not GC roots.
 //!
-//! Output: TSV lines `engine<TAB>size<TAB>op<TAB>ns_per_op<TAB>alloc_bytes`.
+//! Output: TSV lines
+//! `engine<TAB>size<TAB>op<TAB>ns_per_op<TAB>alloc_bytes<TAB>ns_min<TAB>ns_max`:
+//! the median of the runs, then the fastest and the slowest run (the spread
+//! `tools/bench/hash-compare.pl` reports; `tools/bench/hash-bench.nqp` emits
+//! the same columns).
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
@@ -85,11 +92,39 @@ test "ladder(threshold) yields the spec sizes with duplicates collapsed" {
     try std.testing.expectEqualSlices(u32, &.{ 4, 16, 32, 127, 128, 129, 256, 1024, 16384, 65536, 1048576 }, ladder(128, &buf));
 }
 
+test "insert_nth runs at every ladder size with --nth=all, at T and T+1 by default" {
+    var buf: [16]u32 = undefined;
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const all = try parseArgs(arena, &.{ "hash-bench", "--nth=all" });
+    const default = try parseArgs(arena, &.{"hash-bench"});
+    const only_hit = try parseArgs(arena, &.{ "hash-bench", "--nth=all", "--ops=lookup_hit" });
+    for (ladder(str.small_threshold, &buf)) |n| {
+        try std.testing.expect(isNthSize(all, n));
+        try std.testing.expectEqual(n == str.small_threshold or n == str.small_threshold + 1, isNthSize(default, n));
+        // --ops without insert_nth skips it at every size.
+        try std.testing.expect(!isNthSize(only_hit, n));
+    }
+    try std.testing.expectError(error.InvalidArgument, parseArgs(arena, &.{ "hash-bench", "--nth=some" }));
+}
+
+test "spread is the min and max of the runs" {
+    var runs = [_]f64{ 3.0, 1.0, 2.0 };
+    const s = spread(&runs);
+    try std.testing.expectEqual(@as(f64, 1.0), s.min);
+    try std.testing.expectEqual(@as(f64, 3.0), s.max);
+}
+
 const usage =
-    \\usage: hash-bench [--sizes=N,N,...] [--runs=K] [--max-size=N]
+    \\usage: hash-bench [--sizes=N,N,...] [--runs=K] [--max-size=N] [--ops=a,b] [--op-repeat=K] [--nth=all|threshold]
     \\  --sizes     the table sizes to measure (default: the spec's ladder)
     \\  --runs      runs per size, the median is reported (default 3)
     \\  --max-size  skip ladder sizes above this (default 1048576)
+    \\  --ops       only these phases run (insert is always the setup);
+    \\              any of lookup_hit,lookup_miss,iterate,delete,insert_nth
+    \\  --op-repeat repeat the read-only phases K times per run (default 1)
+    \\  --nth       insert_nth at every size (all) or at T,T+1 (threshold, default)
     \\
 ;
 
@@ -97,6 +132,15 @@ const Options = struct {
     sizes: []const u32,
     runs: u32 = 3,
     max_size: u32 = default_max_size,
+    ops: ?[]const []const u8 = null,
+    op_repeat: u32 = 1,
+    nth_all: bool = false,
+
+    fn wants(self: Options, name: []const u8) bool {
+        const list = self.ops orelse return true;
+        for (list) |o| if (std.mem.eql(u8, o, name)) return true;
+        return false;
+    }
 };
 
 fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
@@ -116,6 +160,24 @@ fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
             if (opts.runs == 0) return error.InvalidArgument;
         } else if (std.mem.startsWith(u8, a, "--max-size=")) {
             opts.max_size = try std.fmt.parseInt(u32, a["--max-size=".len..], 10);
+        } else if (std.mem.startsWith(u8, a, "--ops=")) {
+            var list: std.ArrayList([]const u8) = .empty;
+            var it = std.mem.splitScalar(u8, a["--ops=".len..], ',');
+            while (it.next()) |o| if (o.len != 0) try list.append(arena, o);
+            opts.ops = list.items;
+        } else if (std.mem.startsWith(u8, a, "--op-repeat=")) {
+            opts.op_repeat = try std.fmt.parseInt(u32, a["--op-repeat=".len..], 10);
+            if (opts.op_repeat == 0) return error.InvalidArgument;
+        } else if (std.mem.startsWith(u8, a, "--nth=")) {
+            const v = a["--nth=".len..];
+            if (std.mem.eql(u8, v, "all")) {
+                opts.nth_all = true;
+            } else if (std.mem.eql(u8, v, "threshold")) {
+                opts.nth_all = false;
+            } else {
+                if (!@import("builtin").is_test) std.debug.print("hash-bench: --nth takes all or threshold, not {s}\n", .{v});
+                return error.InvalidArgument;
+            }
         } else {
             std.debug.print("hash-bench: unknown argument {s}\n{s}", .{ a, usage });
             return error.InvalidArgument;
@@ -150,6 +212,16 @@ fn entryOf(p: ?*anyopaque) *c.MVMHashEntry {
 fn median(samples: []f64) f64 {
     std.mem.sort(f64, samples, {}, std.sort.asc(f64));
     return samples[samples.len / 2];
+}
+
+/// The fastest and the slowest run.
+fn spread(samples: []const f64) struct { min: f64, max: f64 } {
+    return .{ .min = std.mem.min(f64, samples), .max = std.mem.max(f64, samples) };
+}
+
+fn emit(w: *std.Io.Writer, n: u32, op: []const u8, samples: []f64, alloc_bytes: usize) !void {
+    const s = spread(samples);
+    try w.print("{s}\t{d}\t{s}\t{d:.2}\t{d}\t{d:.2}\t{d:.2}\n", .{ engine, n, op, median(samples), alloc_bytes, s.min, s.max });
 }
 
 /// One ladder size: `reps` tables of `n` entries, each operation timed over
@@ -208,8 +280,9 @@ const Size = struct {
         }
     }
 
-    fn run(self: *Size, io: std.Io, tc: Tc, i: usize) !void {
-        const expected = @as(u64, self.n) * self.reps;
+    fn run(self: *Size, io: std.Io, tc: Tc, i: usize, opts: Options) !void {
+        const expected = @as(u64, self.n) * self.reps * opts.op_repeat;
+        const rep = opts.op_repeat;
         self.buildAll(tc);
 
         var timer = Timer.begin(io);
@@ -217,44 +290,55 @@ const Size = struct {
         self.insert[i] = self.perOp(timer.elapsedNs());
         self.alloc_bytes = bench_str_allocated_size(tc, &self.tables[0]);
 
-        var hits: u64 = 0;
-        timer = Timer.begin(io);
-        for (self.tables) |*t| {
-            for (self.present) |k| {
-                if (bench_str_fetch_nocheck(tc, t, k) != null) hits += 1;
-            }
+        var hits: u64 = expected;
+        if (opts.wants("lookup_hit")) {
+            hits = 0;
+            timer = Timer.begin(io);
+            for (0..rep) |_| for (self.tables) |*t| {
+                for (self.present) |k| {
+                    if (bench_str_fetch_nocheck(tc, t, k) != null) hits += 1;
+                }
+            };
+            self.lookup_hit[i] = self.perOp(timer.elapsedNs() / rep);
         }
-        self.lookup_hit[i] = self.perOp(timer.elapsedNs());
 
-        var misses: u64 = 0;
-        timer = Timer.begin(io);
-        for (self.tables) |*t| {
-            for (self.miss) |k| {
-                if (bench_str_fetch_nocheck(tc, t, k) == null) misses += 1;
-            }
+        var misses: u64 = expected;
+        if (opts.wants("lookup_miss")) {
+            misses = 0;
+            timer = Timer.begin(io);
+            for (0..rep) |_| for (self.tables) |*t| {
+                for (self.miss) |k| {
+                    if (bench_str_fetch_nocheck(tc, t, k) == null) misses += 1;
+                }
+            };
+            self.lookup_miss[i] = self.perOp(timer.elapsedNs() / rep);
         }
-        self.lookup_miss[i] = self.perOp(timer.elapsedNs());
 
-        var seen: u64 = 0;
-        timer = Timer.begin(io);
-        for (self.tables) |*t| {
-            var it = bench_str_first(tc, t);
-            while (bench_str_at_end(tc, t, it) == 0) : (it = bench_str_next_nocheck(tc, t, it)) {
-                const e = entryOf(bench_str_current_nocheck(tc, t, it));
-                if (e.hash_handle.key != null) seen += 1;
-            }
+        var seen: u64 = expected;
+        if (opts.wants("iterate")) {
+            seen = 0;
+            timer = Timer.begin(io);
+            for (0..rep) |_| for (self.tables) |*t| {
+                var it = bench_str_first(tc, t);
+                while (bench_str_at_end(tc, t, it) == 0) : (it = bench_str_next_nocheck(tc, t, it)) {
+                    const e = entryOf(bench_str_current_nocheck(tc, t, it));
+                    if (e.hash_handle.key != null) seen += 1;
+                }
+            };
+            self.iterate[i] = self.perOp(timer.elapsedNs() / rep);
         }
-        self.iterate[i] = self.perOp(timer.elapsedNs());
-
-        timer = Timer.begin(io);
-        for (self.tables) |*t| {
-            for (self.present) |k| bench_str_delete_nocheck(tc, t, k);
-        }
-        self.delete[i] = self.perOp(timer.elapsedNs());
 
         var left: u64 = 0;
-        for (self.tables) |*t| {
-            if (bench_str_at_end(tc, t, bench_str_first(tc, t)) == 0) left += 1;
+        if (opts.wants("delete")) {
+            timer = Timer.begin(io);
+            for (self.tables) |*t| {
+                for (self.present) |k| bench_str_delete_nocheck(tc, t, k);
+            }
+            self.delete[i] = self.perOp(timer.elapsedNs());
+
+            for (self.tables) |*t| {
+                if (bench_str_at_end(tc, t, bench_str_first(tc, t)) == 0) left += 1;
+            }
         }
         self.demolishAll(tc);
 
@@ -275,8 +359,9 @@ const Size = struct {
     }
 };
 
-fn isNthSize(n: u32) bool {
-    return n == str.small_threshold or n == str.small_threshold + 1;
+fn isNthSize(opts: Options, n: u32) bool {
+    if (!opts.wants("insert_nth")) return false;
+    return opts.nth_all or n == str.small_threshold or n == str.small_threshold + 1;
 }
 
 pub fn main(init: std.process.Init) !void {
@@ -314,7 +399,7 @@ pub fn main(init: std.process.Init) !void {
     for (opts.sizes) |n| {
         if (n > opts.max_size) continue;
         var size = try Size.init(arena, n, opts.runs, present, miss);
-        for (0..opts.runs) |i| try size.run(io, tc, i);
+        for (0..opts.runs) |i| try size.run(io, tc, i, opts);
         const rows = [_]struct { []const u8, []f64 }{
             .{ "insert", size.insert },
             .{ "lookup_hit", size.lookup_hit },
@@ -322,10 +407,13 @@ pub fn main(init: std.process.Init) !void {
             .{ "delete", size.delete },
             .{ "iterate", size.iterate },
         };
-        for (rows) |row| try w.print("{s}\t{d}\t{s}\t{d:.2}\t{d}\n", .{ engine, n, row[0], median(row[1]), size.alloc_bytes });
-        if (isNthSize(n)) {
+        for (rows) |row| {
+            if (!opts.wants(row[0]) and !std.mem.eql(u8, row[0], "insert")) continue;
+            try emit(w, n, row[0], row[1], size.alloc_bytes);
+        }
+        if (isNthSize(opts, n)) {
             for (0..opts.runs) |i| size.runNth(io, tc, i);
-            try w.print("{s}\t{d}\t{s}\t{d:.2}\t{d}\n", .{ engine, n, "insert_nth", median(size.insert_nth), size.alloc_bytes });
+            try emit(w, n, "insert_nth", size.insert_nth, size.alloc_bytes);
         }
         try w.flush();
     }
