@@ -196,7 +196,7 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
         }
 
         /// Copies one entry (no overlap), inline for 16 bytes.
-        inline fn copyEntry(dest: [*]u8, src: [*]u8, entry_size: usize) void {
+        inline fn copyEntry(dest: [*]u8, src: [*]const u8, entry_size: usize) void {
             if (entry_size == 16) dest[0..16].* = src[0..16].* else @memcpy(dest[0..entry_size], src[0..entry_size]);
         }
 
@@ -350,6 +350,42 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
             }
         }
 
+        /// Takes the slot `ls` stopped at (its metadata below the probe
+        /// distance) for a new entry: makes room by shifting the following
+        /// entries along by one, flags a growth if a probe distance reached
+        /// the limit, counts the entry and writes its metadata. Returns the
+        /// entry, whose bytes the caller then writes.
+        inline fn takeSlot(header: *Header, c: *Control, ls: *const LoopState, md: u8) [*]u8 {
+            if (md != 0) {
+                // Make room: the following entries keep their relative
+                // order, so bump every probe distance by one and move the
+                // block of entries along.
+                var gap = ls.metadata;
+                var old_probe_distance: u32 = md;
+                while (true) {
+                    const new_probe_distance = ls.increment + old_probe_distance;
+                    std.debug.assert(new_probe_distance >> ls.shift <= ls.max_probe_distance);
+                    if (new_probe_distance >> ls.shift == ls.max_probe_distance) {
+                        // Force a growth before the next insert, so this
+                        // loop never has to handle overflow.
+                        c.max_items = 0;
+                    }
+                    gap += 1;
+                    old_probe_distance = gap[0];
+                    gap[0] = @intCast(new_probe_distance);
+                    if (old_probe_distance == 0) break;
+                }
+                const entries_to_move = @intFromPtr(gap) - @intFromPtr(ls.metadata);
+                // Entries descend in memory: move everything at and before
+                // `ls.entry` one entry downwards.
+                shiftDown(ls.entry, entries_to_move, ls.entry_size);
+            }
+            if (ls.probe_distance >> ls.shift == ls.max_probe_distance) c.max_items = 0;
+            header.cur_items += 1;
+            ls.metadata[0] = @intCast(ls.probe_distance);
+            return ls.entry;
+        }
+
         /// hash_insert_internal (str_hash_table.c:211-319): find or insert,
         /// making room by shifting the following entries along by one. The
         /// caller guarantees the table is not full.
@@ -361,37 +397,32 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
                 const md = ls.metadata[0];
                 if (md < ls.probe_distance) {
                     // This is our slot, occupied or not.
-                    if (md != 0) {
-                        // Make room: the following entries keep their
-                        // relative order, so bump every probe distance by
-                        // one and move the block of entries along.
-                        var gap = ls.metadata;
-                        var old_probe_distance: u32 = md;
-                        while (true) {
-                            const new_probe_distance = ls.increment + old_probe_distance;
-                            std.debug.assert(new_probe_distance >> ls.shift <= ls.max_probe_distance);
-                            if (new_probe_distance >> ls.shift == ls.max_probe_distance) {
-                                // Force a growth before the next insert, so
-                                // this loop never has to handle overflow.
-                                c.max_items = 0;
-                            }
-                            gap += 1;
-                            old_probe_distance = gap[0];
-                            gap[0] = @intCast(new_probe_distance);
-                            if (old_probe_distance == 0) break;
-                        }
-                        const entries_to_move = @intFromPtr(gap) - @intFromPtr(ls.metadata);
-                        // Entries descend in memory: move everything at and
-                        // before `ls.entry` one entry downwards.
-                        shiftDown(ls.entry, entries_to_move, ls.entry_size);
-                    }
-                    if (ls.probe_distance >> ls.shift == ls.max_probe_distance) c.max_items = 0;
-                    header.cur_items += 1;
-                    ls.metadata[0] = @intCast(ls.probe_distance);
-                    @memset(ls.entry[0..key_size], 0);
-                    return ls.entry;
+                    const e = takeSlot(header, c, &ls, md);
+                    @memset(e[0..key_size], 0);
+                    return e;
                 } else if (md == ls.probe_distance) {
                     if (!isZeroKey(ls.entry) and Spec.eql(ctx, keyAt(ls.entry), key)) return ls.entry;
+                }
+            }
+        }
+
+        /// `insertInternal` for a key known to be absent, with its entry
+        /// already built: the policy layer's migration, whose keys come
+        /// from one table and are distinct. The same probe and make-room,
+        /// without the key compare (the probe stops at the first slot whose
+        /// metadata is below the probe distance) and without the load check,
+        /// which the caller makes (`isFull`, then `grow`). Copies the
+        /// `entry_bytes` (key included) into the slot once.
+        pub fn insertKnownAbsent(header: *Header, ctx: Ctx, key: Key, h: u64, entry_bytes: [*]const u8) void {
+            const c = ctrl(header);
+            std.debug.assert(header.cur_items < c.max_items);
+            if (std.debug.runtime_safety) std.debug.assert(fetch(header, ctx, key, h) == null);
+            var ls = loopState(header, h);
+            while (true) : (ls.advance()) {
+                const md = ls.metadata[0];
+                if (md < ls.probe_distance) {
+                    copyEntry(takeSlot(header, c, &ls, md), entry_bytes, ls.entry_size);
+                    return;
                 }
             }
         }
@@ -793,6 +824,60 @@ test "probe-limit growth trades a metadata bit before doubling" {
     try testing.expectEqual(@as(u32, 24), S.capacity(h));
     for (keys) |key| try testing.expectEqual(key, keyOf(get(h, key).?));
     try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+}
+
+test "insertKnownAbsent lays out the same table as insertInternal" {
+    // The same keys in the same order, one table through `lvalueFetch` and
+    // a fill, the other through `insertKnownAbsent` with built entries,
+    // both growing when full: the same probe, make-room and probe-limit
+    // flagging must give the same geometry, metadata and entries. Eight
+    // keys sharing one ideal bucket go first, to reach the probe limit
+    // (the metadata-bit trade) on the way.
+    var a = try testInit(12);
+    defer testFree(a);
+    var b = try testInit(12);
+    defer testFree(b);
+    var keys: [208]u64 = undefined;
+    var n: usize = 0;
+    const want = S.idealBucket(a, S.hash({}, 1));
+    var k: u64 = 1;
+    while (n < 8) : (k += 1) {
+        if (S.idealBucket(a, S.hash({}, k)) == want) {
+            keys[n] = k;
+            n += 1;
+        }
+    }
+    for (keys[8..], 5000..) |*key, i| key.* = i;
+    var traded = false;
+    for (keys) |key| {
+        try putGrowing(&a, key);
+        if (S.isFull(b)) {
+            const old = b;
+            b = (try S.grow(old, {}, testing.allocator)).?;
+            if (b != old) testFree(old) else traded = true;
+        }
+        var entry: [test_entry_size]u8 = undefined;
+        std.mem.writeInt(u64, entry[0..8], key, .little);
+        std.mem.writeInt(u64, entry[8..16], key * 10, .little);
+        S.insertKnownAbsent(b, {}, key, S.hash({}, key), &entry);
+    }
+    try testing.expect(traded);
+    try testing.expectEqual(S.officialSize(a), S.officialSize(b));
+    try testing.expectEqual(a.cur_items, b.cur_items);
+    try testing.expectEqual(S.ctrl(a).max_items, S.ctrl(b).max_items);
+    try testing.expectEqual(S.ctrl(a).max_probe_distance, S.ctrl(b).max_probe_distance);
+    try testing.expectEqual(S.ctrl(a).metadata_hash_bits, S.ctrl(b).metadata_hash_bits);
+    const ma = S.metadata(a);
+    const mb = S.metadata(b);
+    for (0..S.allocatedItems(a) + 1) |i| {
+        try testing.expectEqual(ma[i], mb[i]);
+        if (ma[i] == 0 or i == S.allocatedItems(a)) continue;
+        const ea = S.entryAtIndex(a, @intCast(i));
+        const eb = S.entryAtIndex(b, @intCast(i));
+        try testing.expectEqualSlices(u8, ea[0..test_entry_size], eb[0..test_entry_size]);
+    }
+    try testing.expectEqual(@as(u64, 0), S.fsck(b, {}, 0));
+    for (keys) |key| try testing.expectEqual(key * 10, std.mem.readInt(u64, get(b, key).?[8..16], .little));
 }
 
 test "delete-current while holding next visits every remaining entry once" {

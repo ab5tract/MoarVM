@@ -408,9 +408,14 @@ pub fn Table(comptime Spec: type) type {
             unreachable; // the set index is not in Spec.sets
         }
 
-        /// Builds the next rung for `2 * cur_items` and drains the old rung
-        /// into it: each entry's bytes are copied verbatim after its key is
-        /// hashed by the new tier. The result is unpublished.
+        /// Builds the next rung sized for one entry past its threshold (the
+        /// next rung's `from`, or the old rung's count if that is larger,
+        /// plus one: 65 entries, 128 Robin Hood slots, the C's own size
+        /// there) and drains the old rung into it. A tier with
+        /// `insertKnownAbsent` takes each entry's bytes directly into their
+        /// slot (the keys of one table are distinct, so no key compare);
+        /// otherwise each entry's bytes are copied verbatim after its key
+        /// is inserted by `lvalueFetch`. The result is unpublished.
         fn migrateOp(comptime set: tier.TierSet, comptime ri: usize, ctx: Ctx, old: *Header) *Header {
             const next_rung = comptime tier.nextRung(set, ri).?;
             const N = set[next_rung].tier.Impl(Spec);
@@ -419,10 +424,28 @@ pub fn Table(comptime Spec: type) type {
                 new: *Header,
                 entry_size: usize,
 
+                /// Robin Hood's probe limit can flag a growth before the
+                /// load limit; the block is still ours alone, so an
+                /// intermediate one is freed plainly. Null would mean the
+                /// next rung cannot hold this rung's ceiling, which
+                /// `validate` rules out.
+                fn growNew(self: *@This()) void {
+                    const bigger = (N.grow(self.new, self.ctx, Spec.allocator(self.ctx)) catch fail(self.ctx, oom_msg)) orelse unreachable;
+                    if (bigger != self.new) {
+                        freeNow(self.ctx, self.new);
+                        self.new = bigger;
+                    }
+                }
+
                 pub fn visit(self: *@This(), e: [*]u8) void {
                     // A key the caller has not filled in yet cannot be hashed.
                     if (std.mem.allEqual(u8, e[0..key_size], 0)) return;
                     const key = std.mem.bytesToValue(Key, e[0..key_size]);
+                    if (comptime @hasDecl(N, "insertKnownAbsent")) {
+                        if (N.isFull(self.new)) self.growNew();
+                        N.insertKnownAbsent(self.new, self.ctx, key, N.hash(self.ctx, key), e);
+                        return;
+                    }
                     while (true) {
                         switch (N.lvalueFetch(self.new, self.ctx, key, N.hash(self.ctx, key))) {
                             .inserted => |ne| {
@@ -431,26 +454,15 @@ pub fn Table(comptime Spec: type) type {
                             },
                             // The keys of one table are distinct.
                             .found => unreachable,
-                            // Robin Hood's probe limit can flag a growth
-                            // before the load limit; the block is still
-                            // ours alone, so an intermediate one is freed
-                            // plainly. Null would mean the next rung cannot
-                            // hold this rung's ceiling, which `validate`
-                            // rules out.
-                            .full => {
-                                const bigger = (N.grow(self.new, self.ctx, Spec.allocator(self.ctx)) catch fail(self.ctx, oom_msg)) orelse unreachable;
-                                if (bigger != self.new) {
-                                    freeNow(self.ctx, self.new);
-                                    self.new = bigger;
-                                }
-                            },
+                            .full => self.growNew(),
                         }
                     }
                 }
             };
+            const wanted = @max(set[next_rung].from, old.cur_items) +| 1;
             var mover = Mover{
                 .ctx = ctx,
-                .new = initRung(ctx, old.set, next_rung, headerInit(old.entry_size, old.set, next_rung), old.cur_items *| 2),
+                .new = initRung(ctx, old.set, next_rung, headerInit(old.entry_size, old.set, next_rung), wanted),
                 .entry_size = entrySizeOf(old),
             };
             set[ri].tier.Impl(Spec).drain(old, &mover);
@@ -977,4 +989,141 @@ test "a set other than 0 reaches every rung through resolve" {
         try testing.expectEqual(@as(u32, 100), walked);
         try testing.expectEqual(@as(u64, 0), T2.fsck({}, h, 0));
     }
+}
+
+/// The test ladder's Robin Hood rung, for its geometry.
+const TestRH = @import("tiers/robinhood.zig").Tier(.{}).Impl(IntSpec);
+
+/// Every key in `keys` maps to its `key * 10` payload.
+fn expectAll(h: T.Handle, from: u64, to: u64) !void {
+    for (from..to) |k| {
+        const e = T.fetch({}, h, k) orelse return error.TestUnexpectedResult;
+        try testing.expectEqual(k, keyOf(e));
+        try testing.expectEqual(k * 10, valueOf(e));
+    }
+}
+
+test "migration target is sized for the threshold plus one" {
+    var slot: ?*Header = null;
+    const h = &slot;
+    build(h, 0);
+    defer T.demolish({}, h);
+
+    for (1..66) |k| try put(h, k);
+    try testing.expectEqual(@as(u8, 1), T.rung(h));
+    // The next rung's `from` (64) plus one at the 3/4 load factor: 128
+    // official slots, the C's own size at 65 entries.
+    try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
+    try testing.expectEqual(@as(u32, 65), slot.?.cur_items);
+    try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+    try expectAll(h, 1, 66);
+
+    // 128 slots hold 96 entries; the 97th grows to 256, as the C's does.
+    const migrated = slot.?;
+    for (66..97) |k| try put(h, k);
+    try testing.expectEqual(migrated, slot.?);
+    try put(h, 97);
+    try testing.expectEqual(@as(u32, 256), TestRH.officialSize(slot.?));
+    try testing.expectEqual(@as(u32, 97), T.count(h));
+    try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+    try expectAll(h, 1, 98);
+}
+
+test "bulk migration keeps every key and tolerates one unfilled entry" {
+    // The engine's rule for an entry whose key the caller has not filled
+    // in yet: it cannot be hashed, so the migration skips it (it is not
+    // carried over and not counted), and the caller's pointer into the old
+    // block is dead once the next insert migrates, as the C's is after a
+    // resize.
+    {
+        var slot: ?*Header = null;
+        const h = &slot;
+        build(h, 0);
+        defer T.demolish({}, h);
+        for (1..64) |k| try put(h, k);
+        _ = T.lvalueFetch({}, h, 64); // the 64th entry, left unfilled
+        try testing.expectEqual(@as(u32, 64), T.count(h));
+        try testing.expectEqual(@as(u8, 0), T.rung(h));
+        try put(h, 65); // migrates with the unfilled entry in the source
+        try testing.expectEqual(@as(u8, 1), T.rung(h));
+        try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
+        try testing.expectEqual(@as(u32, 64), T.count(h));
+        try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+        try expectAll(h, 1, 64);
+        try expectAll(h, 65, 66);
+        try testing.expectEqual(@as(?[*]u8, null), T.fetch({}, h, 64));
+    }
+    // The brief's order: the unfilled entry is the one that migrates the
+    // table, so it is created in the new rung after the bulk move, and a
+    // later insert into that rung probes past it.
+    {
+        var slot: ?*Header = null;
+        const h = &slot;
+        build(h, 0);
+        defer T.demolish({}, h);
+        for (1..65) |k| try put(h, k);
+        const e = T.lvalueFetch({}, h, 65);
+        try testing.expectEqual(@as(u8, 1), T.rung(h));
+        try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
+        try testing.expectEqual(@as(u64, 0), keyOf(e));
+        try testing.expectEqual(@as(u32, 65), T.count(h));
+        try put(h, 66);
+        // fsck counts the unfilled key as an error until it is filled.
+        try testing.expectEqual(@as(u64, 1), T.fsck({}, h, 0));
+        const e65 = T.fetch({}, h, 65);
+        try testing.expectEqual(@as(?[*]u8, null), e65);
+        // The 66th insert's make-room may have moved the unfilled entry, so
+        // `e` may be stale: find the entry by its zero key and fill it.
+        var pos = T.first(h);
+        var filled = false;
+        while (pos != 0) : (pos = T.next(h, pos)) {
+            const cur = T.current(h, pos).?;
+            if (keyOf(cur) == 0) {
+                std.mem.writeInt(u64, cur[0..8], 65, .little);
+                std.mem.writeInt(u64, cur[8..16], 650, .little);
+                filled = true;
+            }
+        }
+        try testing.expect(filled);
+        try testing.expectEqual(@as(u32, 66), T.count(h));
+        try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+        try expectAll(h, 1, 67);
+    }
+}
+
+test "presized and shrunk hashes are not resized by the migration change" {
+    var slot: ?*Header = null;
+    const h = &slot;
+
+    // A hint above the threshold starts on rung 1, sized by the tier's
+    // own rule for the hint (200 / 0.75 rounds up to 512), not by the
+    // migration's.
+    build(h, 200);
+    try testing.expectEqual(@as(u8, 1), T.rung(h));
+    try testing.expectEqual(@as(u32, 512), TestRH.officialSize(slot.?));
+    const presized = slot.?;
+    for (1..201) |k| try put(h, k);
+    try testing.expectEqual(presized, slot.?);
+    try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+    try expectAll(h, 1, 201);
+    T.demolish({}, h);
+
+    // Grown through the migration to 300, then deleted down to 10: the
+    // block stays (deletes never shrink), and re-inserting up to the
+    // block's capacity does not reallocate it.
+    build(h, 0);
+    defer T.demolish({}, h);
+    for (1..301) |k| try put(h, k);
+    try testing.expectEqual(@as(u32, 512), TestRH.officialSize(slot.?));
+    const grown = slot.?;
+    for (11..301) |k| try testing.expect(T.delete({}, h, k));
+    try testing.expectEqual(@as(u32, 10), T.count(h));
+    try testing.expectEqual(grown, slot.?);
+    try testing.expectEqual(@as(u8, 1), T.rung(h));
+    try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+    try expectAll(h, 1, 11);
+    for (11..201) |k| try put(h, k);
+    try testing.expectEqual(grown, slot.?);
+    try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+    try expectAll(h, 1, 201);
 }
