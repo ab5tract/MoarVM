@@ -125,6 +125,61 @@ pub inline fn rootN(tc: *ThreadContext, refs: anytype) Root {
     return .{ .n = n };
 }
 
+// ---- MVM_trycas from src/moar.h -----------------------------------------
+
+/// MVM_trycas(addr, old, new): full-barrier compare-and-swap of a word-sized
+/// slot. `addr` is `*usize` or a pointer to a pointer slot (`*?*T`, `**T`,
+/// `*[*c]T`); `old` and `new` have the slot's type. True if the swap happened.
+pub inline fn trycas(addr: anytype, old: anytype, new: anytype) bool {
+    const A = @TypeOf(addr);
+    if (comptime (@typeInfo(A) != .pointer or @typeInfo(A).pointer.size != .one))
+        @compileError("trycas: expected a pointer to a word-sized slot, got " ++ @typeName(A));
+    const S = @typeInfo(A).pointer.child;
+    if (comptime S == usize) {
+        return @cmpxchgStrong(usize, addr, old, new, .seq_cst, .seq_cst) == null;
+    }
+    if (comptime (pointee(S) == null)) @compileError("trycas: slot must be usize or a pointer, got " ++ @typeName(S));
+    const slot: *usize = @ptrCast(addr);
+    const old_word: usize = @intFromPtr(@as(S, old));
+    const new_word: usize = @intFromPtr(@as(S, new));
+    return @cmpxchgStrong(usize, slot, old_word, new_word, .seq_cst, .seq_cst) == null;
+}
+
+// ---- std.mem.Allocator over MVM_malloc / MVM_free -------------------------
+
+fn mvmAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
+    // MVM_malloc gives malloc alignment (16 bytes); refuse more rather than
+    // hand back misaligned memory.
+    if (alignment.compare(.gt, .@"16")) return null;
+    const p = c.MVM_malloc(len) orelse return null;
+    return @ptrCast(p);
+}
+
+fn mvmResize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) bool {
+    return false;
+}
+
+fn mvmRemap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
+    return null;
+}
+
+fn mvmFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
+    c.MVM_free(memory.ptr);
+}
+
+/// Allocator over MVM_malloc/MVM_free. Resize and remap are unsupported, so
+/// callers reallocate by alloc-copy-free. Allocations are at most 16-byte
+/// aligned.
+pub const mvm_allocator: std.mem.Allocator = .{
+    .ptr = undefined,
+    .vtable = &.{
+        .alloc = mvmAlloc,
+        .resize = mvmResize,
+        .remap = mvmRemap,
+        .free = mvmFree,
+    },
+};
+
 // ---- tests (compiled only by `zig build unit-test`, linked against libmoar)
 
 extern fn moar_probe_sizeof_tc() usize;
@@ -211,4 +266,19 @@ test "stable, repr, objectBody and isConcrete" {
     const arr: *Object = c.MVM_repr_alloc_init(tc, array_type);
     try std.testing.expect(isConcrete(arr));
     try std.testing.expectEqual(@intFromPtr(arr) + @sizeOf(Object), @intFromPtr(objectBody(arr)));
+}
+
+test "trycas swaps only when the slot holds the expected value" {
+    var slot: usize = 1;
+    try std.testing.expect(trycas(&slot, @as(usize, 1), @as(usize, 2)));
+    try std.testing.expectEqual(@as(usize, 2), slot);
+    try std.testing.expect(!trycas(&slot, @as(usize, 1), @as(usize, 3)));
+    try std.testing.expectEqual(@as(usize, 2), slot);
+}
+
+test "mvm_allocator allocates and frees through MVM_malloc" {
+    const buf = try mvm_allocator.alloc(u8, 4096);
+    defer mvm_allocator.free(buf);
+    @memset(buf, 0xAB);
+    try std.testing.expectEqual(@as(u8, 0xAB), buf[4095]);
 }
