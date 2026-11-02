@@ -156,21 +156,24 @@ dynamic symbol table (`nm -D`), so the microbenchmark and anything else
 outside libmoar still link against them, but calls from inside libmoar bind
 to them locally (default-visibility symbols are interposable, and LTO keeps
 calling them through the PLT). With that binding the LTO link inlines the
-iteration exports (`next`, `current_nocheck`) into their callers, and a
-Robin Hood iterate at the nqp level goes from 1.02-1.05 of the C engine's
-time to 0.97-0.98 (1.00-1.02 against a C build that also uses LTO). The
+iteration exports (`next`, `current_nocheck`) into their callers. In one
+set of interleaved runs, a Robin Hood iterate at the nqp level took
+0.96-0.98 of the plain C engine's time with `-Dlto` and 1.06-1.07 without
+it (1.03-1.04 against a C build that also uses LTO, inside the spread). The
 lookup and delete exports are one large function each, so LTO mostly calls
-them directly rather than inlining them: no PLT, but still a call.
+them directly rather than inlining them: no PLT, but still a call. Lookup
+and delete still run in 0.90-0.93 of the plain C engine's time under
+`-Dlto` (0.95-0.98 of an LTO-built C engine).
 `tools/check-lto-binding.sh <libmoar.so>` shows the binding: PLT calls to
 `MVM_str_hash_*` (0 under LTO) and the call sites left of
 `MVM_str_hash_fetch_nocheck`. Without `-Dlto` the exports have default
-visibility and the link is unchanged. LTO also speeds up the C side (the
-C engine's hash operations at the nqp level run in 0.87-0.98 of their
-time without it), but the link takes about three times as long (about a
-minute against 20 seconds for `zig build install`), so the option is off
-by default. gcc builds cannot use it: gcc cannot link the Zig object's
-LLVM bitcode, so `--zig-lto` requires `--cc=zig`, and Configure.pl refuses
-it otherwise.
+visibility and the link is unchanged. LTO also speeds up the C side (with
+the C engine, the hash operations at the nqp level run in 0.94-0.96 of
+their time without it), but the link takes about three times as long
+(about a minute against 20 seconds for `zig build install`), so the option
+is off by default. gcc builds cannot use it, because gcc cannot link the
+Zig object's LLVM bitcode. So `--zig-lto` requires both `--zig=PATH` and
+`--cc=zig`, and Configure.pl refuses it otherwise, naming the missing one.
 
 Two benchmarks compare the engines, both run by `tools/bench/hash-bench.sh`,
 which writes `traces/llm/bench/hash-<date>.md` with the raw TSVs beside it:
@@ -199,7 +202,7 @@ Zig time over C time:
 | lookup hit | 0.82-1.02 | 0.98-1.02 |
 | lookup miss | 0.79-1.08 | 1.02-1.03 |
 | delete | 0.76-1.03 | 0.95-0.99 |
-| iterate | 0.67-0.71 | 1.02-1.07 (0.97-0.98 with `-Dlto`) |
+| iterate | 0.67-0.71 | 1.02-1.07 (0.96-0.98 with `-Dlto`) |
 | N-th insert | 0.26-0.69 | 0.76-1.13 (128-16384) |
 
 The Small tier allocates 0.29-0.30 of the C engine's block. The insert that
@@ -236,8 +239,9 @@ At the Raku level (a `Hash` on a rakudo built on each engine, five
 invocations each) every operation runs in 0.66-1.07 of the C engine's time,
 except the 65th insert, which costs 3.75 times the C engine's ordinary
 insert there (4.29 before the tuning). The rakudo spectest passes on both
-engines with no new failure, and its wall time on the Zig engine is not
-above the C's. Its peak RSS measured 3 percent above the C engine in this
+engines with no new failure. The runs (C first, then Zig) drifted over
+the session, so the Zig engine's 0.89 of the C's wall time reads as
+parity. Its peak RSS measured 3 percent above the C engine in this
 campaign's runs, the Zig runs climbing 686 to 725 MB across the session
 while the C runs stayed flat; not yet investigated.
 
