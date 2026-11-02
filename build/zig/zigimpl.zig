@@ -119,3 +119,28 @@ test "configDirName strips gen/config.h" {
     try std.testing.expectEqualStrings(".", configDirName("gen/config.h"));
     try std.testing.expectEqualStrings("a/b", configDirName("a/b//gen/config.h"));
 }
+
+/// The shim unit tests: src/zig/moar.zig as a test root, linked against
+/// libmoar (linkLibrary gives the cached test binary an rpath to the cached
+/// .so, which the installed moar deliberately avoids) plus the C layout probe.
+pub fn addShimTests(
+    b: *std.Build,
+    opts: Options,
+    impl: Impl,
+    libmoar: *std.Build.Step.Compile,
+    config_h: *std.Build.Step.ConfigHeader,
+    cflags: []const []const u8,
+) *std.Build.Step.Compile {
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/zig/moar.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+        .imports = &.{.{ .name = "c", .module = impl.c_mod }},
+    });
+    moar.addIncludes(b, test_mod);
+    test_mod.addConfigHeader(config_h);
+    test_mod.addCSourceFile(.{ .file = b.path("src/zig/test/layout_probe.c"), .flags = cflags });
+    test_mod.linkLibrary(libmoar);
+    return b.addTest(.{ .name = "shim-test", .root_module = test_mod });
+}

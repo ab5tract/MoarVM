@@ -125,6 +125,12 @@ pub fn build(b: *std.Build) void {
         }) });
         unit_step.dependOn(&b.addRunArtifact(t).step);
     }
+    if (zig_impl) |impl| {
+        if (opts.config_h == null) {
+            const shim_tests = zigimpl.addShimTests(b, opts, impl, libmoar, config_h, moar.cflags(b, opts));
+            unit_step.dependOn(&b.addRunArtifact(shim_tests).step);
+        }
+    }
     test_step.dependOn(unit_step);
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");
