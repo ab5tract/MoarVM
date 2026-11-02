@@ -118,7 +118,7 @@ engine's safepoint discipline), `tier.zig` (tier sets) and the two tiers in
 
 | Tier | Storage | Used by |
 |---|---|---|
-| `small.zig` | an insertion-ordered array of entries, no hashing of the keys, up to `max_capacity` entries | the string table's first rung |
+| `small.zig` | a flat array of entries in insertion order, each tagged with the top byte of its cached hash and found by a vector compare of the tags, up to `max_capacity` entries | the string table's first rung |
 | `robinhood.zig` | the open-addressing Robin Hood table the C files implement today, with the same growth and probe-limit rules | every table's final rung |
 
 A table is built on a *tier set*, a ladder of rungs with the entry count at
@@ -160,22 +160,32 @@ are in `traces/llm/plans/2026-11-02-zig-hash-engine.md`, "Benchmark
 results"). At the Raku level (a `Hash` on a rakudo built on each engine)
 small hashes of up to 64 entries run in 0.80-1.04 of the C engine's time
 on every operation (insert 0.80-0.83, lookup hit 0.87-0.97, delete
-0.83-1.01; up to 1.23 at size 4). Large hashes run in 0.92-1.17 of the C
-engine's time (insert 1.61 at 65536 entries, iterate 0.66 at a million),
-and the 65th insert, which migrates the table to Robin Hood, costs 4.29
-times the C engine's ordinary insert. At the C API the Small tier inserts
-in 0.3-0.35 of the C time, iterates in 0.7 and allocates under a third of
-the C block (0.61 at size 4), but a lookup hit costs 1.4-1.9 and a delete
-2.9-3.4 times the C engine; the Robin Hood tier costs 1.1-1.8 times the C
-time on lookup, delete and iterate, and 0.64-1.17 on insert. So at the C
-API small-tier lookup hit and delete, and large-hash lookup, delete and
-iterate, are currently slower than the C engine; tuning them is a
+0.83-1.01; up to 1.23 at size 4), and the 64th insert alone costs 0.76.
+Large hashes run in 0.92-1.17 of the C engine's time (insert 1.61 at
+65536 entries, iterate 0.66 at a million), and the 65th insert, which
+migrates the table to Robin Hood, costs 4.29 times the C engine's ordinary
+insert. At the C API the Small tier inserts in 0.29-0.35 of the C time
+(0.98 at size 4), iterates in 0.69-0.74 and allocates under a third of the
+C block (0.61 at size 4), but a lookup hit costs 1.43-1.94 and a delete
+2.90-3.37 times the C engine; the Robin Hood tier, at 128 entries and up,
+costs 1.14-1.79 times the C time on lookup, delete and iterate, and
+0.64-1.17 on insert (at 65, just past the migration, a hit is 1.03 and a
+miss 0.88). Part of the measured small-tier deficit is the call boundary
+itself: the C column is inlined into the benchmark shim, while every Zig
+operation crosses from the C-shaped wrapper into libmoar's exported
+function, a boundary production callers of the Zig engine pay too. So at
+the C API small-tier lookup hit and delete, and large-hash lookup, delete
+and iterate, are currently slower than the C engine; tuning them is a
 follow-up campaign and nothing in the engine is tuned yet.
 
 Observable changes with the Zig engine:
 
-- Iteration order of a hash of at most 64 entries is insertion order
-  (perturbed by deletes: a delete moves the last entry into the hole).
+- Iteration order of a hash in the Small tier is reverse insertion order,
+  perturbed by deletes: a delete moves the last entry into the hole, so
+  that entry is then visited where the deleted one was. A hash is in the
+  Small tier while it has never held more than 64 entries and was not
+  built for more; one presized above 64, or one that grew past 64 and
+  shrank, stays in Robin Hood (migration is upward only).
 - Hash creation and growth no longer consume the user-visible RNG (the
   Robin Hood salt comes from the engine's own generator, `rng.zig`).
 - `HASH_DEBUG_ITER` is unavailable (`#error` at compile time).

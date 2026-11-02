@@ -83,6 +83,15 @@ pub fn Table(comptime Spec: type) type {
 
         const publish_mode: Publish = Spec.publish;
         const key_size = @sizeOf(Key);
+        /// Whether any set of this Spec has a live log hook; when not, the
+        /// hook is a comptime no-op and `delete` does not pre-fetch the
+        /// entry for it.
+        const hook_enabled = blk: {
+            for (Spec.sets) |set| {
+                if (tier.logHookEnabled(set)) break :blk true;
+            }
+            break :blk false;
+        };
         const Block = []align(8) u8;
         const Lvalue = union(enum) { found: [*]u8, inserted: [*]u8, full };
 
@@ -473,15 +482,21 @@ pub fn Table(comptime Spec: type) type {
             return r.entry;
         }
 
-        /// Removes `key`'s entry; false if absent.
+        /// Removes `key`'s entry; false if absent. One probe (the tier's
+        /// delete) unless the log hook is live, which needs the entry
+        /// before it goes and costs a fetch first.
         pub fn delete(ctx: Ctx, h: Handle, key: Key) bool {
             const header = h.* orelse return false;
             checkStale(ctx, header, "delete");
             if (isControlOnly(header)) return false;
-            const entry = dispatch(?[*]u8, header, ops.fetch, .{ ctx, key }) orelse return false;
-            log(header, .delete, entry);
-            const removed = dispatch(bool, header, ops.delete, .{ ctx, key });
-            std.debug.assert(removed);
+            if (comptime hook_enabled) {
+                const entry = dispatch(?[*]u8, header, ops.fetch, .{ ctx, key }) orelse return false;
+                log(header, .delete, entry);
+                const removed = dispatch(bool, header, ops.delete, .{ ctx, key });
+                std.debug.assert(removed);
+            } else {
+                if (!dispatch(bool, header, ops.delete, .{ ctx, key })) return false;
+            }
             checkTurnedStale(ctx, header, "delete");
             return true;
         }

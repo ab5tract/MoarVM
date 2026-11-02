@@ -343,6 +343,37 @@ test "delete swaps the last entry into the hole and iteration visits every entry
     try testing.expectEqual(@as(u32, 10), S.start(h));
 }
 
+test "iteration order is reverse insertion order" {
+    const h = try testInit(16);
+    defer testFree(h);
+    for (1..11) |k| try put(h, k);
+
+    const expectWalk = struct {
+        fn f(header: *Header, expected: []const u64) !void {
+            var i: usize = 0;
+            var pos = S.first(header);
+            while (pos != 0) : (pos = S.next(header, pos)) {
+                try testing.expect(i < expected.len);
+                try testing.expectEqual(expected[i], keyOf(S.entryAt(header, pos)));
+                i += 1;
+            }
+            try testing.expectEqual(expected.len, i);
+        }
+    }.f;
+
+    // Keys 1..10 at indices 0..9; the walk descends from index 9.
+    try expectWalk(h, &[_]u64{ 10, 9, 8, 7, 6, 5, 4, 3, 2, 1 });
+    // Deleting the last entry moves nothing.
+    try testing.expect(del(h, 10));
+    try expectWalk(h, &[_]u64{ 9, 8, 7, 6, 5, 4, 3, 2, 1 });
+    // Deleting key 1 (index 0) moves the last entry, key 9, into index 0,
+    // so the walk now ends with it.
+    try testing.expect(del(h, 1));
+    try expectWalk(h, &[_]u64{ 8, 7, 6, 5, 4, 3, 2, 9 });
+    try testing.expectEqual(@as(u64, 9), keyOf(S.entryAt(h, 1)));
+    try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+}
+
 test "deleting the current entry while holding next keeps the walk correct" {
     const h = try testInit(16);
     defer testFree(h);

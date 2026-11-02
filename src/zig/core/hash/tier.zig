@@ -56,8 +56,25 @@ pub fn nextRung(comptime set: TierSet, rung: u8) ?u8 {
     return rung + 1;
 }
 
+/// Whether `logHook` does anything at all: false in this campaign, so the
+/// policy layer skips, at comptime, any work done only to hand the hook an
+/// entry (the pre-fetch of `Table.delete`).
+pub const log_hook_enabled = false;
+
+/// Whether `logHook` does anything for `set`: `log_hook_enabled` and a rung
+/// of the set has `double_write`.
+pub fn logHookEnabled(comptime set: TierSet) bool {
+    comptime {
+        if (!log_hook_enabled) return false;
+        for (set) |e| {
+            if (e.double_write) return true;
+        }
+        return false;
+    }
+}
+
 /// Reserved double-write hook (spec section 2 decision 5); a no-op in this
-/// campaign.
+/// campaign (`log_hook_enabled`).
 pub inline fn logHook(comptime set: TierSet, rung: u8, op: Op, entry: [*]u8) void {
     _ = set;
     _ = rung;
@@ -98,6 +115,13 @@ test "startingRung picks the last rung whose threshold is at most the hint" {
 
 test "validate accepts the standard shape" {
     comptime validate(&[_]TierEntry{ .{ .tier = StubSmall, .from = 0 }, .{ .tier = StubBig, .from = 64 } });
+}
+
+test "the log hook is a comptime no-op in this campaign" {
+    const plain = [_]TierEntry{ .{ .tier = StubSmall, .from = 0 }, .{ .tier = StubBig, .from = 64 } };
+    const flagged = [_]TierEntry{ .{ .tier = StubSmall, .from = 0, .double_write = true }, .{ .tier = StubBig, .from = 64 } };
+    try std.testing.expect(!comptime logHookEnabled(&plain));
+    try std.testing.expectEqual(log_hook_enabled, comptime logHookEnabled(&flagged));
 }
 
 test "Header is 8 bytes" {

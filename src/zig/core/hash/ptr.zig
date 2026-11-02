@@ -123,7 +123,10 @@ pub fn insert(tc: *ThreadContext, ht: *c.MVMPtrHashTable, key: ?*const anyopaque
 }
 
 /// `MVM_ptr_hash_fetch_and_delete` (`ptr_hash_table.c:301-387`): removes
-/// `key`'s entry and returns its value, 0 when absent.
+/// `key`'s entry and returns its value, 0 when absent. Two probes: the
+/// value is read once from the fetched entry, then `Table.delete` runs the
+/// tier's delete (a single probe while the log hook is a no-op); the C does
+/// it in one, which would need a delete-by-entry in the tier interface.
 pub fn fetchAndDelete(tc: *ThreadContext, ht: *c.MVMPtrHashTable, key: ?*const anyopaque) usize {
     _ = tc;
     const h = handleOf(ht);

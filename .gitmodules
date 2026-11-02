@@ -40,4 +40,5 @@
 # isn't shallow!
 [submodule "traces/llm"]
 	path = traces/llm
-	url = git@github.com:ab5tract/moarvm-traces.git
+	url = https://github.com/ab5tract/moarvm-traces.git
+	update = none
