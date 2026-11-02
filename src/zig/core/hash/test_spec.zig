@@ -4,11 +4,12 @@
 const std = @import("std");
 const tier = @import("tier.zig");
 const small = @import("tiers/small.zig");
+const robinhood = @import("tiers/robinhood.zig");
 
-/// The ladder the tests run tables through. Task 5 appends the Robin Hood
-/// rung from 64.
+/// The ladder the tests run tables through.
 pub const standard_test_set = [_]tier.TierEntry{
     .{ .tier = small.Tier(.{ .max_capacity = 64 }), .from = 0 },
+    .{ .tier = robinhood.Tier(.{}), .from = 64 },
 };
 
 pub const IntSpec = struct {
@@ -45,9 +46,10 @@ pub const IntSpec = struct {
     }
 };
 
-// `tiers/small.zig` imports `../tier.zig` and this file, which lie outside a
-// module rooted in `tiers/`, so its tests run with this file as the root.
+// The tier files import `../tier.zig` and this file, which lie outside a
+// module rooted in `tiers/`, so their tests run with this file as the root.
 test {
     _ = small;
+    _ = robinhood;
     comptime tier.validate(&standard_test_set);
 }

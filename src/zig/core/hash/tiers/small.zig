@@ -173,7 +173,9 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
             return true;
         }
 
-        pub fn grow(header: *Header, allocator: std.mem.Allocator) !?*Header {
+        /// `ctx` is unused here; Robin Hood needs it to rehash on doubling.
+        pub fn grow(header: *Header, ctx: Ctx, allocator: std.mem.Allocator) !?*Header {
+            _ = ctx;
             const cap = capacity(header);
             if (cap >= max_capacity) return null;
             const es = entrySize(header);
@@ -299,15 +301,15 @@ test "fills to capacity then reports full; grow doubles up to the ceiling" {
     try testing.expect(S.isFull(h));
     try testing.expect(S.lvalueFetch(h, {}, 9, S.hash({}, 9)) == .full);
     try testing.expect(S.lvalueFetch(h, {}, 3, S.hash({}, 3)) == .found);
-    h = (try S.grow(h, testing.allocator)).?;
+    h = (try S.grow(h, {}, testing.allocator)).?;
     try testing.expectEqual(@as(u32, 16), S.capacity(h));
     try testing.expect(!S.isFull(h));
     for (1..9) |k| try testing.expectEqual(@as(u64, k * 10), std.mem.readInt(u64, get(h, k).?[8..16], .little));
     try put(h, 9);
-    h = (try S.grow(h, testing.allocator)).?;
-    h = (try S.grow(h, testing.allocator)).?;
+    h = (try S.grow(h, {}, testing.allocator)).?;
+    h = (try S.grow(h, {}, testing.allocator)).?;
     try testing.expectEqual(@as(u32, 64), S.capacity(h));
-    try testing.expectEqual(@as(?*Header, null), try S.grow(h, testing.allocator));
+    try testing.expectEqual(@as(?*Header, null), try S.grow(h, {}, testing.allocator));
     for (1..10) |k| try testing.expect(get(h, k) != null);
     try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
 }
