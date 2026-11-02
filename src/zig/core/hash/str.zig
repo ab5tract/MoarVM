@@ -41,7 +41,8 @@ pub const large_only = [_]tier.TierEntry{
 /// Indexed by the header's `set` byte.
 pub const sets: []const tier.TierSet = StrSpec.sets;
 
-/// Set index of `standard`, what the C API builds with.
+/// Set index of `standard`, what the C API builds with. It must stay 0:
+/// `table.zig` specialises dispatch for set 0.
 const standard_set: u8 = 0;
 
 pub const StrSpec = struct {
@@ -317,4 +318,15 @@ test "roundUpLog2 matches MVM_round_up_log_base2" {
         .{ 0, 32 }, .{ 1, 1 }, .{ 2, 1 }, .{ 3, 2 }, .{ 4, 2 }, .{ 5, 3 }, .{ 133, 8 }, .{ 1 << 31, 31 }, .{ (1 << 31) + 1, 32 },
     };
     for (cases) |case| try std.testing.expectEqual(case[1], roundUpLog2(case[0]));
+}
+
+test "set 0 is the standard string set" {
+    // `table.zig` specialises dispatch for set 0, so the set every C-API
+    // hash is built with must be index 0.
+    comptime {
+        std.debug.assert(sets[0].ptr == @as([*]const tier.TierEntry, &standard));
+        std.debug.assert(sets[0].len == standard.len);
+        std.debug.assert(standard_set == 0);
+        std.debug.assert(StrTable.dispatch_reads_set);
+    }
 }

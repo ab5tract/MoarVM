@@ -49,6 +49,19 @@
 //! `ctx`-less readers (`count`, `first`, ...) cannot `MVM_oops` without a
 //! `tc` and leave the check to the C API layer, which has one.
 //!
+//! Dispatch is specialised for set 0. `dispatch` tests `header.set == 0`
+//! first (not at all when `Spec.sets.len == 1`) and then switches once on
+//! the `tier` byte over the rungs of `Spec.sets[0]`, known at comptime;
+//! any other set index goes through `resolve`. The string table's
+//! `standard` set is index 0 (`str.zig` asserts it), so every hash the C
+//! API builds takes the switch and only `large_only` the general path.
+//! `fetch`, `lvalue` and `delete` read the header's first four bytes
+//! (`tier`, `set`, `entry_size`, `stale`) in one load (`statusOf`; a
+//! volatile load under `.safepoint_cas`, so the entry stale check stays a
+//! volatile read, once per call) and test the stale byte, the set byte and
+//! the control-only bit together; only a nonzero result takes the
+//! separate tests. The exit "turned stale" check is a byte read of its own.
+//!
 //! The `moar` module is imported lazily inside the `.safepoint_cas`
 //! branches, so this file is a standalone `zig test` root for `.plain`
 //! Specs and only Specs that publish through safepoints need the module.
@@ -120,6 +133,68 @@ pub fn Table(comptime Spec: type) type {
             }
         }
 
+        // -------------------------------------------------------- status
+
+        /// The header's first four bytes as one word: `tier`, `set`,
+        /// `entry_size`, `stale` at their offsets (native byte order).
+        const Status = u32;
+
+        /// The word whose bytes are `tier`, `set` and `stale` at their
+        /// offsets (and 0 in `entry_size`).
+        fn statusBits(comptime tier_byte: u8, comptime set_byte: u8, comptime stale_byte: u8) Status {
+            var bytes = [_]u8{0} ** @sizeOf(Status);
+            bytes[@offsetOf(Header, "tier")] = tier_byte;
+            bytes[@offsetOf(Header, "set")] = set_byte;
+            bytes[@offsetOf(Header, "stale")] = stale_byte;
+            return @bitCast(bytes);
+        }
+
+        comptime {
+            for ([_]usize{ @offsetOf(Header, "tier"), @offsetOf(Header, "set"), @offsetOf(Header, "entry_size"), @offsetOf(Header, "stale") }) |o| {
+                if (o >= @sizeOf(Status)) @compileError("Table: the status bytes must be the header's first four");
+            }
+            if (@alignOf(Header) < @alignOf(Status)) @compileError("Table: the header must be aligned for one status load");
+        }
+
+        /// Whether `dispatch` reads the set byte at all: false when the
+        /// Spec has one set, whose index can only be 0.
+        pub const dispatch_reads_set = Spec.sets.len > 1;
+
+        const stale_bits = statusBits(0, 0, 0xff);
+        const set_bits = statusBits(0, 0xff, 0);
+        const control_only_bits = statusBits(control_only_bit, 0, 0);
+        /// The bits of the status that are all zero on the fast path of
+        /// `fetch`, `lvalue` and `delete`: not stale (`.safepoint_cas`
+        /// only), set 0 (multi-set Specs only), not control-only.
+        const slow_bits: Status = control_only_bits |
+            (if (dispatch_reads_set) set_bits else 0) |
+            (if (publish_mode == .safepoint_cas) stale_bits else 0);
+
+        /// One load of the status bytes; volatile under `.safepoint_cas`,
+        /// where it is the entry stale check's read.
+        inline fn statusOf(header: *Header) Status {
+            const p: *Status = @ptrCast(header);
+            if (comptime publish_mode == .safepoint_cas) return @as(*volatile Status, p).*;
+            return p.*;
+        }
+
+        inline fn tierOfStatus(st: Status) u8 {
+            return std.mem.asBytes(&st)[@offsetOf(Header, "tier")];
+        }
+
+        inline fn setOfStatus(st: Status) u8 {
+            return std.mem.asBytes(&st)[@offsetOf(Header, "set")];
+        }
+
+        /// The entry stale check on an already loaded status (`checkStale`
+        /// without a second read).
+        inline fn checkStaleStatus(ctx: Ctx, st: Status, comptime who: []const u8) void {
+            if (comptime publish_mode == .safepoint_cas) {
+                if (st & stale_bits != 0)
+                    fail(ctx, "hash table " ++ who ++ " called with a stale hashtable pointer");
+            }
+        }
+
         // ------------------------------------------------------ dispatch
 
         fn rungOf(header: *const Header) u8 {
@@ -153,12 +228,32 @@ pub fn Table(comptime Spec: type) type {
         /// Returns `op(Impl, header, args)` for the rung of `header`.
         fn dispatch(comptime R: type, header: *Header, comptime op: anytype, args: anytype) R {
             std.debug.assert(!isControlOnly(header));
+            if (!dispatch_reads_set or header.set == 0)
+                return @call(.always_inline, dispatchSet0, .{ R, header, header.tier, op, args });
+            return dispatchOther(R, header, header.set, op, args);
+        }
+
+        /// The specialised path: rung `rung_index` of `Spec.sets[0]`, one switch
+        /// on the tier byte. The control-only bit is clear (every caller
+        /// returns or materialises first), so the byte is the rung index.
+        inline fn dispatchSet0(comptime R: type, header: *Header, rung_index: u8, comptime op: anytype, args: anytype) R {
+            const set0 = Spec.sets[0];
+            switch (rung_index) {
+                inline 0...set0.len - 1 => |ri| return op(set0[ri].tier.Impl(Spec), header, args),
+                else => unreachable, // the rung is not in the set
+            }
+        }
+
+        /// Any set but 0 (there is none when `Spec.sets.len == 1`):
+        /// `resolve` over the set and rung bytes.
+        inline fn dispatchOther(comptime R: type, header: *Header, set_index: u8, comptime op: anytype, args: anytype) R {
+            if (!dispatch_reads_set) unreachable;
             const Op = struct {
                 inline fn f(comptime set: tier.TierSet, comptime ri: usize, a: anytype) R {
                     return op(set[ri].tier.Impl(Spec), a[0], a[1]);
                 }
             };
-            return resolve(R, header.set, rungOf(header), Op.f, .{ header, args });
+            return resolve(R, set_index, rungOf(header), Op.f, .{ header, args });
         }
 
         const ops = struct {
@@ -448,17 +543,23 @@ pub fn Table(comptime Spec: type) type {
 
         pub fn fetch(ctx: Ctx, h: Handle, key: Key) ?[*]u8 {
             const header = h.* orelse return null;
-            checkStale(ctx, header, "fetch");
-            if (isControlOnly(header)) return null;
-            return @call(.always_inline, dispatch, .{ ?[*]u8, header, ops.fetch, .{ ctx, key } });
+            const st = statusOf(header);
+            if (st & slow_bits == 0)
+                return @call(.always_inline, dispatchSet0, .{ ?[*]u8, header, tierOfStatus(st), ops.fetch, .{ ctx, key } });
+            checkStaleStatus(ctx, st, "fetch");
+            if (st & control_only_bits != 0) return null;
+            return dispatchOther(?[*]u8, header, setOfStatus(st), ops.fetch, .{ ctx, key });
         }
 
         const Found = struct { entry: [*]u8, found: bool };
 
         fn lvalue(ctx: Ctx, h: Handle, key: Key, comptime who: []const u8) Found {
             var header = h.* orelse fail(ctx, "Attempting insert on a hash table without first calling build");
-            checkStale(ctx, header, who);
-            if (isControlOnly(header)) header = materialise(ctx, h, header);
+            const st = statusOf(header);
+            if (st & slow_bits != 0) {
+                checkStaleStatus(ctx, st, who);
+                if (st & control_only_bits != 0) header = materialise(ctx, h, header);
+            }
             const result: Found = while (true) {
                 switch (@call(.always_inline, dispatch, .{ Lvalue, header, ops.lvalue, .{ ctx, key } })) {
                     .found => |e| break .{ .entry = e, .found = true },
@@ -492,15 +593,23 @@ pub fn Table(comptime Spec: type) type {
         /// before it goes and costs a fetch first.
         pub fn delete(ctx: Ctx, h: Handle, key: Key) bool {
             const header = h.* orelse return false;
-            checkStale(ctx, header, "delete");
-            if (isControlOnly(header)) return false;
+            const st = statusOf(header);
             if (comptime hook_enabled) {
+                checkStaleStatus(ctx, st, "delete");
+                if (st & control_only_bits != 0) return false;
                 const entry = dispatch(?[*]u8, header, ops.fetch, .{ ctx, key }) orelse return false;
                 log(header, .delete, entry);
                 const removed = dispatch(bool, header, ops.delete, .{ ctx, key });
                 std.debug.assert(removed);
             } else {
-                if (!@call(.always_inline, dispatch, .{ bool, header, ops.delete, .{ ctx, key } })) return false;
+                const removed = if (st & slow_bits == 0)
+                    @call(.always_inline, dispatchSet0, .{ bool, header, tierOfStatus(st), ops.delete, .{ ctx, key } })
+                else blk: {
+                    checkStaleStatus(ctx, st, "delete");
+                    if (st & control_only_bits != 0) return false;
+                    break :blk dispatchOther(bool, header, setOfStatus(st), ops.delete, .{ ctx, key });
+                };
+                if (!removed) return false;
             }
             checkTurnedStale(ctx, header, "delete");
             return true;
@@ -793,4 +902,79 @@ test "insert of an existing key calls onDuplicate" {
     try testing.expectEqual(@as(u64, 5), keyOf(again));
     try testing.expectEqual(@as(u64, 50), valueOf(again));
     try testing.expectEqual(@as(u32, 1), T.count(h));
+}
+
+test "single-set tables dispatch without a set comparison" {
+    // The specialised path: one set, so `dispatch` never reads the set byte.
+    comptime {
+        std.debug.assert(IntSpec.sets.len == 1);
+        std.debug.assert(!T.dispatch_reads_set);
+    }
+    // A set byte that names no set: through `resolve` every call below would
+    // reach its `unreachable`; the specialised path never looks at it.
+    for ([_]u32{ 30, 300 }) |n| {
+        var slot: ?*Header = null;
+        const h = &slot;
+        build(h, 0);
+        defer T.demolish({}, h);
+        for (1..n + 1) |k| try put(h, k);
+        slot.?.set = 0xff;
+        defer slot.?.set = 0;
+        for (1..n + 1) |k| try testing.expectEqual(k * 10, valueOf(T.fetch({}, h, k).?));
+        try testing.expectEqual(@as(?[*]u8, null), T.fetch({}, h, n + 1));
+        try testing.expectEqual(@as(u64, 2), keyOf(T.lvalueFetch({}, h, 2)));
+        try testing.expect(T.delete({}, h, 1));
+        try testing.expect(!T.delete({}, h, 1));
+        var walked: u32 = 0;
+        var pos = T.first(h);
+        while (pos != 0) : (pos = T.next(h, pos)) walked += 1;
+        try testing.expectEqual(n - 1, walked);
+        try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
+    }
+}
+
+/// Two sets: set 0 is one Robin Hood rung (the switch), set 1 is the
+/// two-rung test ladder (`resolve`).
+const TwoSetSpec = struct {
+    pub const Key = IntSpec.Key;
+    pub const Ctx = IntSpec.Ctx;
+    pub const runtime_entry_size = true;
+    pub const publish = .plain;
+    pub const sets: []const tier.TierSet = &.{ &rh_only, &@import("test_spec.zig").standard_test_set };
+    const rh_only = [_]tier.TierEntry{.{ .tier = @import("tiers/robinhood.zig").Tier(.{}), .from = 0 }};
+    pub const hash = IntSpec.hash;
+    pub const eql = IntSpec.eql;
+    pub const allocator = IntSpec.allocator;
+    pub const onDuplicate = IntSpec.onDuplicate;
+};
+
+test "a set other than 0 reaches every rung through resolve" {
+    const T2 = Table(TwoSetSpec);
+    comptime std.debug.assert(T2.dispatch_reads_set);
+    for ([_]u8{ 0, 1 }) |set_index| {
+        var slot: ?*Header = null;
+        const h = &slot;
+        T2.build({}, h, test_entry_size, 0, set_index);
+        defer T2.demolish({}, h);
+        try testing.expectEqual(@as(?[*]u8, null), T2.fetch({}, h, 1));
+        try testing.expect(!T2.delete({}, h, 1));
+        for (1..201) |k| {
+            const e = T2.insert({}, h, k);
+            std.mem.writeInt(u64, e[0..8], k, .little);
+            std.mem.writeInt(u64, e[8..16], k * 10, .little);
+            // Set 1 starts in the Small rung and migrates past 64 entries.
+            if (set_index == 1 and k == 64) try testing.expectEqual(@as(u8, 0), T2.rung(h));
+        }
+        try testing.expectEqual(set_index, slot.?.set);
+        try testing.expectEqual(@as(u8, if (set_index == 1) 1 else 0), T2.rung(h));
+        for (1..201) |k| try testing.expectEqual(k * 10, valueOf(T2.fetch({}, h, k).?));
+        try testing.expectEqual(@as(?[*]u8, null), T2.fetch({}, h, 201));
+        for (1..101) |k| try testing.expect(T2.delete({}, h, k));
+        try testing.expect(!T2.delete({}, h, 1));
+        var walked: u32 = 0;
+        var pos = T2.first(h);
+        while (pos != 0) : (pos = T2.next(h, pos)) walked += 1;
+        try testing.expectEqual(@as(u32, 100), walked);
+        try testing.expectEqual(@as(u64, 0), T2.fsck({}, h, 0));
+    }
 }

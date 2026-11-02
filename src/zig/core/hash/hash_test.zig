@@ -14,3 +14,11 @@ test {
     _ = @import("str.zig");
     _ = @import("bench.zig");
 }
+
+test "the four single-rung tables dispatch without a set comparison" {
+    comptime {
+        for (.{ @import("ptr.zig").PtrTable, @import("uni.zig").UniTable, @import("index.zig").IndexTable, @import("fixkey.zig").FixKeyTable }) |T| {
+            if (T.dispatch_reads_set) @compileError("a single-set table reads the set byte in dispatch");
+        }
+    }
+}
