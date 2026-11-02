@@ -1,0 +1,286 @@
+//! The string table of the Zig hash engine (spec 3, 4.3, 7): `Table(Spec)`
+//! instantiated for `MVMString` keys, and the C-API-shaped functions that
+//! `src/core/str_hash_table.c` and `str_hash_table_funcs.h` define today.
+//! Task 8 exports them under the C names; nothing here is exported yet.
+//!
+//! The C struct is one pointer, `MVMStrHashTable { table }`, and the control
+//! struct behind it is the engine's: the pointer's address is the table's
+//! `Handle` (`*?*Header`, `handleOf`) and this file never reads it as the
+//! C's `MVMStrHashTableControl`.
+//!
+//! The ctx-less readers of `table.zig` (`count`, `first`, ...) cannot
+//! `MVM_oops`, so their stale checks live here, with the C's message texts;
+//! the mutators' checks are `table.zig`'s.
+const std = @import("std");
+const moar = @import("moar");
+const c = moar.c;
+pub const tier = @import("tier.zig");
+pub const table = @import("table.zig");
+pub const rng = @import("rng.zig");
+const small = @import("tiers/small.zig");
+const robinhood = @import("tiers/robinhood.zig");
+
+pub const Header = table.Header;
+const ThreadContext = moar.ThreadContext;
+
+/// The entry count at which a table leaves the Small tier (the plan's
+/// "Spike results": 99.5% of tables stay at or below it).
+pub const small_threshold: u32 = 64;
+
+/// The ladder of `MVM_str_hash_build`: Small, then Robin Hood.
+pub const standard = [_]tier.TierEntry{
+    .{ .tier = small.Tier(.{ .max_capacity = small_threshold }), .from = 0 },
+    .{ .tier = robinhood.Tier(.{}), .from = small_threshold },
+};
+
+/// Robin Hood from the first entry, for a future "pre-allocate big" hint.
+pub const large_only = [_]tier.TierEntry{
+    .{ .tier = robinhood.Tier(.{}), .from = 0 },
+};
+
+/// Indexed by the header's `set` byte.
+pub const sets: []const tier.TierSet = StrSpec.sets;
+
+/// Set index of `standard`, what the C API builds with.
+const standard_set: u8 = 0;
+
+pub const StrSpec = struct {
+    pub const Key = [*c]c.MVMString;
+    pub const Ctx = *ThreadContext;
+    pub const runtime_entry_size = true;
+    pub const publish: table.Publish = .safepoint_cas;
+    pub const sets: []const tier.TierSet = &.{ &standard, &large_only };
+
+    pub fn hash(ctx: Ctx, key: Key) u64 {
+        return c.MVM_string_hash_code(ctx, key);
+    }
+
+    /// `str_hash_table_funcs.h:280-284`: pointer equality, then grapheme
+    /// count, then the graphemes. The tiers pass (entry key, wanted key);
+    /// the test is symmetric.
+    pub fn eql(ctx: Ctx, a: Key, b: Key) bool {
+        if (a == b) return true;
+        const graphs = c.MVM_string_graphs_nocheck(ctx, a);
+        return graphs == c.MVM_string_graphs_nocheck(ctx, b) and
+            c.MVM_string_substrings_equal_nocheck(ctx, a, 0, graphs, b, 0) != 0;
+    }
+
+    pub fn allocator(ctx: Ctx) std.mem.Allocator {
+        _ = ctx;
+        return moar.mvm_allocator;
+    }
+
+    pub fn tc(ctx: Ctx) *ThreadContext {
+        return ctx;
+    }
+
+    pub fn salt(ctx: Ctx) u64 {
+        return rng.salt(ctx.instance);
+    }
+
+    /// `Table.insert` of a present key. `insertNocheck` below does the C's
+    /// own duplicate check (it needs the key for the message), so this is
+    /// only reached through `StrTable.insert` directly.
+    pub fn onDuplicate(ctx: Ctx) void {
+        c.MVM_oops(ctx, "insert duplicate key");
+    }
+};
+
+pub const StrTable = table.Table(StrSpec);
+
+/// The C struct's pointer as the engine's handle.
+pub inline fn handleOf(ht: *c.MVMStrHashTable) StrTable.Handle {
+    return @ptrCast(&ht.table);
+}
+
+/// The stale check of a function `table.zig` cannot check (no ctx), with
+/// the C's text for `MVM_str_hash_<who>`.
+inline fn checkStale(tc: *ThreadContext, h: StrTable.Handle, comptime who: []const u8) void {
+    if (h.*) |header| {
+        if (@as(*volatile u8, &header.stale).* != 0)
+            c.MVM_oops(tc, "MVM_str_hash_" ++ who ++ " called with a stale hashtable pointer");
+    }
+}
+
+// ------------------------------------------------------------ lifetime
+
+/// MVM_str_hash_build (`str_hash_table.c:158-200`).
+pub fn build(tc: *ThreadContext, ht: *c.MVMStrHashTable, entry_size: u32, entries: u32) void {
+    if (entry_size == 0 or entry_size > 255 or entry_size & 3 != 0)
+        c.MVM_oops(tc, "Hash table entry_size %u is invalid", entry_size);
+    StrTable.build(tc, handleOf(ht), entry_size, entries, standard_set);
+}
+
+/// MVM_str_hash_demolish: frees the block (at a safepoint unless
+/// control-only) and leaves the table unbuilt.
+pub fn demolish(tc: *ThreadContext, ht: *c.MVMStrHashTable) void {
+    StrTable.demolish(tc, handleOf(ht));
+}
+
+/// MVM_str_hash_count.
+pub fn count(tc: *ThreadContext, ht: *c.MVMStrHashTable) c.MVMHashNumItems {
+    const h = handleOf(ht);
+    checkStale(tc, h, "count");
+    return StrTable.count(h);
+}
+
+/// MVM_str_hash_entry_size: 0 means unbuilt.
+pub fn entrySize(tc: *ThreadContext, ht: *c.MVMStrHashTable) c.MVMHashNumItems {
+    const h = handleOf(ht);
+    checkStale(tc, h, "entry_size");
+    return StrTable.entrySize(h);
+}
+
+/// MVM_str_hash_is_empty.
+pub fn isEmpty(tc: *ThreadContext, ht: *c.MVMStrHashTable) bool {
+    const h = handleOf(ht);
+    checkStale(tc, h, "is_empty");
+    return StrTable.isEmpty(h);
+}
+
+/// MVM_str_hash_allocated_size: the block's size, for `unmanaged_size`.
+pub fn allocatedSize(tc: *ThreadContext, ht: *c.MVMStrHashTable) usize {
+    const h = handleOf(ht);
+    checkStale(tc, h, "allocated_size");
+    return StrTable.allocatedSize(h);
+}
+
+/// MVM_str_hash_shallow_copy: `dest` must be unbuilt; it gets a block copy
+/// with the same layout and iteration order (an unbuilt source leaves it
+/// unbuilt).
+pub fn shallowCopy(tc: *ThreadContext, source: *c.MVMStrHashTable, dest: *c.MVMStrHashTable) void {
+    StrTable.shallowCopy(tc, handleOf(source), handleOf(dest));
+}
+
+/// MVM_str_hash_fsck: the error count (0 is clean).
+pub fn fsck(tc: *ThreadContext, ht: *c.MVMStrHashTable, mode: u32) u64 {
+    return StrTable.fsck(tc, handleOf(ht), mode);
+}
+
+// ---------------------------------------------------------------- keys
+
+/// MVM_str_hash_key_is_valid: non-null, an MVMString and concrete.
+pub fn keyIsValid(tc: *ThreadContext, key: [*c]c.MVMString) bool {
+    const obj: [*c]c.MVMObject = @ptrCast(key);
+    if (c.MVM_is_null(tc, obj) != 0) return false;
+    return moar.repr(obj).ID == c.MVM_REPR_ID_MVMString and moar.isConcrete(obj);
+}
+
+/// MVM_str_hash_key_throw_invalid.
+pub fn keyThrowInvalid(tc: *ThreadContext, key: [*c]c.MVMString) noreturn {
+    c.MVM_exception_throw_adhoc(tc, "Hash keys must be concrete strings (got %s)", c.MVM_6model_get_debug_name(tc, @ptrCast(key)));
+}
+
+inline fn checkKey(tc: *ThreadContext, key: [*c]c.MVMString) void {
+    if (!keyIsValid(tc, key)) keyThrowInvalid(tc, key);
+}
+
+// -------------------------------------------------------------- access
+
+/// MVM_str_hash_fetch_nocheck: the entry, or null.
+pub fn fetchNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) ?*anyopaque {
+    return @ptrCast(StrTable.fetch(tc, handleOf(ht), key));
+}
+
+/// MVM_str_hash_lvalue_fetch_nocheck: the entry for `key`, created with a
+/// NULL key (fill it in) if absent. Growth on an absent key only.
+pub fn lvalueFetchNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) *anyopaque {
+    return @ptrCast(StrTable.lvalueFetch(tc, handleOf(ht), key));
+}
+
+/// MVM_str_hash_insert_nocheck (`str_hash_table.c:505-516`): the key is
+/// validated, a present key throws, a fresh entry gets its key stored.
+pub fn insertNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) *anyopaque {
+    const entry: *[*c]c.MVMString = @ptrCast(@alignCast(lvalueFetch(tc, ht, key)));
+    if (entry.* != null) {
+        const c_name = c.MVM_string_utf8_encode_C_string(tc, key);
+        var waste = [_][*c]u8{ c_name, null };
+        c.MVM_exception_throw_adhoc_free(tc, &waste, "insert duplicate key %s", c_name);
+    }
+    entry.* = key;
+    return @ptrCast(entry);
+}
+
+/// MVM_str_hash_delete_nocheck: an absent key is a no-op.
+pub fn deleteNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) void {
+    _ = StrTable.delete(tc, handleOf(ht), key);
+}
+
+/// MVM_str_hash_fetch: `fetchNocheck` of a validated key.
+pub fn fetch(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) ?*anyopaque {
+    checkKey(tc, key);
+    return fetchNocheck(tc, ht, key);
+}
+
+/// MVM_str_hash_lvalue_fetch: `lvalueFetchNocheck` of a validated key.
+pub fn lvalueFetch(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) *anyopaque {
+    checkKey(tc, key);
+    return lvalueFetchNocheck(tc, ht, key);
+}
+
+/// MVM_str_hash_delete: `deleteNocheck` of a validated key.
+pub fn delete(tc: *ThreadContext, ht: *c.MVMStrHashTable, key: [*c]c.MVMString) void {
+    checkKey(tc, key);
+    deleteNocheck(tc, ht, key);
+}
+
+// ----------------------------------------------------------- iteration
+//
+// `MVMStrHashIterator.pos` is the engine's position: 0 is the end, `start`
+// is one before the first entry, `next` walks downward.
+
+/// MVM_str_hash_at_end (`str_hash_table.h`).
+pub fn atEnd(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) bool {
+    checkStale(tc, handleOf(ht), "at_end");
+    return iterator.pos == 0;
+}
+
+/// MVM_str_hash_first: at the end for an unbuilt or empty table.
+pub fn first(tc: *ThreadContext, ht: *c.MVMStrHashTable) c.MVMStrHashIterator {
+    const h = handleOf(ht);
+    checkStale(tc, h, "iterator_first");
+    return .{ .pos = StrTable.first(h) };
+}
+
+/// MVM_str_hash_next_nocheck: only when not at the end.
+pub fn nextNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) c.MVMStrHashIterator {
+    const h = handleOf(ht);
+    checkStale(tc, h, "iterator_next_nocheck");
+    return .{ .pos = StrTable.next(h, iterator.pos) };
+}
+
+/// MVM_str_hash_next: `nextNocheck` after the end check.
+pub fn next(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) c.MVMStrHashIterator {
+    if (iterator.pos == 0)
+        c.MVM_oops(tc, "Calling str_hash_next when iterator is already at the end");
+    return nextNocheck(tc, ht, iterator);
+}
+
+/// MVM_str_hash_start: the position before the first entry.
+pub fn start(tc: *ThreadContext, ht: *c.MVMStrHashTable) c.MVMStrHashIterator {
+    const h = handleOf(ht);
+    checkStale(tc, h, "start");
+    return .{ .pos = StrTable.start(h) };
+}
+
+/// MVM_str_hash_at_start.
+pub fn atStart(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) bool {
+    const h = handleOf(ht);
+    checkStale(tc, h, "at_start");
+    return StrTable.atStart(h, iterator.pos);
+}
+
+/// MVM_str_hash_current_nocheck: only when not at the end.
+pub fn currentNocheck(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) *anyopaque {
+    const h = handleOf(ht);
+    checkStale(tc, h, "current_nocheck");
+    const entry = StrTable.current(h, iterator.pos) orelse
+        c.MVM_oops(tc, "MVM_str_hash_current_nocheck called with an iterator at the end");
+    return @ptrCast(entry);
+}
+
+/// MVM_str_hash_current: null at the end (de-facto API).
+pub fn current(tc: *ThreadContext, ht: *c.MVMStrHashTable, iterator: c.MVMStrHashIterator) ?*anyopaque {
+    if (iterator.pos == 0) return null;
+    return currentNocheck(tc, ht, iterator);
+}

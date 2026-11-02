@@ -145,6 +145,26 @@ pub inline fn trycas(addr: anytype, old: anytype, new: anytype) bool {
     return @cmpxchgStrong(usize, slot, old_word, new_word, .seq_cst, .seq_cst) == null;
 }
 
+// ---- MVM_free_at_safepoint from src/core/alloc.h ------------------------
+
+/// MVM_free_at_safepoint(tc, p) (alloc.h:80-88): queues an MVM_malloc'ed
+/// block for MVM_free at the next safepoint. The C is a static inline over
+/// MVM_trycas_AO, itself a static inline over a C11 atomic that translate-c
+/// leaves as an extern declaration nothing defines, so the translated
+/// `c.MVM_free_at_safepoint` compiles but does not link; this is its port.
+pub fn freeAtSafepoint(tc: *ThreadContext, to_free: *anyopaque) void {
+    const Entry = c.MVMAllocSafepointFreeListEntry;
+    // MVM_malloc panics rather than returning null.
+    const to_add: *Entry = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(Entry)) orelse unreachable));
+    to_add.to_free = to_free;
+    const slot: *[*c]Entry = &tc.instance.*.free_at_safepoint;
+    while (true) {
+        const orig = slot.*;
+        to_add.next = orig;
+        if (trycas(slot, orig, @as([*c]Entry, to_add))) break;
+    }
+}
+
 // ---- std.mem.Allocator over MVM_malloc / MVM_free -------------------------
 
 fn mvmAlloc(_: *anyopaque, len: usize, alignment: std.mem.Alignment, _: usize) ?[*]u8 {
@@ -274,6 +294,19 @@ test "trycas swaps only when the slot holds the expected value" {
     try std.testing.expectEqual(@as(usize, 2), slot);
     try std.testing.expect(!trycas(&slot, @as(usize, 1), @as(usize, 3)));
     try std.testing.expectEqual(@as(usize, 2), slot);
+}
+
+test "freeAtSafepoint queues the block on the instance's list" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance); // runs MVM_alloc_safepoint
+    const tc: *ThreadContext = instance.*.main_thread;
+    const before = instance.*.free_at_safepoint;
+    const block = c.MVM_malloc(64).?;
+    freeAtSafepoint(tc, block);
+    const head = instance.*.free_at_safepoint;
+    try std.testing.expect(head != before);
+    try std.testing.expectEqual(@as(?*anyopaque, block), head.*.to_free);
+    try std.testing.expect(head.*.next == before);
 }
 
 test "mvm_allocator allocates and frees through MVM_malloc" {

@@ -120,9 +120,13 @@ test "configDirName strips gen/config.h" {
     try std.testing.expectEqualStrings("a/b", configDirName("a/b//gen/config.h"));
 }
 
-/// The shim unit tests: src/zig/moar.zig as a test root, linked against
-/// libmoar (linkLibrary gives the cached test binary an rpath to the cached
-/// .so, which the installed moar deliberately avoids) plus the C layout probe.
+/// A libmoar-linked test root (`root_source_file`, test binary `name`):
+/// linked against libmoar (linkLibrary gives the cached test binary an rpath
+/// to the cached .so, which the installed moar deliberately avoids) plus the
+/// C layout probe. The root sees the translated C (`c`, what
+/// src/zig/moar.zig imports), the shim module (`moar`, what everything under
+/// src/zig/core/ imports) and `extra_imports`; a root ignores what it does
+/// not use.
 pub fn addShimTests(
     b: *std.Build,
     opts: Options,
@@ -130,17 +134,24 @@ pub fn addShimTests(
     libmoar: *std.Build.Step.Compile,
     config_h: *std.Build.Step.ConfigHeader,
     cflags: []const []const u8,
+    root_source_file: []const u8,
+    name: []const u8,
+    extra_imports: []const std.Build.Module.Import,
 ) *std.Build.Step.Compile {
     const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/zig/moar.zig"),
+        .root_source_file = b.path(root_source_file),
         .target = opts.target,
         .optimize = opts.optimize,
         .link_libc = true,
-        .imports = &.{.{ .name = "c", .module = impl.c_mod }},
+        .imports = &.{
+            .{ .name = "c", .module = impl.c_mod },
+            .{ .name = "moar", .module = impl.moar_mod },
+        },
     });
+    for (extra_imports) |imp| test_mod.addImport(imp.name, imp.module);
     moar.addIncludes(b, test_mod);
     test_mod.addConfigHeader(config_h);
     test_mod.addCSourceFile(.{ .file = b.path("src/zig/test/layout_probe.c"), .flags = cflags });
     test_mod.linkLibrary(libmoar);
-    return b.addTest(.{ .name = "shim-test", .root_module = test_mod });
+    return b.addTest(.{ .name = name, .root_module = test_mod });
 }

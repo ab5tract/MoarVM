@@ -40,7 +40,8 @@
 //! Block ownership: tiers never free. When `grow` returns a different header
 //! or a migration builds a new rung, `publish` retires the old block:
 //! `.plain` frees it through `Spec.allocator`, `.safepoint_cas` does what
-//! `src/core/str_hash_table.c:398, 479-487` do. `demolish` frees a
+//! `src/core/str_hash_table.c:398, 479-487` do (`MVM_free_at_safepoint` is
+//! `moar.freeAtSafepoint`). `demolish` frees a
 //! control-only block plainly in both modes (`str_hash_table.c:29-44`).
 //!
 //! Stale checks (`.safepoint_cas` only; comptime no-ops otherwise) guard the
@@ -229,7 +230,7 @@ pub fn Table(comptime Spec: type) type {
                 .safepoint_cas => {
                     const moar = @import("moar");
                     @as(*volatile u8, &old.stale).* = 1;
-                    moar.c.MVM_free_at_safepoint(Spec.tc(ctx), @ptrCast(blockOf(old).ptr));
+                    moar.freeAtSafepoint(Spec.tc(ctx), blockOf(old).ptr);
                     if (!moar.trycas(h, old, new))
                         fail(ctx, "hash table grown concurrently on the same hash");
                 },
@@ -382,7 +383,7 @@ pub fn Table(comptime Spec: type) type {
                 freeNow(ctx, header);
             } else {
                 const moar = @import("moar");
-                moar.c.MVM_free_at_safepoint(Spec.tc(ctx), @ptrCast(blockOf(header).ptr));
+                moar.freeAtSafepoint(Spec.tc(ctx), blockOf(header).ptr);
             }
             h.* = null;
         }
