@@ -266,7 +266,10 @@ and which builds without LTO did not hit in six reps. The rakudo spectest
 passes on both engines with no new failure; in six interleaved runs on the
 default builds the Zig engine's wall time is 0.99 of the C's and its peak
 RSS 0.98 (the campaign's own sequential runs had read 0.89 with session
-drift and RSS 3 percent above).
+drift and RSS 3 percent above). Against the build a `--cc=zig` user gets
+without LTO (C engine, `-Dlto=false`), the default Zig build's spectest
+wall time is 0.975 and its peak RSS 0.973, six interleaved runs, the two
+ranges disjoint (medians 4:55 against 5:03).
 
 Observable changes with the Zig engine:
 
