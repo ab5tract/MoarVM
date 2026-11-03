@@ -24,8 +24,14 @@
 # (with three or more variants the compare file takes all the others).
 # <out> must not exist yet.
 #
+# --ladder=NAME (default hash) picks the harness: a round runs
+# tools/bench/NAME-bench.nqp and, for a variant that names an exe, that exe
+# (`zig build uni-bench-exe` leaves <prefix>/bin/uni-bench for --ladder=uni).
+# Only the hash ladder is given --sizes and --nth; every ladder gets
+# --engine and --runs. The raw and compare files keep their names.
+#
 # Usage: tools/bench/hash-ab.sh --out=DIR --variant=NAME:LIBDIR[:BENCH_EXE]
-#            --variant=... [--rounds=R] [--sizes=S] [--runs=K (default 5)]
+#            --variant=... [--ladder=NAME (default hash)] [--rounds=R] [--sizes=S] [--runs=K (default 5)]
 #            [--nth=all|threshold (default all)] [--nqp=PATH]
 #            [--max-load=L (default 2.0)]
 #        tools/bench/hash-ab.sh --help
@@ -43,6 +49,7 @@ runs=5
 nth=all
 nqp=/tmp/claude-1000/tune-zig-prefix/bin/nqp-m
 max_load=2.0
+ladder=hash
 variants=
 for a in "$@"; do
     case $a in
@@ -52,6 +59,7 @@ for a in "$@"; do
         --runs=*)    runs=${a#--runs=} ;;
         --nth=all|--nth=threshold) nth=${a#--nth=} ;;
         --nqp=*)     nqp=${a#--nqp=} ;;
+        --ladder=*)  ladder=${a#--ladder=} ;;
         --max-load=*) max_load=${a#--max-load=} ;;
         --variant=*) variants="$variants ${a#--variant=}" ;;
         --help|-h)   sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
@@ -77,6 +85,13 @@ if [ ! -x "$nqp" ]; then
     echo "hash-ab.sh: $nqp is not executable" >&2
     exit 2
 fi
+
+if [ ! -f "$root/tools/bench/$ladder-bench.nqp" ]; then
+    echo "hash-ab.sh: no tools/bench/$ladder-bench.nqp for --ladder=$ladder" >&2
+    exit 2
+fi
+ladder_args="--runs=$runs"
+if [ "$ladder" = hash ]; then ladder_args="--sizes=$sizes --runs=$runs --nth=$nth"; fi
 
 # Check every variant and keep its names and paths in numbered shell vars.
 i=1
@@ -124,14 +139,14 @@ while [ "$round" -le "$rounds" ]; do
         wait_load
         echo "round $round $name nqp load $(load)" | tee -a "$out/load.log" >&2
         LD_LIBRARY_PATH=$lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
-            "$nqp" tools/bench/hash-bench.nqp --engine="$name" \
-            --sizes="$sizes" --runs="$runs" --nth="$nth" > "$out/run.tsv"
+            "$nqp" "tools/bench/$ladder-bench.nqp" --engine="$name" \
+            $ladder_args > "$out/run.tsv"
         awk -F '\t' -v OFS='\t' -v v="$name" -v r="$round" 'NF >= 7 { print v, r, $0 }' "$out/run.tsv" >> "$out/nqp.raw"
         if [ -n "$exe" ]; then
             wait_load
             echo "round $round $name capi load $(load)" | tee -a "$out/load.log" >&2
             LD_LIBRARY_PATH=$lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
-                "$exe" --sizes="$sizes" --runs="$runs" --nth="$nth" > "$out/run.tsv"
+                "$exe" $ladder_args > "$out/run.tsv"
             awk -F '\t' -v OFS='\t' -v v="$name" -v r="$round" 'NF >= 7 { print v, r, $0 }' "$out/run.tsv" >> "$out/capi.raw"
         fi
         rm -f "$out/run.tsv"

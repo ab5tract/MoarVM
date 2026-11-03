@@ -33,6 +33,10 @@ const moar = @import("moar");
 const c = moar.c;
 const build_options = @import("build_options");
 const keys = @import("test/keys.zig");
+const util = @import("bench_util.zig");
+const Timer = util.Timer;
+const median = util.median;
+const spread = util.spread;
 const str = @import("str.zig");
 
 const Tc = *moar.ThreadContext;
@@ -109,13 +113,6 @@ test "insert_nth runs at every ladder size with --nth=all, at T and T+1 by defau
     try std.testing.expectError(error.InvalidArgument, parseArgs(arena, &.{ "hash-bench", "--nth=some" }));
 }
 
-test "spread is the min and max of the runs" {
-    var runs = [_]f64{ 3.0, 1.0, 2.0 };
-    const s = spread(&runs);
-    try std.testing.expectEqual(@as(f64, 1.0), s.min);
-    try std.testing.expectEqual(@as(f64, 3.0), s.max);
-}
-
 const usage =
     \\usage: hash-bench [--sizes=N,N,...] [--runs=K] [--max-size=N] [--ops=a,b] [--op-repeat=K] [--nth=all|threshold]
     \\  --sizes     the table sizes to measure (default: the spec's ladder)
@@ -137,9 +134,7 @@ const Options = struct {
     nth_all: bool = false,
 
     fn wants(self: Options, name: []const u8) bool {
-        const list = self.ops orelse return true;
-        for (list) |o| if (std.mem.eql(u8, o, name)) return true;
-        return false;
+        return util.selects(self.ops, name);
     }
 };
 
@@ -161,10 +156,7 @@ fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
         } else if (std.mem.startsWith(u8, a, "--max-size=")) {
             opts.max_size = try std.fmt.parseInt(u32, a["--max-size=".len..], 10);
         } else if (std.mem.startsWith(u8, a, "--ops=")) {
-            var list: std.ArrayList([]const u8) = .empty;
-            var it = std.mem.splitScalar(u8, a["--ops=".len..], ',');
-            while (it.next()) |o| if (o.len != 0) try list.append(arena, o);
-            opts.ops = list.items;
+            opts.ops = try util.splitList(arena, a["--ops=".len..]);
         } else if (std.mem.startsWith(u8, a, "--op-repeat=")) {
             opts.op_repeat = try std.fmt.parseInt(u32, a["--op-repeat=".len..], 10);
             if (opts.op_repeat == 0) return error.InvalidArgument;
@@ -192,31 +184,8 @@ fn parseArgs(arena: std.mem.Allocator, args: []const []const u8) !Options {
     return opts;
 }
 
-const Timer = struct {
-    io: std.Io,
-    start: i96,
-
-    fn begin(io: std.Io) Timer {
-        return .{ .io = io, .start = std.Io.Clock.awake.now(io).toNanoseconds() };
-    }
-
-    fn elapsedNs(self: Timer) u64 {
-        return @intCast(std.Io.Clock.awake.now(self.io).toNanoseconds() - self.start);
-    }
-};
-
 fn entryOf(p: ?*anyopaque) *c.MVMHashEntry {
     return @ptrCast(@alignCast(p.?));
-}
-
-fn median(samples: []f64) f64 {
-    std.mem.sort(f64, samples, {}, std.sort.asc(f64));
-    return samples[samples.len / 2];
-}
-
-/// The fastest and the slowest run.
-fn spread(samples: []const f64) struct { min: f64, max: f64 } {
-    return .{ .min = std.mem.min(f64, samples), .max = std.mem.max(f64, samples) };
 }
 
 fn emit(w: *std.Io.Writer, n: u32, op: []const u8, samples: []f64, alloc_bytes: usize) !void {

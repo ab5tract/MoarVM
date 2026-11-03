@@ -13,6 +13,8 @@ test {
     _ = @import("rng.zig");
     _ = @import("str.zig");
     _ = @import("bench.zig");
+    _ = @import("bench_util.zig");
+    _ = @import("uni_bench.zig");
     _ = @import("stats.zig");
     _ = @import("test/stats_test.zig");
 }

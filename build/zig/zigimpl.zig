@@ -199,3 +199,36 @@ pub fn addHashBench(
     mod.linkLibrary(libmoar);
     return b.addExecutable(.{ .name = "hash-bench", .root_module = mod });
 }
+
+/// `zig build uni-bench`: the C-API benchmark of the four unicode tables,
+/// root src/zig/core/hash/uni_bench.zig, wired like `addHashBench` plus the
+/// key file `tools/bench/uni-bench-keys.tsv` as the anonymous import
+/// `uni_bench_keys` (`@embedFile` cannot leave the module's directory).
+pub fn addUniBench(
+    b: *std.Build,
+    opts: Options,
+    impl: Impl,
+    libmoar: *std.Build.Step.Compile,
+    config_h: *std.Build.Step.ConfigHeader,
+    cflags: []const []const u8,
+    bench_options: *std.Build.Module,
+    zig_options: *std.Build.Module,
+) *std.Build.Step.Compile {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/zig/core/hash/uni_bench.zig"),
+        .target = opts.target,
+        .optimize = opts.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "moar", .module = impl.moar_mod },
+            .{ .name = "build_options", .module = bench_options },
+            .{ .name = "zig_options", .module = zig_options },
+        },
+    });
+    mod.addAnonymousImport("uni_bench_keys", .{ .root_source_file = b.path("tools/bench/uni-bench-keys.tsv") });
+    moar.addIncludes(b, mod);
+    mod.addConfigHeader(config_h);
+    mod.addCSourceFile(.{ .file = b.path("src/zig/core/hash/uni_bench_shim.c"), .flags = cflags });
+    mod.linkLibrary(libmoar);
+    return b.addExecutable(.{ .name = "uni-bench", .root_module = mod });
+}

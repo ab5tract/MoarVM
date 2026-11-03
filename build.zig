@@ -194,6 +194,16 @@ pub fn build(b: *std.Build) void {
         // for tools/bench/hash-ab.sh (the C-API ladder under LD_LIBRARY_PATH).
         const bench_exe_step = b.step("hash-bench-exe", "Install the microbenchmark executable as <prefix>/bin/hash-bench");
         bench_exe_step.dependOn(&b.addInstallArtifact(bench, .{}).step);
+
+        // `zig build uni-bench -- <args>` / `uni-bench-exe`: the same for the
+        // four unicode tables (tools/bench/uni-bench.nqp is its nqp twin).
+        const uni_bench = zigimpl.addUniBench(b, opts, bench_impl, libmoar, config_h, moar.cflags(b, opts), bench_options, stats_options);
+        const uni_run = b.addRunArtifact(uni_bench);
+        if (b.args) |args| uni_run.addArgs(args);
+        const uni_step = b.step("uni-bench", "Run the unicode lookup table microbenchmark against this build's engine (args after --: --runs=, --ops=, --sample=)");
+        uni_step.dependOn(&uni_run.step);
+        const uni_exe_step = b.step("uni-bench-exe", "Install the unicode microbenchmark executable as <prefix>/bin/uni-bench");
+        uni_exe_step.dependOn(&b.addInstallArtifact(uni_bench, .{}).step);
     }
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");

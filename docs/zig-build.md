@@ -7,6 +7,7 @@ An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
     zig build check-jit-tools # diff the Zig JIT generators against the Perl originals (needs perl; exists only when the JIT is on)
     zig build test            # installs, then runs the installed moar: --version and the nqp stage0 smoke test
     zig build hash-bench -- --sizes=4,64,65  # the string hash table microbenchmark against this build's engine (tools/bench/hash-bench.sh runs it for both)
+    zig build uni-bench -- --runs=3 --sample=256  # the unicode lookup tables (property, sequence, codepoint name, property value) benchmark against this build's engine; tools/bench/uni-bench.nqp is its nqp twin, tools/bench/hash-ab.sh --ladder=uni runs both
     zig build strategy-test -Dnqp-prefix=<P>  # the hashstrategy op tests on <P>/bin/nqp-m (needs an nqp that maps the op)
 
 Options (`zig build --help` lists them):
