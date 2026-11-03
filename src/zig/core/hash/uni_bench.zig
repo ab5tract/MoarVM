@@ -37,6 +37,9 @@ const target_ns: u64 = 50_000_000;
 const cp_limit: u32 = 0x30000;
 const default_sample: u32 = 4096;
 const lcg_seed: u64 = 0x5eed;
+/// The distinct prefix-resolved keys of cpbyname_miss_prefix: 512 compatibility
+/// ideographs (0xF900..0xFAFF) and 20,992 unified ones (0x4E00..0x9FFF).
+const prefix_key_limit: u32 = 512 + 20992;
 
 pub const cell_names = [_][]const u8{
     "cpbyname_hit", "cpbyname_miss",  "cpbyname_miss_prefix",
@@ -307,12 +310,14 @@ fn buildCell(
         for (names, ks) |n, *k| k.* = try std.fmt.allocPrintSentinel(arena, "{s} ZZZ", .{n}, 0);
         return .{ .name = name, .tables = try repeatTable(arena, t[2], ks.len), .keys = ks, .hit = false };
     } else if (eq(u8, name, "cpbyname_miss_prefix")) {
-        const ks = try arena.alloc([:0]const u8, sample);
+        // Distinct keys the lookup resolves by prefix: the compatibility
+        // block, then the unified one (--sample clamps to prefix_key_limit).
+        const ks = try arena.alloc([:0]const u8, @min(sample, prefix_key_limit));
         for (ks, 0..) |*k, i| {
-            k.* = if (i % 2 == 0)
-                try std.fmt.allocPrintSentinel(arena, "CJK UNIFIED IDEOGRAPH-{X}", .{0x4E00 + i}, 0)
+            k.* = if (i < 512)
+                try std.fmt.allocPrintSentinel(arena, "CJK COMPATIBILITY IDEOGRAPH-{X}", .{0xF900 + i}, 0)
             else
-                try std.fmt.allocPrintSentinel(arena, "<CONTROL-{X}>", .{i % 32}, 0);
+                try std.fmt.allocPrintSentinel(arena, "CJK UNIFIED IDEOGRAPH-{X}", .{0x4E00 + i - 512}, 0);
         }
         return .{ .name = name, .tables = try repeatTable(arena, t[2], ks.len), .keys = ks, .hit = false };
     } else if (eq(u8, name, "propcode_hit") or eq(u8, name, "propcode_alias")) {

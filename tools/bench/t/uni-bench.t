@@ -44,4 +44,8 @@ $out = qx{$nqp $harness --runs=1 --ops=propcode_hit --keys=$keys 2>&1};
 isnt $?, 0, 'a _hit cell with a missing key dies';
 like $out, qr/propcode_hit: \d+ wrong answers/, 'the error names the cell';
 
+$out = qx{$nqp $harness --runs=1 --sample=100000 --ops=cpbyname_miss_prefix 2>&1};
+is $?, 0, 'prefix cell with a huge --sample exits 0' or diag $out;
+is((split /\t/, $out)[1], 21504, 'miss_prefix size is the distinct key count, clamped');
+
 done_testing;

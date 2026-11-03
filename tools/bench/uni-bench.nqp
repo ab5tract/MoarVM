@@ -11,9 +11,11 @@
 #   cpbyname_hit          nqp::codepointfromname of real names
 #   cpbyname_miss         the same names with " ZZZ" appended (-1 expected)
 #   cpbyname_miss_prefix  names the table lacks but the prefix fallbacks of
-#                         MVM_unicode_lookup_by_name resolve: CJK UNIFIED
-#                         IDEOGRAPH-<hex> and <CONTROL-<hex>>
-#   propcode_hit          nqp::unipropcode of canonical property names
+#                         MVM_unicode_lookup_by_name resolve, all distinct:
+#                         CJK COMPATIBILITY IDEOGRAPH-<hex> for 0xF900..0xFAFF,
+#                         then CJK UNIFIED IDEOGRAPH-<hex> from 0x4E00 (21,504
+#                         keys at most: --sample is clamped to that)
+#   propcode_hit          nqp::unipropcode of the longest name of each property (its long form)
 #   propcode_alias        ... of their aliases
 #   propcode_miss         ... of every name with "_X" appended (0 expected)
 #   pvalcode_hit          nqp::unipvalcode of property value names
@@ -315,9 +317,11 @@ sub MAIN(*@ARGS) {
         elsif $cell eq 'cpbyname_miss' { @keys := suffixed(@names, ' ZZZ') }
         elsif $cell eq 'cpbyname_miss_prefix' {
             my int $i := 0;
-            while $i < $sample {
-                if $i % 2 == 0 { nqp::push(@keys, 'CJK UNIFIED IDEOGRAPH-' ~ hex(0x4E00 + $i)); nqp::push(@expect, 0x4E00 + $i) }
-                else { nqp::push(@keys, '<CONTROL-' ~ hex($i % 32) ~ '>'); nqp::push(@expect, $i % 32) }
+            my int $count := $sample < 21504 ?? $sample !! 21504;
+            while $i < $count {
+                my int $cp := $i < 512 ?? 0xF900 + $i !! 0x4E00 + $i - 512;
+                nqp::push(@keys, ($i < 512 ?? 'CJK COMPATIBILITY IDEOGRAPH-' !! 'CJK UNIFIED IDEOGRAPH-') ~ hex($cp));
+                nqp::push(@expect, $cp);
                 $i := $i + 1;
             }
         }

@@ -2,8 +2,9 @@
 # The key file of the unicode benchmark (tools/bench/uni-bench.nqp and
 # `zig build uni-bench`): parses the static key arrays of
 # src/strings/unicode_db.c textually and writes TSV rows `kind<TAB>name[<TAB>value]`
-#   prop   a name of unicode_property_keypairs that is the first seen for its
-#          value (the canonical name); the value follows
+#   prop   per value of unicode_property_keypairs, its longest name (the long
+#          form: Alphabetic over Alpha; a tie goes to the first in array
+#          order); the value follows
 #   alias  every other name of that array; the value follows
 #   pval   1,024 keys ("<propcode>-<valuename>") of unicode_property_value_keypairs,
 #          sampled with a fixed stride from those that look up in their own table
@@ -33,17 +34,19 @@ sub pairs {
 }
 
 my (%count, @rows);
-my %seen_value;
-for my $p (pairs('unicode_property_keypairs')) {
-    my ($name, $value) = @$p;
-    my $kind = $seen_value{$value}++ ? 'alias' : 'prop';
+my @kp = pairs('unicode_property_keypairs');
+my %long;    # value => index of its longest name, the first of equals
+for my $i (0 .. $#kp) {
+    my ($name, $value) = @{ $kp[$i] };
+    $long{$value} = $i if !defined $long{$value} || length($name) > length($kp[ $long{$value} ][0]);
+}
+for my $i (0 .. $#kp) {
+    my ($name, $value) = @{ $kp[$i] };
+    my $kind = $long{$value} == $i ? 'prop' : 'alias';
     push @rows, "$kind\t$name\t$value";
     $count{$kind}++;
 }
 
-# MVM_unicode_init files an entry under hash[value >> 24]; the 39 "20-" keys carry
-# a different property code there, so a lookup of their own key misses: skipped.
-# So are values whose code (value & 0xFFFFFF) is 0: a hit would read as a miss.
 my @pv = grep { $_->[0] =~ /^(\d+)-/ && $1 == ($_->[1] >> 24) && ($_->[1] & 0xFFFFFF) } pairs('unicode_property_value_keypairs');
 my $stride = int(@pv / 1024);
 for (my $i = 0, my $n = 0; $n < 1024 && $i < @pv; $i += $stride, $n++) {
