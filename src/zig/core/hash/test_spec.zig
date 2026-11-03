@@ -14,18 +14,12 @@ pub const standard_test_set = [_]tier.TierEntry{
     .{ .tier = robinhood.Tier(.{}), .from = 64 },
 };
 
-/// The Swiss tier alone, from the first entry (strategy 1's shape).
+/// The Swiss tier alone, from the first entry (the GENERAL strategy's shape).
 pub const swiss_test_set = [_]tier.TierEntry{
     .{ .tier = swiss.Tier(.{}), .from = 0 },
 };
 
-/// Small, then Swiss from 64 (the composed set's shape).
-pub const small_swiss_test_set = [_]tier.TierEntry{
-    .{ .tier = small.Tier(.{ .max_capacity = 64 }), .from = 0 },
-    .{ .tier = swiss.Tier(.{}), .from = 64 },
-};
-
-/// The array-ordered tier alone, from the first entry (strategy 2's shape).
+/// The array-ordered tier alone, from the first entry (the ORDERED strategy's shape).
 pub const ordered_test_set = [_]tier.TierEntry{
     .{ .tier = ordered.Tier(.{}), .from = 0 },
 };
@@ -74,5 +68,4 @@ test {
     comptime tier.validate(&standard_test_set);
     comptime tier.validate(&swiss_test_set);
     comptime tier.validate(&ordered_test_set);
-    comptime tier.validate(&small_swiss_test_set);
 }

@@ -458,12 +458,12 @@ test "buildStrategy refuses strategies that are not built in" {
     try testing.expect(str.strategyAvailable(0));
     try testing.expect(str.strategyAvailable(1));
     try testing.expect(str.strategyAvailable(2));
-    try testing.expect(str.strategyAvailable(3));
+    try testing.expect(!str.strategyAvailable(3));
     try testing.expect(!str.strategyAvailable(4));
     try testing.expect(!str.strategyAvailable(255));
 }
 
-test "strategy 1 round trip through the C-shaped API" {
+test "GENERAL (strategy 1) round trip through the C-shaped API" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -514,7 +514,7 @@ test "strategy 1 round trip through the C-shaped API" {
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
 }
 
-test "strategy 1 shallow copy is independent" {
+test "GENERAL (strategy 1) shallow copy is independent" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -531,7 +531,7 @@ test "strategy 1 shallow copy is independent" {
     defer str.demolish(tc, &dst);
     try testing.expect(dst.table != src.table);
     try testing.expectEqual(str.allocatedSize(tc, &src), str.allocatedSize(tc, &dst));
-    try testing.expectEqual(@as(u8, str.swiss_set), str.handleOf(&dst).*.?.set);
+    try testing.expectEqual(@as(u8, str.general_set), str.handleOf(&dst).*.?.set);
 
     // The same iteration order, entries in the copy's own block.
     var sp = str.first(tc, &src);
@@ -563,34 +563,34 @@ test "strategy 1 shallow copy is independent" {
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
 }
 
-test "strategy 1 header set byte is the swiss set" {
+test "GENERAL (strategy 1) header set byte is the general set" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
     const ks = try keys.make(tc, 1);
     defer testing.allocator.free(ks);
 
-    try testing.expectEqual(@as(?u8, str.swiss_set), str.strategy_sets[1]);
-    try testing.expect(str.sets[str.swiss_set].ptr == @as([*]const tier.TierEntry, &str.swiss_only));
-    // Control-only, then materialised, then presized: always the swiss set.
+    try testing.expectEqual(@as(?u8, str.general_set), str.strategy_sets[1]);
+    try testing.expect(str.sets[str.general_set].ptr == @as([*]const tier.TierEntry, &str.swiss_only));
+    // Control-only, then materialised, then presized: always the general set.
     var ht = unbuilt();
     str.buildStrategy(tc, &ht, entry_size, 0, 1);
     defer str.demolish(tc, &ht);
     const h = str.handleOf(&ht);
-    try testing.expectEqual(@as(u8, str.swiss_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, str.general_set), h.*.?.set);
     try put(tc, &ht, ks[0], 7);
-    try testing.expectEqual(@as(u8, str.swiss_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, str.general_set), h.*.?.set);
     try testing.expectEqual(@as(u8, 0), str.StrTable.rung(h));
     try testing.expectEqual(@as(u64, 7), try valueOf(tc, &ht, ks[0]));
 
     var big = unbuilt();
     str.buildStrategy(tc, &big, entry_size, 1000, 1);
     defer str.demolish(tc, &big);
-    try testing.expectEqual(@as(u8, str.swiss_set), str.handleOf(&big).*.?.set);
+    try testing.expectEqual(@as(u8, str.general_set), str.handleOf(&big).*.?.set);
     try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
 }
 
-test "strategy 2 round trip" {
+test "ORDERED (strategy 2) round trip" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -641,7 +641,7 @@ test "strategy 2 round trip" {
     try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
 }
 
-test "strategy 2 shallow copy is independent" {
+test "ORDERED (strategy 2) shallow copy is independent" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -694,7 +694,7 @@ test "strategy 2 shallow copy is independent" {
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
 }
 
-test "strategy 2 iteration with deletes matches MVMIter's protocol" {
+test "ORDERED (strategy 2) iteration with deletes matches MVMIter's protocol" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -743,65 +743,4 @@ test "strategy 2 iteration with deletes matches MVMIter's protocol" {
         try testing.expectEqual(left, remaining);
         try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
     }
-}
-
-test "strategy 3 (Small then Swiss) migrates from Small to Swiss at the threshold" {
-    const vm = Instance.create();
-    defer vm.destroy();
-    const tc = vm.tc;
-    const n: u32 = 300;
-    const ks = try keys.make(tc, n);
-    defer testing.allocator.free(ks);
-
-    try testing.expectEqual(@as(?u8, str.small_swiss_set), str.strategy_sets[3]);
-    try testing.expect(str.sets[str.small_swiss_set].ptr == @as([*]const tier.TierEntry, &str.small_swiss));
-    var ht = unbuilt();
-    str.buildStrategy(tc, &ht, entry_size, 0, 3);
-    defer str.demolish(tc, &ht);
-    const h = str.handleOf(&ht);
-    for (ks[0..str.small_threshold], 0..) |k, i| try put(tc, &ht, k, i);
-    try testing.expectEqual(@as(u8, str.small_swiss_set), h.*.?.set);
-    try testing.expectEqual(@as(u8, 0), str.StrTable.rung(h));
-    try put(tc, &ht, ks[str.small_threshold], str.small_threshold);
-    try testing.expectEqual(@as(u8, str.small_swiss_set), h.*.?.set);
-    try testing.expectEqual(@as(u8, 1), str.StrTable.rung(h));
-    for (ks[str.small_threshold + 1 ..], str.small_threshold + 1..) |k, i| try put(tc, &ht, k, i);
-    try testing.expectEqual(n, str.count(tc, &ht));
-    for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
-    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
-
-    // Delete the current entry while holding the next: every entry once.
-    const seen = try testing.allocator.alloc(u32, n);
-    defer testing.allocator.free(seen);
-    @memset(seen, 0);
-    var next = str.first(tc, &ht);
-    while (!str.atEnd(tc, &ht, next)) {
-        const curr = next;
-        next = str.nextNocheck(tc, &ht, curr);
-        const e = entryOf(str.currentNocheck(tc, &ht, curr));
-        seen[e.value] += 1;
-        str.delete(tc, &ht, e.key);
-    }
-    for (seen) |count| try testing.expectEqual(@as(u32, 1), count);
-    try testing.expectEqual(@as(u32, 0), str.count(tc, &ht));
-
-    // Presized above the threshold: Swiss from the start.
-    var big = unbuilt();
-    str.buildStrategy(tc, &big, entry_size, 1000, 3);
-    defer str.demolish(tc, &big);
-    try testing.expectEqual(@as(u8, 1), str.StrTable.rung(str.handleOf(&big)));
-
-    // A shallow copy of the Swiss rung is independent.
-    var src = unbuilt();
-    str.buildStrategy(tc, &src, entry_size, 0, 3);
-    defer str.demolish(tc, &src);
-    for (ks[0..100], 0..) |k, i| try put(tc, &src, k, i);
-    var dst = unbuilt();
-    str.shallowCopy(tc, &src, &dst);
-    defer str.demolish(tc, &dst);
-    try testing.expectEqual(@as(u8, 1), str.StrTable.rung(str.handleOf(&dst)));
-    str.delete(tc, &src, ks[0]);
-    try testing.expectEqual(@as(u64, 0), try valueOf(tc, &dst, ks[0]));
-    try testing.expectEqual(@as(u32, 100), str.count(tc, &dst));
-    try testing.expectEqual(@as(u32, 99), str.count(tc, &src));
 }

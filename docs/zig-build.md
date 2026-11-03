@@ -287,62 +287,22 @@ Observable changes with the Zig engine:
 - Some operations are still slower than with the C engine, by the
   measured ratios above.
 
-### Strategies (bake-off)
+### Strategies
 
-`MVMHashStrategy` (`str_hash_table.h`) names the layout strategies of the
-hash layout bake-off: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Robin
-Hood ladder above), `MVM_HASH_STRATEGY_SWISS` (1) and
-`MVM_HASH_STRATEGY_ORDERED` (2), with `MVM_HASH_STRATEGY_COUNT` (3).
-`MVM_str_hash_build_strategy` builds a string table with a strategy (0 is
-`MVM_str_hash_build`). A strategy the engine lacks throws "hash strategy
-N is not available in this engine", and the C engine throws for any
-strategy but 0.
-
-Strategy 1 (`tiers/swiss.zig`, the `swiss_only` tier set) is a Swiss-style
-table from the first entry: a power-of-two slot count (at least 16), one
-metadata byte per slot (`0x80` empty, `0xFE` deleted, else the top 7 bits
-of the salted hash) searched 16 slots at a time with a vector compare,
-groups probed at triangular offsets from the one the hash's low bits pick,
-and a load limit of 7/8 counting tombstones. A delete leaves an empty slot
-instead of a tombstone when its group still has one. A full table doubles,
-or rehashes at the same size when at most 3/4 of the limit is live (the
-tombstones filled it). Iteration walks the slots downward; the block holds
-no pointers, so the shallow copy of `nqp::clone` is a byte copy.
-
-Strategy 2 (`tiers/ordered.zig`, the `ordered_only` tier set) keeps the
-entries in a dense array in insertion order, found through a separate
-open-addressing index (linear probing, at most half full) whose slots hold
-an entry's position plus one: one byte wide while the entry capacity is
-below 255, two below 65 535, else four, the width recorded in the control
-block. Insert appends; delete moves the last entry into the hole
-(swap-remove) and empties the index slot by backward shift, so there are
-no tombstones and a full table always doubles. Iteration walks the
-positions downward, which keeps "delete the current entry while holding
-the next" safe; before the first delete it is reverse insertion order.
-The block holds no pointers.
-
-`MVMHash` and `HashAttrStore` build with the
-instance's `hash_strategy_default`, read once at startup from the
-`MVM_HASH_STRATEGY` environment variable. Unset or empty leaves the
-default (0); anything other than a plain decimal number in 0..254 (no
-sign, spaces or trailing characters) makes the first hash build throw,
-naming strategy 255.
-The variable is a diagnostic for the bake-off, not an API; the other
-tables always use the default.
-
-One op drives the strategies from nqp (mapped on nqp's
-`zig-hash-strategies` branch): `nqp::hashstrategy(%h, $strategy, $size)`
-(`hashstrategy w(obj) r(obj) r(int64) r(int64)`) rebuilds an empty
-`MVMHash`'s table with a strategy and a size hint and returns `%h`; it
-dies on a non-hash ("hashstrategy needs a concrete hash"), on a hash with
-entries ("hashstrategy on a non-empty hash"; one emptied by deletes is
-fine) and on a strategy the engine lacks (a negative strategy or one over
-255 counts as 255). It sits before the spesh ops in `src/core/oplist`,
-so only spesh op numbers moved. Its tests,
-`tools/bench/t/strategy.nqp` (TAP), need an nqp built with the mapping:
-`zig build strategy-test -Dnqp-prefix=<P>` runs them on `<P>/bin/nqp-m`
-with `LD_LIBRARY_PATH=<P>/lib`, and `zig build test` runs them too when
-`-Dnqp-prefix` is given.
+`MVMHashStrategy` (`str_hash_table.h`) names the string table's layout
+strategies: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Robin Hood
+ladder above), `MVM_HASH_STRATEGY_GENERAL` (1, `tiers/swiss.zig`) and
+`MVM_HASH_STRATEGY_ORDERED` (2, `tiers/ordered.zig`), selected with
+`MVM_str_hash_build_strategy`, `nqp::hashstrategy(%h, $strategy, $size)`
+or, process-wide as a diagnostic, the `MVM_HASH_STRATEGY` environment
+variable. docs/hash-strategies.md describes each one, what it won and gave
+up in the hash layout bake-off, and how to select it. The `hashstrategy`
+op sits before the spesh ops in `src/core/oplist`, so only spesh op
+numbers moved when it was added. Its tests, `tools/bench/t/strategy.nqp`
+(TAP), need an nqp built with the mapping (nqp branch
+`zig-hash-strategies`): `zig build strategy-test -Dnqp-prefix=<P>` runs
+them on `<P>/bin/nqp-m` with `LD_LIBRARY_PATH=<P>/lib`, and `zig build
+test` runs them too when `-Dnqp-prefix` is given.
 
 ## Not yet supported
 
