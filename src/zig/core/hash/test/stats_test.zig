@@ -161,6 +161,28 @@ noinline fn buildFromOneCallSite(tc: *ThreadContext, ht: *c.MVMStrHashTable) voi
     std.mem.doNotOptimizeAway(ht.table);
 }
 
+test "a migration past the Small rung is counted once" {
+    if (!stats.enabled) return error.SkipZigTest;
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 100);
+    defer testing.allocator.free(ks);
+
+    const site = stats.siteOf(0xd00b1e);
+    var ht = unbuilt();
+    buildAt(tc, &ht, site, 0);
+    fill(tc, &ht, ks);
+    str.demolish(tc, &ht);
+
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    const text = try dumpOf(&out);
+    try testing.expectEqual(@as(u64, 100), try countOf(text, site, "insert"));
+    try testing.expectEqual(@as(u64, 1), try countOf(text, site, "migrate"));
+    std.debug.print("grow count for 100 inserts from hint 0: {d}\n", .{try countOf(text, site, "grow")});
+}
+
 test "sites are minted through the exports, one per call site" {
     if (!stats.enabled) return error.SkipZigTest;
     const vm = Instance.create();
