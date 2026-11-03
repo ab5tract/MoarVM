@@ -1057,6 +1057,40 @@ const TwoSetSpec = struct {
     pub const onDuplicate = IntSpec.onDuplicate;
 };
 
+/// Set 0 is the retired Small then Robin Hood ladder.
+const RhLadderSpec = struct {
+    pub const Key = IntSpec.Key;
+    pub const Ctx = IntSpec.Ctx;
+    pub const runtime_entry_size = true;
+    pub const publish = .plain;
+    pub const sets: []const tier.TierSet = &.{&@import("test_spec.zig").standard_rh_test_set};
+    pub const hash = IntSpec.hash;
+    pub const eql = IntSpec.eql;
+    pub const allocator = IntSpec.allocator;
+    pub const onDuplicate = IntSpec.onDuplicate;
+};
+
+test "the retired Small then Robin Hood ladder still migrates at the 65th insert" {
+    const TR = Table(RhLadderSpec);
+    var slot: ?*Header = null;
+    const h = &slot;
+    TR.build({}, h, test_entry_size, 0, 0);
+    defer TR.demolish({}, h);
+    for (1..65) |k| {
+        const e = TR.insert({}, h, k);
+        std.mem.writeInt(u64, e[0..8], k, .little);
+        std.mem.writeInt(u64, e[8..16], k * 10, .little);
+    }
+    try testing.expectEqual(@as(u8, 0), TR.rung(h));
+    const e = TR.insert({}, h, 65);
+    std.mem.writeInt(u64, e[0..8], 65, .little);
+    std.mem.writeInt(u64, e[8..16], 650, .little);
+    try testing.expectEqual(@as(u8, 1), TR.rung(h));
+    try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
+    for (1..66) |k| try testing.expectEqual(k * 10, valueOf(TR.fetch({}, h, k).?));
+    try testing.expectEqual(@as(u64, 0), TR.fsck({}, h, 0));
+}
+
 test "a set other than 0 reaches every rung through resolve" {
     const T2 = Table(TwoSetSpec);
     comptime std.debug.assert(T2.dispatch_reads_set);
@@ -1089,6 +1123,8 @@ test "a set other than 0 reaches every rung through resolve" {
 }
 
 /// The test ladder's second (Swiss) rung, for its geometry.
+/// The retired ladder's Robin Hood rung, for its geometry.
+const TestRH = @import("tiers/robinhood.zig").Tier(.{}).Impl(IntSpec);
 const TestSwiss = @import("tiers/swiss.zig").Tier(.{}).Impl(IntSpec);
 
 /// Every key in `keys` maps to its `key * 10` payload.

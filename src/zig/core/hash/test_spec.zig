@@ -14,7 +14,7 @@ pub const standard_test_set = [_]tier.TierEntry{
     .{ .tier = swiss.Tier(.{}), .from = 64 },
 };
 
-/// The retired default, Small then Robin Hood, kept for comparison tests.
+/// The retired default, Small then Robin Hood, kept for the table-level migration test in `table.zig`.
 pub const standard_rh_test_set = [_]tier.TierEntry{
     .{ .tier = small.Tier(.{ .max_capacity = 64 }), .from = 0 },
     .{ .tier = robinhood.Tier(.{}), .from = 64 },
