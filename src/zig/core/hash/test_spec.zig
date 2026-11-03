@@ -6,6 +6,7 @@ const tier = @import("tier.zig");
 const small = @import("tiers/small.zig");
 const robinhood = @import("tiers/robinhood.zig");
 const swiss = @import("tiers/swiss.zig");
+const ordered = @import("tiers/ordered.zig");
 
 /// The ladder the tests run tables through.
 pub const standard_test_set = [_]tier.TierEntry{
@@ -16,6 +17,11 @@ pub const standard_test_set = [_]tier.TierEntry{
 /// The Swiss tier alone, from the first entry (strategy 1's shape).
 pub const swiss_test_set = [_]tier.TierEntry{
     .{ .tier = swiss.Tier(.{}), .from = 0 },
+};
+
+/// The array-ordered tier alone, from the first entry (strategy 2's shape).
+pub const ordered_test_set = [_]tier.TierEntry{
+    .{ .tier = ordered.Tier(.{}), .from = 0 },
 };
 
 pub const IntSpec = struct {
@@ -58,6 +64,8 @@ test {
     _ = small;
     _ = robinhood;
     _ = swiss;
+    _ = ordered;
     comptime tier.validate(&standard_test_set);
     comptime tier.validate(&swiss_test_set);
+    comptime tier.validate(&ordered_test_set);
 }

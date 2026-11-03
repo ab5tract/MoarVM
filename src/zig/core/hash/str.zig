@@ -20,6 +20,7 @@ const rng = @import("rng.zig");
 const small = @import("tiers/small.zig");
 const robinhood = @import("tiers/robinhood.zig");
 const swiss = @import("tiers/swiss.zig");
+const ordered = @import("tiers/ordered.zig");
 
 const Header = table.Header;
 const ThreadContext = moar.ThreadContext;
@@ -45,6 +46,12 @@ pub const swiss_only = [_]tier.TierEntry{
     .{ .tier = swiss.Tier(.{}), .from = 0 },
 };
 
+/// The array-ordered tier from the first entry: strategy 2
+/// (`MVM_HASH_STRATEGY_ORDERED`).
+pub const ordered_only = [_]tier.TierEntry{
+    .{ .tier = ordered.Tier(.{}), .from = 0 },
+};
+
 /// Indexed by the header's `set` byte.
 pub const sets: []const tier.TierSet = StrSpec.sets;
 
@@ -55,12 +62,15 @@ const standard_set: u8 = 0;
 /// Set index of `swiss_only`.
 pub const swiss_set: u8 = 2;
 
+/// Set index of `ordered_only`.
+pub const ordered_set: u8 = 3;
+
 pub const StrSpec = struct {
     pub const Key = [*c]c.MVMString;
     pub const Ctx = *ThreadContext;
     pub const runtime_entry_size = true;
     pub const publish: table.Publish = .safepoint_cas;
-    pub const sets: []const tier.TierSet = &.{ &standard, &large_only, &swiss_only };
+    pub const sets: []const tier.TierSet = &.{ &standard, &large_only, &swiss_only, &ordered_only };
 
     /// `MVM_string_hash_code` (`src/strings/ops.h`): the cached hash code,
     /// or, while it is still 0 (not computed yet), the out-of-line
@@ -147,7 +157,7 @@ pub const strategy_count: u8 = 4;
 /// The tier set of each strategy, indexed by `MVMHashStrategy`; a null slot
 /// is a strategy not built into this engine. A mapping rather than "the set
 /// index is the strategy number", so `large_only` keeps index 1.
-pub const strategy_sets = [strategy_count]?u8{ standard_set, swiss_set, null, null };
+pub const strategy_sets = [strategy_count]?u8{ standard_set, swiss_set, ordered_set, null };
 
 /// Whether `buildStrategy` can build `strategy`.
 pub fn strategyAvailable(strategy: u8) bool {
@@ -368,5 +378,6 @@ test "set 0 is the standard string set" {
         std.debug.assert(standard_set == 0);
         std.debug.assert(StrTable.dispatch_reads_set);
         std.debug.assert(sets[swiss_set].ptr == @as([*]const tier.TierEntry, &swiss_only));
+        std.debug.assert(sets[ordered_set].ptr == @as([*]const tier.TierEntry, &ordered_only));
     }
 }

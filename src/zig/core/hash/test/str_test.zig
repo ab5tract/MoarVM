@@ -457,7 +457,8 @@ test "buildStrategy refuses strategies that are not built in" {
     // exercised through MVM_HASH_STRATEGY and the nqp tests.
     try testing.expect(str.strategyAvailable(0));
     try testing.expect(str.strategyAvailable(1));
-    for ([_]u8{ 2, 3, 4 }) |s| try testing.expect(!str.strategyAvailable(s));
+    try testing.expect(str.strategyAvailable(2));
+    for ([_]u8{ 3, 4 }) |s| try testing.expect(!str.strategyAvailable(s));
     try testing.expect(!str.strategyAvailable(255));
 }
 
@@ -602,4 +603,159 @@ test "strategy 1 header set byte is the swiss set" {
     defer str.demolish(tc, &big);
     try testing.expectEqual(@as(u8, str.swiss_set), str.handleOf(&big).*.?.set);
     try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
+}
+
+test "strategy 2 round trip" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const n: u32 = 300;
+    const ks = try keys.make(tc, n);
+    defer testing.allocator.free(ks);
+
+    try testing.expectEqual(@as(?u8, str.ordered_set), str.strategy_sets[2]);
+    try testing.expect(str.sets[str.ordered_set].ptr == @as([*]const tier.TierEntry, &str.ordered_only));
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, entry_size, 0, 2);
+    defer str.demolish(tc, &ht);
+    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&ht).*.?.set);
+    for (ks, 0..) |k, i| try put(tc, &ht, k, i);
+    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&ht).*.?.set);
+    try testing.expectEqual(n, str.count(tc, &ht));
+    for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+
+    // Before any delete, iteration is reverse insertion order.
+    var it = str.first(tc, &ht);
+    var want: u64 = n;
+    while (!str.atEnd(tc, &ht, it)) : (it = str.next(tc, &ht, it)) {
+        want -= 1;
+        try testing.expectEqual(want, entryOf(str.current(tc, &ht, it)).value);
+    }
+    try testing.expectEqual(@as(u64, 0), want);
+
+    // Delete the even values: the odd ones stay, the evens are gone.
+    for (ks, 0..) |k, i| {
+        if (i % 2 == 0) str.delete(tc, &ht, k);
+    }
+    try testing.expectEqual(n / 2, str.count(tc, &ht));
+    for (ks, 0..) |k, i| {
+        if (i % 2 == 0) {
+            try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &ht, k));
+        } else {
+            try testing.expectEqual(i, try valueOf(tc, &ht, k));
+        }
+    }
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+
+    // Presized: the ordered set, room for the hint.
+    var big = unbuilt();
+    str.buildStrategy(tc, &big, entry_size, 1000, 2);
+    defer str.demolish(tc, &big);
+    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&big).*.?.set);
+    try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
+}
+
+test "strategy 2 shallow copy is independent" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const n: u32 = 300;
+    const ks = try keys.make(tc, n + 1);
+    defer testing.allocator.free(ks);
+
+    var src = unbuilt();
+    str.buildStrategy(tc, &src, entry_size, 0, 2);
+    defer str.demolish(tc, &src);
+    for (ks[0..n], 0..) |k, i| try put(tc, &src, k, i);
+    str.delete(tc, &src, ks[5]);
+    var dst = unbuilt();
+    str.shallowCopy(tc, &src, &dst);
+    defer str.demolish(tc, &dst);
+    try testing.expect(dst.table != src.table);
+    try testing.expectEqual(str.allocatedSize(tc, &src), str.allocatedSize(tc, &dst));
+    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&dst).*.?.set);
+
+    // The same iteration order, entries in the copy's own block.
+    var sp = str.first(tc, &src);
+    var dp = str.first(tc, &dst);
+    while (!str.atEnd(tc, &src, sp)) : ({
+        sp = str.nextNocheck(tc, &src, sp);
+        dp = str.nextNocheck(tc, &dst, dp);
+    }) {
+        try testing.expectEqual(sp.pos, dp.pos);
+        const se = entryOf(str.currentNocheck(tc, &src, sp));
+        const de = entryOf(str.currentNocheck(tc, &dst, dp));
+        try testing.expect(se != de);
+        try testing.expectEqual(se.key, de.key);
+        try testing.expectEqual(se.value, de.value);
+    }
+    try testing.expect(str.atEnd(tc, &dst, dp));
+
+    // Insert into one: the other is unchanged; then delete from the other.
+    try put(tc, &dst, ks[n], n);
+    entryOf(str.fetch(tc, &dst, ks[1])).value = 1000;
+    try testing.expectEqual(n, str.count(tc, &dst));
+    try testing.expectEqual(n - 1, str.count(tc, &src));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &src, ks[n]));
+    try testing.expectEqual(@as(u64, 1), try valueOf(tc, &src, ks[1]));
+    str.delete(tc, &src, ks[0]);
+    try testing.expectEqual(@as(u64, 0), try valueOf(tc, &dst, ks[0]));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &src, ks[0]));
+    for (ks[0..n], 0..) |k, i| {
+        if (i != 5) try testing.expectEqual(if (i == 1) 1000 else i, try valueOf(tc, &dst, k));
+    }
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &src, 0));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
+}
+
+test "strategy 2 iteration with deletes matches MVMIter's protocol" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+
+    // Delete every visited entry, then every other one.
+    for ([_]u32{ 1, 2 }) |every| {
+        const n: u32 = 500;
+        const ks = try keys.make(tc, n);
+        defer testing.allocator.free(ks);
+        var ht = unbuilt();
+        str.buildStrategy(tc, &ht, entry_size, 0, 2);
+        defer str.demolish(tc, &ht);
+        for (ks, 0..) |k, i| try put(tc, &ht, k, i);
+
+        const seen = try testing.allocator.alloc(u32, n);
+        defer testing.allocator.free(seen);
+        @memset(seen, 0);
+
+        // MVMIter: curr = start, next = first; each step moves curr to next
+        // and advances next before the body runs, so the body may delete
+        // the current entry.
+        var curr = str.start(tc, &ht);
+        try testing.expect(str.atStart(tc, &ht, curr));
+        var next = str.first(tc, &ht);
+        try testing.expect(!str.atStart(tc, &ht, next));
+        var i: u32 = 0;
+        while (true) : (i += 1) {
+            curr = next;
+            if (str.atEnd(tc, &ht, curr)) break;
+            next = str.nextNocheck(tc, &ht, curr);
+            const e = entryOf(str.currentNocheck(tc, &ht, curr));
+            seen[e.value] += 1;
+            if (i % every == 0) str.delete(tc, &ht, e.key);
+        }
+        try testing.expectEqual(n, i);
+        for (seen) |s| try testing.expectEqual(@as(u32, 1), s);
+        const left = n - (n + every - 1) / every;
+        try testing.expectEqual(left, str.count(tc, &ht));
+        var remaining: u32 = 0;
+        for (ks, 0..) |k, v| {
+            if (str.fetch(tc, &ht, k)) |p| {
+                try testing.expectEqual(v, entryOf(p).value);
+                remaining += 1;
+            }
+        }
+        try testing.expectEqual(left, remaining);
+        try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+    }
 }

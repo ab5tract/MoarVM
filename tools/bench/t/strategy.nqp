@@ -103,71 +103,87 @@ sub round_trip(%h, $desc) {
     ok(nqp::eqaddr(nqp::hashseal(%e), %e) && nqp::elems(%e) == 0, 'hashseal on an unbuilt hash is fine');
 }
 
-# Strategy 1: the Swiss-style tier.
-{
-    my %h := nqp::hash();
-    my $r := nqp::hashstrategy(%h, 1, 0);
-    ok(nqp::eqaddr($r, %h), 'hashstrategy 1 returns the hash');
-    round_trip(%h, 'strategy 1, fresh hash');
+# Strategies 1 (the Swiss-style tier) and 2 (the array-ordered tier).
+for 1, 2 -> $s {
+    {
+        my %h := nqp::hash();
+        my $r := nqp::hashstrategy(%h, $s, 0);
+        ok(nqp::eqaddr($r, %h), "hashstrategy $s returns the hash");
+        round_trip(%h, "strategy $s, fresh hash");
+    }
+
+    {
+        my %h := nqp::hash();
+        nqp::hashstrategy(%h, $s, 1000);
+        round_trip(%h, "strategy $s, size hint 1000");
+    }
+
+    {
+        my %h := nqp::hash('a', 1, 'b', 2);
+        nqp::deletekey(%h, 'a');
+        nqp::deletekey(%h, 'b');
+        my $msg := dies({ nqp::hashstrategy(%h, $s, 8) });
+        ok($msg eq '', "hashstrategy $s on a built but emptied hash succeeds ($msg)");
+        round_trip(%h, "strategy $s, after fill then delete all");
+    }
+
+    {
+        # Enough keys to grow through several sizes, then churn.
+        my %h := nqp::hash();
+        nqp::hashstrategy(%h, $s, 0);
+        my int $i := 0;
+        while $i < 5000 { %h{"k$i"} := $i; $i := $i + 1 }
+        ok(nqp::elems(%h) == 5000, "strategy $s: 5000 keys bound");
+        my int $bad := 0;
+        $i := 0;
+        while $i < 5000 { $bad := $bad + 1 unless nqp::atkey(%h, "k$i") == $i; $i := $i + 1 }
+        ok($bad == 0, "strategy $s: every key fetches its value");
+        $i := 0;
+        while $i < 5000 { nqp::deletekey(%h, "k$i") if $i % 2; $i := $i + 1 }
+        ok(nqp::elems(%h) == 2500 && !nqp::existskey(%h, 'k1') && nqp::existskey(%h, 'k2'),
+            "strategy $s: half deleted");
+        my int $sum := 0;
+        for %h { $sum := $sum + nqp::iterval($_) }
+        ok($sum == 2500 * 4998 / 2, "strategy $s: iteration sees exactly the live entries");
+        $i := 0;
+        while $i < 20000 { %h{"c$i"} := $i; nqp::deletekey(%h, "c$i"); $i := $i + 1 }
+        ok(nqp::elems(%h) == 2500 && nqp::atkey(%h, 'k4998') == 4998, "strategy $s: churn keeps the contents");
+    }
+
+    {
+        my %h := nqp::hash();
+        nqp::hashstrategy(%h, $s, 0);
+        my int $i := 0;
+        while $i < 100 { %h{"k$i"} := $i; $i := $i + 1 }
+        nqp::deletekey(%h, 'k0');
+        my %c := nqp::clone(%h);
+        ok(nqp::elems(%c) == 99 && nqp::atkey(%c, 'k99') == 99 && !nqp::existskey(%c, 'k0'),
+            "strategy $s: nqp::clone keeps the contents");
+        %c<new> := 1;
+        nqp::deletekey(%c, 'k1');
+        %h<other> := 2;
+        ok(nqp::elems(%h) == 100 && !nqp::existskey(%h, 'new') && nqp::existskey(%h, 'k1'),
+            "strategy $s: the original is independent of the clone");
+        ok(nqp::elems(%c) == 99 && !nqp::existskey(%c, 'other') && nqp::existskey(%c, 'new'),
+            "strategy $s: the clone is independent of the original");
+    }
+
+    {
+        # MVMIter's protocol: deleting the current entry while iterating
+        # visits every entry once (swap-remove in strategy 2).
+        my %h := nqp::hash();
+        nqp::hashstrategy(%h, $s, 0);
+        my int $i := 0;
+        while $i < 500 { %h{"k$i"} := $i; $i := $i + 1 }
+        my int $visits := 0;
+        my int $sum := 0;
+        for %h { $visits := $visits + 1; $sum := $sum + nqp::iterval($_); nqp::deletekey(%h, nqp::iterkey_s($_)) }
+        ok($visits == 500 && $sum == 500 * 499 / 2 && nqp::elems(%h) == 0,
+            "strategy $s: deleting each entry as it is visited visits all ($visits)");
+    }
 }
 
-{
-    my %h := nqp::hash();
-    nqp::hashstrategy(%h, 1, 1000);
-    round_trip(%h, 'strategy 1, size hint 1000');
-}
-
-{
-    my %h := nqp::hash('a', 1, 'b', 2);
-    nqp::deletekey(%h, 'a');
-    nqp::deletekey(%h, 'b');
-    my $msg := dies({ nqp::hashstrategy(%h, 1, 8) });
-    ok($msg eq '', "hashstrategy 1 on a built but emptied hash succeeds ($msg)");
-    round_trip(%h, 'strategy 1, after fill then delete all');
-}
-
-{
-    # Enough keys to grow through several sizes, then churn.
-    my %h := nqp::hash();
-    nqp::hashstrategy(%h, 1, 0);
-    my int $i := 0;
-    while $i < 5000 { %h{"k$i"} := $i; $i := $i + 1 }
-    ok(nqp::elems(%h) == 5000, 'strategy 1: 5000 keys bound');
-    my int $bad := 0;
-    $i := 0;
-    while $i < 5000 { $bad := $bad + 1 unless nqp::atkey(%h, "k$i") == $i; $i := $i + 1 }
-    ok($bad == 0, 'strategy 1: every key fetches its value');
-    $i := 0;
-    while $i < 5000 { nqp::deletekey(%h, "k$i") if $i % 2; $i := $i + 1 }
-    ok(nqp::elems(%h) == 2500 && !nqp::existskey(%h, 'k1') && nqp::existskey(%h, 'k2'),
-        'strategy 1: half deleted');
-    my int $sum := 0;
-    for %h { $sum := $sum + nqp::iterval($_) }
-    ok($sum == 2500 * 4998 / 2, 'strategy 1: iteration sees exactly the live entries');
-    $i := 0;
-    while $i < 20000 { %h{"c$i"} := $i; nqp::deletekey(%h, "c$i"); $i := $i + 1 }
-    ok(nqp::elems(%h) == 2500 && nqp::atkey(%h, 'k4998') == 4998, 'strategy 1: churn keeps the contents');
-}
-
-{
-    my %h := nqp::hash();
-    nqp::hashstrategy(%h, 1, 0);
-    my int $i := 0;
-    while $i < 100 { %h{"k$i"} := $i; $i := $i + 1 }
-    nqp::deletekey(%h, 'k0');
-    my %c := nqp::clone(%h);
-    ok(nqp::elems(%c) == 99 && nqp::atkey(%c, 'k99') == 99 && !nqp::existskey(%c, 'k0'),
-        'strategy 1: nqp::clone keeps the contents');
-    %c<new> := 1;
-    nqp::deletekey(%c, 'k1');
-    %h<other> := 2;
-    ok(nqp::elems(%h) == 100 && !nqp::existskey(%h, 'new') && nqp::existskey(%h, 'k1'),
-        'strategy 1: the original is independent of the clone');
-    ok(nqp::elems(%c) == 99 && !nqp::existskey(%c, 'other') && nqp::existskey(%c, 'new'),
-        'strategy 1: the clone is independent of the original');
-}
-
-for 2, 3 -> $s {
+for nqp::list(3) -> $s {
     my %h := nqp::hash();
     my $msg := dies({ nqp::hashstrategy(%h, $s, 0) });
     ok(contains($msg, 'not available'), "strategy $s is not available ($msg)");

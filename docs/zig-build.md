@@ -296,9 +296,9 @@ Hood ladder above), `MVM_HASH_STRATEGY_SWISS` (1),
 `MVM_HASH_STRATEGY_COUNT` (4). `MVM_str_hash_build_strategy` builds a
 string table with a strategy (0 is `MVM_str_hash_build`), and
 `MVM_str_hash_seal` marks a table as done growing (a no-op for now).
-Strategies 2 and 3 are not yet built in: building with one throws "hash
-strategy N is not available in this engine", and the C engine throws for
-any strategy but 0.
+Strategy 3 is not yet built in: building with it throws "hash strategy
+N is not available in this engine", and the C engine throws for any
+strategy but 0.
 
 Strategy 1 (`tiers/swiss.zig`, the `swiss_only` tier set) is a Swiss-style
 table from the first entry: a power-of-two slot count (at least 16), one
@@ -309,7 +309,21 @@ and a load limit of 7/8 counting tombstones. A delete leaves an empty slot
 instead of a tombstone when its group still has one. A full table doubles,
 or rehashes at the same size when at most 3/4 of the limit is live (the
 tombstones filled it). Iteration walks the slots downward; the block holds
-no pointers, so the shallow copy of `nqp::clone` is a byte copy. `MVMHash` and `HashAttrStore` build with the
+no pointers, so the shallow copy of `nqp::clone` is a byte copy.
+
+Strategy 2 (`tiers/ordered.zig`, the `ordered_only` tier set) keeps the
+entries in a dense array in insertion order, found through a separate
+open-addressing index (linear probing, at most half full) whose slots hold
+an entry's position plus one: one byte wide while the entry capacity is
+below 255, two below 65 535, else four, the width recorded in the control
+block. Insert appends; delete moves the last entry into the hole
+(swap-remove) and empties the index slot by backward shift, so there are
+no tombstones and a full table always doubles. Iteration walks the
+positions downward, which keeps "delete the current entry while holding
+the next" safe; before the first delete it is reverse insertion order.
+The block holds no pointers.
+
+`MVMHash` and `HashAttrStore` build with the
 instance's `hash_strategy_default`, read once at startup from the
 `MVM_HASH_STRATEGY` environment variable. Unset or empty leaves the
 default (0); anything other than a plain decimal number in 0..254 (no
