@@ -222,7 +222,7 @@ Small is 16-64 entries, Robin Hood 65-16384 (N-th insert 128-16384; the
 Robin Hood N-th insert ranges sit inside the C's own spread). Without LTO
 five cells miss the 5 percent line in that run: the Small lookup miss at
 63 and 64 entries (1.10 and 1.13), insert at 1024 (1.05) and the N-th
-insert at 128 and 256 (1.10 and 1.09); with LTO every cell passes. Against a C engine built without LTO the default Zig
+insert at 128 and 256 (1.10 and 1.09); with LTO every cell passes. Re-measured on the final bake-off branch (`traces/llm/bench/bakeoff-final-nqp.md`), the figures hold except that the N-th insert at 128 and 256 entries reads 1.07-1.12 with spreads no longer overlapping the C engine's (a tighter C side; unchanged against the branch base). Against a C engine built without LTO the default Zig
 build reads lower still (Robin Hood lookups and delete 0.90-0.97, iterate
 0.95-0.98).
 
