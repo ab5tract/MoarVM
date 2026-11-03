@@ -71,20 +71,6 @@
 //! shift leaves its slot where it is and a swap-remove that moves it finds
 //! its slot by a scan of the index.
 //!
-//! Incremental resize (`.incremental = true`): `grow` does not rebuild the
-//! index. The new block takes the entries by one copy (positions are kept)
-//! and the old index by another, into a region after the entries (`has_old`
-//! says it is there, so the block size is fixed for its life). `Control.moved`
-//! counts the old entries, from position 0, already registered in the new
-//! index; each insert registers `moves_per_insert` more, and the last sets
-//! `moved` to `moved_done`. While `moved` is not done, a lookup that misses
-//! the new index probes the old one: an entry is in the new index (moved, or
-//! appended since the grow) or in the old one (not yet moved), and an
-//! entry found in the old index exists, since a delete finishes the move
-//! before it swaps anything. New entries go into the new index only, after a
-//! probe of both. The old region is dead weight once the move ends. All
-//! state is in the block at offsets, so a verbatim copy works mid-move.
-//!
 //! `drain` visitor convention: `visitor` is either a function
 //! `fn ([*]u8) void` or a value (typically a pointer to a struct) with a
 //! method `visit(self, [*]u8) void`; it is called once per live entry in
@@ -92,29 +78,18 @@
 const std = @import("std");
 const Header = @import("../tier.zig").Header;
 
-/// `Control.moved` of a block whose index is complete.
-const moved_done: u32 = std.math.maxInt(u32);
-/// Index registrations an incremental insert moves. The old entry count is
-/// the capacity of the previous block, which is filled again after that many
-/// inserts, so any rate of at least one finishes in time; two keeps a margin
-/// and ends the move after a quarter of the new capacity.
-const moves_per_insert: u32 = 2;
-
 /// The smallest block: 16 index slots, 8 entries.
 const min_log2_index: u8 = 4;
 /// The slot count stays below 2^32 (positions and slots are `u32`).
 const max_log2_index: u8 = 31;
 
-pub fn Tier(comptime cfg: struct {
-    /// Spread `grow`'s index rebuild over the following inserts (see the
-    /// file comment's "Incremental resize").
-    incremental: bool = false,
-}) type {
+pub fn Tier(comptime cfg: struct {}) type {
+    _ = cfg;
     return struct {
         pub const max_capacity: u32 = std.math.maxInt(u32);
 
         pub fn Impl(comptime Spec: type) type {
-            return ImplType(Spec, cfg.incremental);
+            return ImplType(Spec);
         }
     };
 }
@@ -125,14 +100,7 @@ const Control = extern struct {
     salt: u64,
     log2_index: u8,
     slot_width: u8,
-    /// 1 if the block ends with the previous index (an incremental grow's
-    /// product); the block size depends on it, so it never changes.
-    has_old: u8,
-    _pad: u8,
-    /// Incremental resize: entries below this position (and below the old
-    /// entry count) are registered in the new index; `moved_done` once all
-    /// are, and in every block that was not grown incrementally.
-    moved: u32,
+    _pad: [6]u8,
 };
 const control_size = @sizeOf(Control);
 comptime {
@@ -149,7 +117,7 @@ fn widthFor(cap: u32) u8 {
     return if (cap < 255) 1 else if (cap < 65_535) 2 else 4;
 }
 
-fn ImplType(comptime Spec: type, comptime incremental: bool) type {
+fn ImplType(comptime Spec: type) type {
     return struct {
         const Key = Spec.Key;
         const Ctx = Spec.Ctx;
@@ -202,11 +170,10 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
             if (entry_size == 16) dest[0..16].* = src[0..16].* else @memcpy(dest[0..entry_size], src[0..entry_size]);
         }
 
-        fn blockSize(log2_index: u8, entry_size: usize, has_old: bool) usize {
+        fn blockSize(log2_index: u8, entry_size: usize) usize {
             const slots = @as(usize, 1) << @intCast(log2_index);
             const cap = capacityOf(@intCast(slots));
-            const old = if (has_old) (slots / 2) * widthFor(capacityOf(@intCast(slots / 2))) else 0;
-            return control_size + slots * widthFor(cap) + cap * entry_size + old;
+            return control_size + slots * widthFor(cap) + cap * entry_size;
         }
 
         pub fn blockStart(header: *Header) [*]u8 {
@@ -214,7 +181,7 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
         }
 
         pub fn allocatedSize(header: *Header) usize {
-            return blockSize(ctrl(header).log2_index, entrySize(header), incremental and ctrl(header).has_old != 0);
+            return blockSize(ctrl(header).log2_index, entrySize(header));
         }
 
         /// Index slot `s` (for tests and `fsck`; the hot paths are
@@ -235,60 +202,13 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
             }
         }
 
-        // ------------------------------------------ incremental state
-
-        /// Whether an incremental grow is still moving index registrations.
-        pub fn migrating(header: *Header) bool {
-            return incremental and ctrl(header).moved != moved_done;
-        }
-
-        pub fn movedCount(header: *Header) u32 {
-            return ctrl(header).moved;
-        }
-
-        pub fn setMoved(header: *Header, v: u32) void {
-            ctrl(header).moved = v;
-        }
-
-        fn oldSlots(header: *Header) u32 {
-            return slotCount(header) / 2;
-        }
-
-        fn oldWidth(header: *Header) u8 {
-            return widthFor(capacityOf(oldSlots(header)));
-        }
-
-        /// The previous index, kept after the entries until it is not needed.
-        fn oldIndex(header: *Header) [*]u8 {
-            return entries(header) + @as(usize, capacity(header)) * entrySize(header);
-        }
-
-        pub fn oldSlotGet(header: *Header, s: u32) u32 {
-            const p = oldIndex(header);
-            return switch (oldWidth(header)) {
-                1 => p[s],
-                2 => @as([*]u16, @ptrCast(@alignCast(p)))[s],
-                else => @as([*]u32, @ptrCast(@alignCast(p)))[s],
-            };
-        }
-
-        pub fn oldSlotSet(header: *Header, s: u32, v: u32) void {
-            const p = oldIndex(header);
-            switch (oldWidth(header)) {
-                1 => p[s] = @intCast(v),
-                2 => @as([*]u16, @ptrCast(@alignCast(p)))[s] = @intCast(v),
-                else => @as([*]u32, @ptrCast(@alignCast(p)))[s] = v,
-            }
-        }
-
         // ------------------------------------------------- allocation
 
-        /// `live` leading entries are left for the caller to fill (the rest are zeroed).
-        fn allocate(allocator: std.mem.Allocator, header_init: Header, log2_index: u8, has_old: bool, live: u32) !*Header {
+        fn allocate(allocator: std.mem.Allocator, header_init: Header, log2_index: u8) !*Header {
             const entry_size = if (Spec.runtime_entry_size) header_init.entry_size else Spec.entry_size;
             std.debug.assert(entry_size != 0 and entry_size % 8 == 0);
             if (log2_index > max_log2_index) return error.OutOfMemory;
-            const block = try allocator.alignedAlloc(u8, .@"8", blockSize(log2_index, entry_size, has_old));
+            const block = try allocator.alignedAlloc(u8, .@"8", blockSize(log2_index, entry_size));
             const header: *Header = @ptrCast(block.ptr);
             const slots = @as(u32, 1) << @intCast(log2_index);
             ctrl(header).* = .{
@@ -296,14 +216,12 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
                 .salt = 0,
                 .log2_index = log2_index,
                 .slot_width = widthFor(capacityOf(slots)),
-                .has_old = @intFromBool(has_old),
-                ._pad = 0,
-                .moved = moved_done,
+                ._pad = @splat(0),
             };
             header.cur_items = 0;
             const cap = capacityOf(slots);
             @memset(index(header)[0 .. @as(usize, slots) * ctrl(header).slot_width], 0);
-            @memset(entries(header)[@as(usize, live) * entry_size .. @as(usize, cap) * entry_size], 0);
+            @memset(entries(header)[0 .. @as(usize, cap) * entry_size], 0);
             return header;
         }
 
@@ -311,7 +229,7 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
         pub fn init(allocator: std.mem.Allocator, header_init: Header, cap: u32) !*Header {
             var log2: u8 = min_log2_index;
             while (log2 < max_log2_index and capacityOf(@as(u32, 1) << @intCast(log2)) < cap) log2 += 1;
-            return allocate(allocator, header_init, log2, false, 0);
+            return allocate(allocator, header_init, log2);
         }
 
         /// The entry capacity: half the index slots.
@@ -353,14 +271,11 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
         const Probe = struct { slot: u32, found: bool };
 
         inline fn probeW(comptime W: type, header: *Header, ctx: Ctx, key: Key, h: u64) Probe {
-            return probeIn(W, header, indexOf(W, header), slotCount(header) - 1, ctx, key, h);
-        }
-
-        /// A probe of the index `idx` (of `mask + 1` slots of `W`).
-        inline fn probeIn(comptime W: type, header: *Header, idx: [*]W, mask: u32, ctx: Ctx, key: Key, h: u64) Probe {
+            const idx = indexOf(W, header);
+            const mask = slotCount(header) - 1;
             const base = entries(header);
             const es = entrySize(header);
-            var s = @as(u32, @truncate(h ^ ctrl(header).salt)) & mask;
+            var s = homeSlot(header, h);
             while (true) : (s = (s + 1) & mask) {
                 const v = idx[s];
                 if (v == 0) return .{ .slot = s, .found = false };
@@ -377,44 +292,6 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
                 2 => probeW(u16, header, ctx, key, h),
                 else => probeW(u32, header, ctx, key, h),
             };
-        }
-
-        /// The entry a probe of the previous index finds, for a key not in
-        /// the new one while an incremental grow is moving.
-        fn fetchOld(header: *Header, ctx: Ctx, key: Key, h: u64) ?[*]u8 {
-            const mask = oldSlots(header) - 1;
-            const p = oldIndex(header);
-            switch (oldWidth(header)) {
-                1 => {
-                    const r = probeIn(u8, header, p, mask, ctx, key, h);
-                    return if (r.found) entryAtIndex(header, p[r.slot] - 1) else null;
-                },
-                2 => {
-                    const idx: [*]u16 = @ptrCast(@alignCast(p));
-                    const r = probeIn(u16, header, idx, mask, ctx, key, h);
-                    return if (r.found) entryAtIndex(header, idx[r.slot] - 1) else null;
-                },
-                else => {
-                    const idx: [*]u32 = @ptrCast(@alignCast(p));
-                    const r = probeIn(u32, header, idx, mask, ctx, key, h);
-                    return if (r.found) entryAtIndex(header, idx[r.slot] - 1) else null;
-                },
-            }
-        }
-
-        /// Registers up to `n` more of the previous entries in the new
-        /// index; the last one ends the migration.
-        fn moveSome(header: *Header, ctx: Ctx, n: u32) void {
-            const old_count = capacity(header) / 2;
-            var m = ctrl(header).moved;
-            var i: u32 = 0;
-            while (i < n and m < old_count) : (i += 1) {
-                const e = entryAtIndex(header, m);
-                // A key the caller never filled in is not indexed.
-                if (!isZeroKey(e)) slotSet(header, emptySlot(header, Spec.hash(ctx, keyAt(e))), m + 1);
-                m += 1;
-            }
-            ctrl(header).moved = if (m >= old_count) moved_done else m;
         }
 
         /// The first empty slot from `h`'s home.
@@ -436,7 +313,7 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
         pub fn fetch(header: *Header, ctx: Ctx, key: Key, h: u64) ?[*]u8 {
             if (header.cur_items == 0) return null;
             const p = probe(header, ctx, key, h);
-            if (!p.found) return if (migrating(header)) fetchOld(header, ctx, key, h) else null;
+            if (!p.found) return null;
             return entryAtIndex(header, slotGet(header, p.slot) - 1);
         }
 
@@ -444,13 +321,9 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
         pub fn lvalueFetch(header: *Header, ctx: Ctx, key: Key, h: u64) LvalueResult {
             const p = probe(header, ctx, key, h);
             if (p.found) return .{ .found = entryAtIndex(header, slotGet(header, p.slot) - 1) };
-            if (migrating(header)) {
-                if (fetchOld(header, ctx, key, h)) |e| return .{ .found = e };
-            }
             if (isFull(header)) return .full;
             const e = append(header, p.slot);
             @memset(e[0..key_size], 0);
-            if (migrating(header)) moveSome(header, ctx, moves_per_insert);
             return .{ .inserted = e };
         }
 
@@ -461,7 +334,6 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
             if (std.debug.runtime_safety) std.debug.assert(fetch(header, ctx, key, h) == null);
             std.debug.assert(!isFull(header));
             copyEntry(append(header, emptySlot(header, h)), entry_bytes, entrySize(header));
-            if (migrating(header)) moveSome(header, ctx, moves_per_insert);
         }
 
         /// Empties index slot `hole` by backward-shift deletion: each later
@@ -494,8 +366,6 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
 
         pub fn delete(header: *Header, ctx: Ctx, key: Key, h: u64) bool {
             if (header.cur_items == 0) return false;
-            // A swap-remove would have to repair both indexes: finish the move.
-            if (migrating(header)) moveSome(header, ctx, std.math.maxInt(u32));
             const p = probe(header, ctx, key, h);
             if (!p.found) return false;
             const pos = slotGet(header, p.slot) - 1;
@@ -518,8 +388,7 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
         /// the index. Returns the new header, leaving the old block
         /// untouched for the caller to dispose of. Never returns null.
         pub fn grow(header: *Header, ctx: Ctx, allocator: std.mem.Allocator) !?*Header {
-            if (incremental) return growIncremental(header, ctx, allocator);
-            const new = try allocate(allocator, header.*, ctrl(header).log2_index + 1, false, 0);
+            const new = try allocate(allocator, header.*, ctrl(header).log2_index + 1);
             ctrl(new).salt = ctrl(header).salt;
             const es = entrySize(header);
             var pos: u32 = 0;
@@ -531,26 +400,6 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
                 copyEntry(append(new, emptySlot(new, h)), e, es);
             }
             std.debug.assert(!isFull(new));
-            return new;
-        }
-
-        /// `grow` for the incremental flag: the new block takes the entries
-        /// by one copy and the old index by another, and registers the
-        /// entries in its own index `moves_per_insert` at a time as inserts
-        /// come (see the file comment).
-        fn growIncremental(header: *Header, ctx: Ctx, allocator: std.mem.Allocator) !?*Header {
-            if (migrating(header)) moveSome(header, ctx, std.math.maxInt(u32));
-            std.debug.assert(isFull(header));
-            const live = header.cur_items;
-            const new = try allocate(allocator, header.*, ctrl(header).log2_index + 1, true, live);
-            ctrl(new).salt = ctrl(header).salt;
-            const es = entrySize(header);
-            @memcpy(entries(new)[0 .. @as(usize, live) * es], entries(header)[0 .. @as(usize, live) * es]);
-            const index_bytes = @as(usize, slotCount(header)) * ctrl(header).slot_width;
-            std.debug.assert(index_bytes == @as(usize, oldSlots(new)) * oldWidth(new));
-            @memcpy(oldIndex(new)[0..index_bytes], index(header)[0..index_bytes]);
-            new.cur_items = live;
-            ctrl(new).moved = 0;
             return new;
         }
 
@@ -599,9 +448,6 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
             var errors: u64 = 0;
             if (ctrl(header).slot_width != widthFor(capacity(header))) return 1;
             if (header.cur_items > capacity(header)) return 1;
-            const partial = migrating(header);
-            const old_count = capacity(header) / 2;
-            if (partial and (header.cur_items < old_count or ctrl(header).moved >= old_count)) return 1;
             var occupied: u64 = 0;
             var s: u32 = 0;
             while (s < slotCount(header)) : (s += 1) {
@@ -609,21 +455,8 @@ fn ImplType(comptime Spec: type, comptime incremental: bool) type {
                 if (v == 0) continue;
                 occupied += 1;
                 if (v > header.cur_items) errors += 1;
-                // Mid-move, the new index holds the moved and the new entries only.
-                if (partial and v - 1 >= ctrl(header).moved and v - 1 < old_count) errors += 1;
             }
-            if (occupied != (if (partial) ctrl(header).moved + (header.cur_items - old_count) else header.cur_items)) errors += 1;
-            if (partial) {
-                var old_occupied: u64 = 0;
-                s = 0;
-                while (s < oldSlots(header)) : (s += 1) {
-                    const v = oldSlotGet(header, s);
-                    if (v == 0) continue;
-                    old_occupied += 1;
-                    if (v > old_count) errors += 1;
-                }
-                if (old_occupied != old_count) errors += 1;
-            }
+            if (occupied != header.cur_items) errors += 1;
             if (errors != 0) return errors;
             var pos: u32 = 0;
             while (pos < header.cur_items) : (pos += 1) {
@@ -827,18 +660,18 @@ const key_limit = 1_024;
 
 /// Every key of the range fetches as the model says, with its value, and
 /// iteration visits exactly the model's keys, each once.
-fn matchesModel(comptime TT: type, h: TT.Handle, model: *const std.AutoHashMap(u64, void)) !void {
-    try testing.expectEqual(model.count(), TT.count(h));
+fn matchesModel(h: T.Handle, model: *const std.AutoHashMap(u64, void)) !void {
+    try testing.expectEqual(model.count(), T.count(h));
     for (1..key_limit) |k| {
-        const e = TT.fetch({}, h, k);
+        const e = T.fetch({}, h, k);
         try testing.expectEqual(model.contains(k), e != null);
         if (e) |p| try testing.expectEqual(k * 10, valueOf(p));
     }
     var seen = std.StaticBitSet(key_limit).initEmpty();
     var walked: u32 = 0;
-    var pos = TT.first(h);
-    while (pos != 0) : (pos = TT.next(h, pos)) {
-        const key = keyOf(TT.current(h, pos).?);
+    var pos = T.first(h);
+    while (pos != 0) : (pos = T.next(h, pos)) {
+        const key = keyOf(T.current(h, pos).?);
         try testing.expect(model.contains(key));
         try testing.expect(!seen.isSet(key));
         seen.set(key);
@@ -849,7 +682,7 @@ fn matchesModel(comptime TT: type, h: TT.Handle, model: *const std.AutoHashMap(u
 
 /// 20_000 random inserts, fetches and deletes on keys 1..1023, the whole
 /// table compared with `std.AutoHashMap` after every operation.
-fn randomOps(comptime TT: type, h: TT.Handle) !void {
+fn randomOps(h: T.Handle) !void {
     var prng = std.Random.DefaultPrng.init(0x5eed);
     const rand = prng.random();
     var model = std.AutoHashMap(u64, void).init(testing.allocator);
@@ -858,7 +691,7 @@ fn randomOps(comptime TT: type, h: TT.Handle) !void {
         const key = rand.intRangeLessThan(u64, 1, key_limit);
         switch (rand.uintLessThan(u8, 3)) {
             0 => {
-                const e = TT.lvalueFetch({}, h, key);
+                const e = T.lvalueFetch({}, h, key);
                 if (model.contains(key)) {
                     try testing.expectEqual(key, keyOf(e));
                     try testing.expectEqual(key * 10, valueOf(e));
@@ -868,13 +701,13 @@ fn randomOps(comptime TT: type, h: TT.Handle) !void {
                 }
             },
             1 => {
-                const e = TT.fetch({}, h, key);
+                const e = T.fetch({}, h, key);
                 try testing.expectEqual(model.contains(key), e != null);
                 if (e) |p| try testing.expectEqual(key * 10, valueOf(p));
             },
-            else => try testing.expectEqual(model.remove(key), TT.delete({}, h, key)),
+            else => try testing.expectEqual(model.remove(key), T.delete({}, h, key)),
         }
-        try matchesModel(TT, h, &model);
+        try matchesModel(h, &model);
     }
 }
 
@@ -883,7 +716,7 @@ test "random ops match std.AutoHashMap" {
     const h = &slot;
     T.build({}, h, test_entry_size, 0, 0);
     defer T.demolish({}, h);
-    try randomOps(T, h);
+    try randomOps(h);
 }
 
 test "fsck finds no fault" {
@@ -891,7 +724,7 @@ test "fsck finds no fault" {
     const h = &slot;
     T.build({}, h, test_entry_size, 0, 0);
     defer T.demolish({}, h);
-    try randomOps(T, h);
+    try randomOps(h);
     try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
 
     const header = slot.?;
@@ -1024,238 +857,4 @@ test "full, grow doubles both arrays into a new block, block size" {
     var counter = Counter{ .n = &visits };
     S.drain(grown, &counter);
     try testing.expectEqual(@as(u32, 9), visits);
-}
-
-// ------------------------------------------------- incremental resize
-
-const TierEntry = @import("../tier.zig").TierEntry;
-const inc_test_set = [_]TierEntry{.{ .tier = Tier(.{ .incremental = true }), .from = 0 }};
-const IS = Tier(.{ .incremental = true }).Impl(IntSpec);
-const IncSpec = struct {
-    pub const Key = IntSpec.Key;
-    pub const Ctx = IntSpec.Ctx;
-    pub const runtime_entry_size = true;
-    pub const publish = .plain;
-    pub const sets: []const @import("../tier.zig").TierSet = &.{&inc_test_set};
-    pub const hash = IntSpec.hash;
-    pub const eql = IntSpec.eql;
-    pub const allocator = IntSpec.allocator;
-    pub const onDuplicate = IntSpec.onDuplicate;
-};
-const IT = @import("../table.zig").Table(IncSpec);
-
-comptime {
-    @import("../tier.zig").validate(&inc_test_set);
-}
-
-fn ifree(header: *Header) void {
-    const block: [*]align(8) u8 = @alignCast(IS.blockStart(header));
-    testing.allocator.free(block[0..IS.allocatedSize(header)]);
-}
-
-fn iinit(cap: u32) !*Header {
-    return IS.init(testing.allocator, .{ .tier = 0, .set = 0, .entry_size = test_entry_size, .stale = 0, .cur_items = 0 }, cap);
-}
-
-fn iget(header: *Header, key: u64) ?[*]u8 {
-    return IS.fetch(header, {}, key, IS.hash({}, key));
-}
-
-/// Keys 1..n all fetch with their values; n + 1 does not.
-fn allReachable(header: *Header, n: u64) !void {
-    var k: u64 = 1;
-    while (k <= n) : (k += 1) try testing.expectEqual(k * 10, valueOf(iget(header, k) orelse return error.TestUnexpectedResult));
-    try testing.expectEqual(@as(?[*]u8, null), iget(header, n + 1));
-}
-
-/// Inserts `key` into a block that is not full.
-fn iput(header: *Header, key: u64) !void {
-    switch (IS.lvalueFetch(header, {}, key, IS.hash({}, key))) {
-        .inserted => |e| try fill(e, key),
-        else => return error.TestUnexpectedResult,
-    }
-}
-
-/// A grown copy of a full block holding keys 1..n.
-fn fullBlock(n: u64) !*Header {
-    const header = try iinit(@intCast(n));
-    for (1..n + 1) |k| try iput(header, k);
-    try testing.expect(IS.isFull(header));
-    return header;
-}
-
-test "incremental: a grow moves nothing, then two index registrations per insert" {
-    const old = try fullBlock(8);
-    const h = (try IS.grow(old, {}, testing.allocator)).?;
-    ifree(old);
-    defer ifree(h);
-    try testing.expect(IS.migrating(h));
-    try testing.expectEqual(@as(u32, 16), IS.capacity(h));
-    try testing.expectEqual(@as(u32, 8), h.cur_items);
-    try allReachable(h, 8);
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-    // Eight entries to move at two per insert: three inserts leave it moving,
-    // the fourth completes it.
-    for (9..12) |k| {
-        try iput(h, k);
-        try testing.expect(IS.migrating(h));
-        try allReachable(h, k);
-        try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-    }
-    try iput(h, 12);
-    try testing.expect(!IS.migrating(h));
-    try allReachable(h, 12);
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-}
-
-test "incremental: every entry is reachable in every partially moved state" {
-    var h = try iinit(1);
-    defer ifree(h);
-    var next: u64 = 1;
-    var grows: u32 = 0;
-    var partial: u32 = 0;
-    while (next <= 3000) {
-        switch (IS.lvalueFetch(h, {}, next, IS.hash({}, next))) {
-            .inserted => |e| {
-                try fill(e, next);
-                next += 1;
-            },
-            .full => {
-                const g = (try IS.grow(h, {}, testing.allocator)).?;
-                ifree(h);
-                h = g;
-                grows += 1;
-                try testing.expect(IS.migrating(h));
-            },
-            .found => return error.TestUnexpectedResult,
-        }
-        if (IS.migrating(h)) partial += 1;
-        if (next % 7 == 0 or IS.migrating(h)) {
-            try allReachable(h, next - 1);
-            try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-        }
-    }
-    try testing.expect(grows >= 8);
-    try testing.expect(partial > 100);
-    // Insertion order and iteration are untouched by the move.
-    try testing.expectEqual(@as(u32, 3000), countByIteration(h));
-}
-
-test "incremental: found during a partial state does not insert" {
-    const old = try fullBlock(16);
-    const h = (try IS.grow(old, {}, testing.allocator)).?;
-    ifree(old);
-    defer ifree(h);
-    for (1..17) |k| try testing.expect(IS.lvalueFetch(h, {}, k, IS.hash({}, k)) == .found);
-    try testing.expectEqual(@as(u32, 16), h.cur_items);
-    try testing.expect(IS.migrating(h));
-}
-
-test "incremental: delete in a partial state finishes the move first" {
-    const old = try fullBlock(64);
-    const h = (try IS.grow(old, {}, testing.allocator)).?;
-    ifree(old);
-    defer ifree(h);
-    try iput(h, 65);
-    try testing.expect(IS.migrating(h));
-    try testing.expect(IS.delete(h, {}, 3, IS.hash({}, 3)));
-    try testing.expect(!IS.migrating(h));
-    try testing.expectEqual(@as(?[*]u8, null), iget(h, 3));
-    for (1..66) |k| if (k != 3) try testing.expectEqual(@as(u64, k * 10), valueOf(iget(h, k).?));
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-}
-
-test "incremental: fsck finds faults in a partial state" {
-    const old = try fullBlock(64);
-    const h = (try IS.grow(old, {}, testing.allocator)).?;
-    ifree(old);
-    defer ifree(h);
-    try iput(h, 65);
-    try testing.expect(IS.migrating(h));
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-    // A new-index slot emptied: found.
-    var s: u32 = 0;
-    while (IS.slotGet(h, s) == 0) s += 1;
-    const saved = IS.slotGet(h, s);
-    IS.slotSet(h, s, 0);
-    try testing.expect(IS.fsck(h, {}, 0) > 0);
-    IS.slotSet(h, s, saved);
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-    // The move counter ahead of the index: found.
-    IS.setMoved(h, IS.movedCount(h) + 1);
-    try testing.expect(IS.fsck(h, {}, 0) > 0);
-    IS.setMoved(h, IS.movedCount(h) - 1);
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-    // An old-index slot emptied: found.
-    var o: u32 = 0;
-    while (IS.oldSlotGet(h, o) == 0) o += 1;
-    const osaved = IS.oldSlotGet(h, o);
-    IS.oldSlotSet(h, o, 0);
-    try testing.expect(IS.fsck(h, {}, 0) > 0);
-    IS.oldSlotSet(h, o, osaved);
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-}
-
-test "incremental: a verbatim copy of a partial block is an independent table" {
-    const old = try fullBlock(128);
-    const h = (try IS.grow(old, {}, testing.allocator)).?;
-    ifree(old);
-    defer ifree(h);
-    try iput(h, 129);
-    try testing.expect(IS.migrating(h));
-    const size = IS.allocatedSize(h);
-    const copy_block = try testing.allocator.alignedAlloc(u8, .@"8", size);
-    @memcpy(copy_block, IS.blockStart(h)[0..size]);
-    const copy: *Header = @ptrCast(copy_block.ptr);
-    defer ifree(copy);
-    for (130..140) |k| try iput(copy, k);
-    try allReachable(copy, 139);
-    try allReachable(h, 129);
-    try testing.expectEqual(@as(u64, 0), IS.fsck(copy, {}, 0));
-    try testing.expectEqual(@as(u64, 0), IS.fsck(h, {}, 0));
-    try testing.expectEqual(@as(?[*]u8, null), iget(h, 130));
-}
-
-test "incremental: random ops match std.AutoHashMap" {
-    var slot: ?*Header = null;
-    const h = &slot;
-    IT.build({}, h, test_entry_size, 0, 0);
-    defer IT.demolish({}, h);
-    try randomOps(IT, h);
-    try testing.expectEqual(@as(u64, 0), IT.fsck({}, h, 0));
-}
-
-test "incremental: grow-heavy random ops match std.AutoHashMap across many grows" {
-    var slot: ?*Header = null;
-    const h = &slot;
-    IT.build({}, h, test_entry_size, 0, 0);
-    defer IT.demolish({}, h);
-    var prng = std.Random.DefaultPrng.init(0xfeed);
-    const rand = prng.random();
-    var model = std.AutoHashMap(u64, void).init(testing.allocator);
-    defer model.deinit();
-    const limit: u64 = 6000;
-    var i: u32 = 0;
-    while (i < 40_000) : (i += 1) {
-        const key = rand.intRangeLessThan(u64, 1, limit);
-        switch (rand.uintLessThan(u8, 10)) {
-            0...6 => {
-                const e = IT.lvalueFetch({}, h, key);
-                if (model.contains(key)) {
-                    try testing.expectEqual(key * 10, valueOf(e));
-                } else {
-                    try fill(e, key);
-                    try model.put(key, {});
-                }
-            },
-            7, 8 => try testing.expectEqual(model.contains(key), IT.fetch({}, h, key) != null),
-            else => try testing.expectEqual(model.remove(key), IT.delete({}, h, key)),
-        }
-        if (i % 97 == 0) {
-            try testing.expectEqual(model.count(), IT.count(h));
-            var it = model.keyIterator();
-            while (it.next()) |k| try testing.expectEqual(k.* * 10, valueOf(IT.fetch({}, h, k.*).?));
-            try testing.expectEqual(@as(u64, 0), IT.fsck({}, h, 0));
-        }
-    }
 }

@@ -91,7 +91,7 @@ sub round_trip(%h, $desc) {
 
 # Strategies 1 (GENERAL, the Swiss-style tier) and 2 (ORDERED, the
 # array-ordered tier); docs/hash-strategies.md.
-for 1, 2, 3 -> $s {
+for 1, 2 -> $s {
     {
         my %h := nqp::hash();
         my $r := nqp::hashstrategy(%h, $s, 0);
@@ -170,7 +170,7 @@ for 1, 2, 3 -> $s {
     }
 }
 
-for nqp::list(4) -> $s {
+for nqp::list(3) -> $s {
     my %h := nqp::hash();
     my $msg := dies({ nqp::hashstrategy(%h, $s, 0) });
     ok(contains($msg, 'not available'), "strategy $s is not available ($msg)");

@@ -458,7 +458,7 @@ test "buildStrategy refuses strategies that are not built in" {
     try testing.expect(str.strategyAvailable(0));
     try testing.expect(str.strategyAvailable(1));
     try testing.expect(str.strategyAvailable(2));
-    try testing.expect(str.strategyAvailable(3));
+    try testing.expect(!str.strategyAvailable(3));
     try testing.expect(!str.strategyAvailable(4));
     try testing.expect(!str.strategyAvailable(255));
 }
@@ -743,34 +743,4 @@ test "ORDERED (strategy 2) iteration with deletes matches MVMIter's protocol" {
         try testing.expectEqual(left, remaining);
         try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
     }
-}
-
-test "strategy 3 (ORDERED with incremental resize) round trip and shallow copy" {
-    const vm = Instance.create();
-    defer vm.destroy();
-    const tc = vm.tc;
-    const n: u32 = 1000;
-    const ks = try keys.make(tc, n);
-    defer testing.allocator.free(ks);
-
-    try testing.expectEqual(@as(?u8, str.ordered_incremental_set), str.strategy_sets[3]);
-    var ht = unbuilt();
-    str.buildStrategy(tc, &ht, entry_size, 0, 3);
-    defer str.demolish(tc, &ht);
-    for (ks, 0..) |k, i| {
-        try put(tc, &ht, k, i);
-        // Mid-move states: everything inserted so far is found.
-        if (i % 13 == 0) for (ks[0 .. i + 1], 0..) |kk, j| try testing.expectEqual(j, try valueOf(tc, &ht, kk));
-    }
-    try testing.expectEqual(n, str.count(tc, &ht));
-    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
-
-    var dst = unbuilt();
-    str.shallowCopy(tc, &ht, &dst);
-    defer str.demolish(tc, &dst);
-    str.delete(tc, &ht, ks[0]);
-    try testing.expectEqual(@as(u64, 0), try valueOf(tc, &dst, ks[0]));
-    try testing.expectEqual(n, str.count(tc, &dst));
-    try testing.expectEqual(n - 1, str.count(tc, &ht));
-    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
 }
