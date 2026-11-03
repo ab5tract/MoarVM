@@ -118,6 +118,8 @@ const Counters = struct {
     next: ?*Counters,
     ops: [n_slots][n_ops]OpCount,
     probes: [n_slots][2]ProbeCount,
+    /// Fetches by site, miss/hit, and the table's size at the fetch.
+    fetches: [n_slots][2][n_buckets]OpCount,
     builds: [n_slots][n_buckets]u64,
     demolishes: [n_slots][n_sets][n_rungs][n_buckets]u64,
 };
@@ -178,6 +180,20 @@ pub inline fn countCycles(site: u8, op: Op, t0: u64) void {
     const e = &counters().ops[site][@intFromEnum(op)];
     e.count += 1;
     e.cycles += now() -% t0;
+}
+
+/// A fetch's count and cycles in the `fetch_hit`/`fetch_miss` op row and,
+/// the same cycles, in the histogram bin of the table's `items` at the fetch.
+pub inline fn countFetch(site: u8, hit: bool, items: u32, t0: u64) void {
+    if (!enabled) return;
+    const cs = counters();
+    const cyc = now() -% t0;
+    const e = &cs.ops[site][@intFromEnum(if (hit) Op.fetch_hit else Op.fetch_miss)];
+    e.count += 1;
+    e.cycles += cyc;
+    const f = &cs.fetches[site][@intFromBool(hit)][bucketOf(items)];
+    f.count += 1;
+    f.cycles += cyc;
 }
 
 pub inline fn probe(site: u8, hit: bool, len: u32) void {
@@ -295,6 +311,15 @@ pub fn dump(w: *std.Io.Writer) !void {
             }
             if (tot.count != 0) try w.print("probe\t{d}\t{s}\t{d}\t{d}\t{d}\n", .{ site, name, tot.count, tot.sum_len, tot.max_len });
         }
+        for ([_][]const u8{ "miss", "hit" }, 0..) |name, h| for (0..n_buckets) |b| {
+            var tot: OpCount = .{ .count = 0, .cycles = 0 };
+            var l = list_head;
+            while (l) |c| : (l = c.next) {
+                tot.count += c.fetches[site][h][b].count;
+                tot.cycles += c.fetches[site][h][b].cycles;
+            }
+            if (tot.count != 0) try w.print("fetch\t{d}\t{s}\t{d}\t{d}\t{d}\n", .{ site, name, b, tot.count, tot.cycles });
+        };
         for (0..n_buckets) |b| {
             var n: u64 = 0;
             var l = list_head;

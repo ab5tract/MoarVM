@@ -54,6 +54,8 @@ sub header {
 write_file('1.tsv', header('/usr/bin/moar --libpath=x rakudo.moarvm -e 1', 1, 100000),
     [ 'site', 0, '64' ], [ 'site', 1, 'c8' ], [ 'site', 2, '12c' ],
     [ 'op', 0, 'insert', 10, 1000 ], [ 'op', 0, 'fetch_hit', 4, 400 ],
+    [ 'fetch', 0, 'hit', 1, 3, 300 ], [ 'fetch', 0, 'hit', 5, 1, 100 ],
+    [ 'fetch', 0, 'miss', 5, 2, 50 ],
     [ 'op', 1, 'fetch_hit', 5, 500 ],
     [ 'op', 2, 'insert', 20, 2000 ], [ 'op', 2, 'grow', 1, 300 ],
     [ 'build', 0, 0, 3 ], [ 'build', 2, 9, 1 ],
@@ -63,6 +65,7 @@ write_file('2.tsv', header('/usr/bin/moar --libpath=x rakudo.moarvm -e 2', 2, 50
     [ 'site', 0, '12c' ], [ 'site', 1, '64' ],
     [ 'op', 1, 'insert', 5, 500 ],
     [ 'op', 0, 'delete_hit', 2, 100 ],
+    [ 'fetch', 1, 'hit', 5, 4, 200 ], [ 'fetch', 1, 'miss', 9, 1, 50 ],
     [ 'op', 255, 'fetch_miss', 3, 150 ],
     [ 'build', 1, 0, 2 ]);
 # c: a process that built no table.
@@ -85,6 +88,17 @@ like $out, qr/^- build: >16384=1$/m, 'build histogram: the more bucket';
 like $out, qr/^- demolish set 0 rung 1: <=65=2$/m, 'demolish histogram';
 like $out, qr/^Files: 3 \(1 header-only\)$/m, 'file count with header-only files';
 
+like $out, qr/^Lookups by table size/m, 'a Lookups by table size block';
+like $out, qr/^\| <=16 \| 3 \| 0 \| 300 \| 42\.9 \|$/m, 'bucket <=16: hits, misses, cycles, share';
+like $out, qr/^\| <=128 \| 5 \| 2 \| 350 \| 50\.0 \|$/m, 'bucket <=128 summed across files (ids differ per file)';
+like $out, qr/^\| >16384 \| 0 \| 1 \| 50 \| 7\.1 \|$/m, 'the more bucket';
+like $out, qr/^- at or above 65 entries: 72\.7% of fetches, 57\.1% of fetch cycles$/m, 'share at or above 65';
+like $out, qr/^- at or above 128 entries: 72\.7% of fetches, 57\.1% of fetch cycles$/m, 'share at or above 128';
+my ($blk) = $out =~ /^Lookups by table size[^\n]*\n\n((?:\|[^\n]*\n)+)/m;
+my $bsum = 0;
+$bsum += $1 while $blk =~ /^\| (?:<=|>)\d+ \| \d+ \| \d+ \| \d+ \| ([\d.]+) \|$/mg;
+cmp_ok abs($bsum - 100), '<', 0.2, "bucket shares of a site sum to 100 (got $bsum)";
+
 # The share-of-hash column sums to 100 within rounding.
 my $sum = 0;
 $sum += $1 while $out =~ /^\| (?:insert|overwrite|fetch_hit|fetch_miss|delete_hit|delete_miss|iter_start|iter_step|copy|build|demolish) \| \d+ \| \d+ \| [\d.]+ \| ([\d.]+) \| [\d.]+ \|$/mg;
@@ -105,6 +119,7 @@ my @rows = <$in>;
 close $in;
 ok scalar(grep { $_ eq "op\ts1\tinsert\t15\t1500\n" } @rows), 'merged tsv: summed insert row of s1';
 ok scalar(grep { $_ eq "build\ts1\t0\t5\n" } @rows), 'merged tsv: summed histogram';
+ok scalar(grep { $_ eq "fetch\ts1\thit\t5\t5\t300\n" } @rows), 'merged tsv: summed fetch row';
 
 # An empty directory is an error.
 my $empty = "$tmp/empty";

@@ -617,9 +617,10 @@ pub fn Table(comptime Spec: type) type {
         pub fn fetch(ctx: Ctx, h: Handle, key: Key) ?[*]u8 {
             if (comptime !stats.enabled) return fetchBody(ctx, h, key);
             const site = siteOfHandle(h);
+            const items = count(h);
             const t0 = stats.now();
             const r = fetchBody(ctx, h, key);
-            stats.countCycles(site, if (r != null) .fetch_hit else .fetch_miss, t0);
+            stats.countFetch(site, r != null, items, t0);
             return r;
         }
 

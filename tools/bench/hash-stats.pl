@@ -34,6 +34,11 @@
 # hash cycles over the program's total_cycles. Probe rows, if a file has
 # them, are ignored.
 #
+# A `fetch` row (site, hit|miss, bucket, count, cycles) bins the fetch ops by
+# the table's entry count; per site a "Lookups by table size" table (the
+# cycles are those of the fetch_hit/fetch_miss op rows) and the shares at or
+# above 65 and 128 entries. Files without such rows aggregate as before.
+#
 # --census adds the census sites that never appeared. --tsv writes the
 # merged rows with the label in place of the site id.
 use strict;
@@ -120,7 +125,7 @@ sub label_of {
     return undef;
 }
 
-my (%op, %build, %demolish, %where);    # keyed by site label
+my (%op, %build, %demolish, %fetch, %where);    # keyed by site label
 my ($nfiles, $nheader, $total_cycles, $hash_cycles) = (0, 0, 0, 0);
 my %prog;                               # program => { files, header, total, hash }
 for my $file (@files) {
@@ -165,6 +170,12 @@ for my $file (@files) {
             $op{$l}{$o}[1] += $c;
             $file_hash += $c unless $NESTED{$o};
             $any = 1;
+        } elsif ($kind eq 'fetch') {
+            my ($s, $h, $b, $n, $c) = @$r[ 1 .. 5 ];
+            my $e = $fetch{ $name_of->($s) }[ $h eq 'hit' ? 1 : 0 ][$b] ||= [ 0, 0 ];
+            $e->[0] += $n;
+            $e->[1] += $c;
+            $any = 1;
         } elsif ($kind eq 'build') {
             $build{ $name_of->($r->[1]) }[ $r->[2] ] += $r->[3];
             $any = 1;
@@ -188,7 +199,7 @@ sub pct { my ($n, $d) = @_; return $d ? sprintf('%.1f', 100 * $n / $d) : '-' }
 sub site_hash { my $l = shift; my $t = 0; $t += $op{$l}{$_}[1] for grep { !$NESTED{$_} } keys %{ $op{$l} || {} }; return $t }
 
 my @labels = sort { site_hash($b) <=> site_hash($a) or $a cmp $b } keys %op;
-for my $l (keys %build, keys %demolish) { push @labels, $l unless grep { $_ eq $l } @labels }
+for my $l (keys %build, keys %demolish, keys %fetch) { push @labels, $l unless grep { $_ eq $l } @labels }
 
 print "# Hash statistics\n\n";
 print "Files: $nfiles ($nheader header-only)\n";
@@ -213,6 +224,27 @@ for my $l (@labels) {
         print "| $o | $n | $c | $per | ", pct($c, $hash_cycles), " | ", pct($c, $total_cycles), " |\n";
     }
     print "\n";
+    if (my $f = $fetch{$l}) {
+        my ($tc, $tn) = (0, 0);
+        for my $h (0, 1) { for my $b (0 .. 9) { my $e = $f->[$h][$b] or next; $tn += $e->[0]; $tc += $e->[1] } }
+        my $cell = sub { my ($h, $b) = @_; my $e = $f->[$h][$b]; return $e ? @$e : (0, 0) };
+        print "Lookups by table size (the table's entries at the fetch):\n\n";
+        print "| size | hits | misses | cycles | % of fetch cycles |\n|---|---|---|---|---|\n";
+        my (@hi65, @hi128);
+        for my $b (0 .. 9) {
+            my ($hn, $hc) = $cell->(1, $b);
+            my ($mn, $mc) = $cell->(0, $b);
+            next unless $hn || $mn;
+            print "| $BUCKET[$b] | $hn | $mn | ", $hc + $mc, " | ", pct($hc + $mc, $tc), " |\n";
+            for ([ \@hi65, 4 ], [ \@hi128, 5 ]) {
+                next if $b < $_->[1];
+                $_->[0][0] += $hn + $mn;
+                $_->[0][1] += $hc + $mc;
+            }
+        }
+        print "\n- at or above 65 entries: ", pct($hi65[0] // 0, $tn), "% of fetches, ", pct($hi65[1] // 0, $tc), "% of fetch cycles\n";
+        print "- at or above 128 entries: ", pct($hi128[0] // 0, $tn), "% of fetches, ", pct($hi128[1] // 0, $tc), "% of fetch cycles\n\n";
+    }
     if (my $b = $build{$l}) {
         print "- build: ", join(' ', map { "$BUCKET[$_]=$b->[$_]" } grep { $b->[$_] } 0 .. 9), "\n";
     }
@@ -241,6 +273,14 @@ if ($tsv_out) {
     open my $o, '>', $tsv_out or die "$tsv_out: $!";
     for my $l (sort keys %op) {
         for my $n (@OPS) { my $e = $op{$l}{$n} or next; print $o "op\t$l\t$n\t$e->[0]\t$e->[1]\n" }
+    }
+    for my $l (sort keys %fetch) {
+        for my $h (0, 1) {
+            for my $i (0 .. 9) {
+                my $e = $fetch{$l}[$h][$i] or next;
+                print $o join("\t", 'fetch', $l, $h ? 'hit' : 'miss', $i, @$e), "\n";
+            }
+        }
     }
     for my $l (sort keys %build) {
         for my $i (0 .. 9) { print $o "build\t$l\t$i\t$build{$l}[$i]\n" if $build{$l}[$i] }

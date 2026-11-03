@@ -338,6 +338,8 @@ The file is TSV; header lines start with `#`: `cmdline`, `pid`, `tsc_hz`
 `build<TAB>site<TAB>bucket<TAB>count` and
 `demolish<TAB>site<TAB>set<TAB>rung<TAB>bucket<TAB>count`, where a bucket is
 an index into the ladder above (9 is "more").
+`fetch<TAB>site<TAB>hit|miss<TAB>bucket<TAB>count<TAB>cycles` bins the fetches by the
+table's entry count at the fetch (their sum is the `fetch_hit`/`fetch_miss` op row; zero rows are omitted).
 
 `tools/bench/hash-stats.pl DIR --lib=PATH/libmoar.so [--census] [--tsv=OUT.tsv]`
 merges every `*.tsv` in `DIR` into a markdown report. It resolves each site

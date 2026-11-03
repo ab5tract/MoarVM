@@ -161,6 +161,42 @@ noinline fn buildFromOneCallSite(tc: *ThreadContext, ht: *c.MVMStrHashTable) voi
     std.mem.doNotOptimizeAway(ht.table);
 }
 
+test "fetches are binned by the table's size" {
+    if (!stats.enabled) return error.SkipZigTest;
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 120);
+    defer testing.allocator.free(ks);
+
+    const big = stats.siteOf(0xb1b1);
+    const small = stats.siteOf(0xb2b2);
+    var hb = unbuilt();
+    buildAt(tc, &hb, big, 0);
+    fill(tc, &hb, ks[0..100]);
+    var hs = unbuilt();
+    buildAt(tc, &hs, small, 0);
+    fill(tc, &hs, ks[0..10]);
+    for (ks[0..10]) |k| try testing.expect(str.fetch(tc, &hb, k) != null);
+    for (ks[100..110]) |k| try testing.expect(str.fetch(tc, &hb, k) == null);
+    for (ks[0..3]) |k| try testing.expect(str.fetch(tc, &hs, k) != null);
+
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    const text = try dumpOf(&out);
+    // 100 entries: the bucket with limit 128 (index 5).
+    try expectLine(text, "fetch\t{d}\thit\t5\t10\t", .{big});
+    try expectLine(text, "fetch\t{d}\tmiss\t5\t10\t", .{big});
+    // 10 entries: limit 16 (index 1).
+    try expectLine(text, "fetch\t{d}\thit\t1\t3\t", .{small});
+    // Nothing else for the sites, and the bins add up to the op rows.
+    try testing.expect(std.mem.indexOf(u8, text, try std.fmt.bufPrint(&buf2, "fetch\t{d}\tmiss\t1\t", .{small})) == null);
+    try testing.expectEqual(try countOf(text, big, "fetch_hit"), 10);
+    try testing.expectEqual(try countOf(text, big, "fetch_miss"), 10);
+}
+
+var buf2: [64]u8 = undefined;
+
 test "a migration past the Small rung is counted once" {
     if (!stats.enabled) return error.SkipZigTest;
     const vm = Instance.create();
