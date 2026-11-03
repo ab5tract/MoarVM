@@ -104,7 +104,7 @@ const Control = extern struct {
 };
 const control_size = @sizeOf(Control);
 comptime {
-    std.debug.assert(control_size == 24);
+    std.debug.assert(control_size == @sizeOf(Header) + 16);
 }
 
 /// The entries a block of `slots` index slots holds: half of them.
@@ -819,7 +819,7 @@ test "full, grow doubles both arrays into a new block, block size" {
     const h = try testInit(1);
     // The smallest block: 16 index slots, 8 entries.
     try testing.expectEqual(@as(u32, 8), S.capacity(h));
-    try testing.expectEqual(@as(usize, 24 + 16 * 1 + 8 * test_entry_size), S.allocatedSize(h));
+    try testing.expectEqual(@as(usize, control_size + 16 * 1 + 8 * test_entry_size), S.allocatedSize(h));
     for (1..9) |k| try put(h, k);
     try testing.expect(S.isFull(h));
     try testing.expect(S.lvalueFetch(h, {}, 3, S.hash({}, 3)) == .found);
@@ -832,7 +832,7 @@ test "full, grow doubles both arrays into a new block, block size" {
     testFree(h);
     defer testFree(grown);
     try testing.expectEqual(@as(u32, 16), S.capacity(grown));
-    try testing.expectEqual(@as(usize, 24 + 32 * 1 + 16 * test_entry_size), S.allocatedSize(grown));
+    try testing.expectEqual(@as(usize, control_size + 32 * 1 + 16 * test_entry_size), S.allocatedSize(grown));
     // Insertion order survives the grow.
     var want: u64 = 8;
     var pos = S.first(grown);

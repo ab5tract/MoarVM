@@ -9,6 +9,7 @@
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const stats = @import("stats.zig");
 const uni = @import("uni.zig");
 
 const Tc = [*c]c.MVMThreadContext;
@@ -16,6 +17,13 @@ const Ht = [*c]c.MVMUniHashTable;
 const Key = [*c]const u8;
 
 fn MVM_uni_hash_build(tc: Tc, hashtable: Ht, entries: u32) callconv(.c) void {
+    uni.build(tc, hashtable, entries);
+}
+
+/// The `-Dhash-stats` twin of `MVM_uni_hash_build`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_uni_hash_build_stats(tc: Tc, hashtable: Ht, entries: u32) callconv(.c) void {
+    stats.setPendingSite(@returnAddress());
     uni.build(tc, hashtable, entries);
 }
 
@@ -35,6 +43,13 @@ fn MVM_uni_hash_insert(tc: Tc, hashtable: Ht, key: Key, value: i32) callconv(.c)
     uni.insert(tc, hashtable, key, value);
 }
 
+/// The `-Dhash-stats` twin of `MVM_uni_hash_insert`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_uni_hash_insert_stats(tc: Tc, hashtable: Ht, key: Key, value: i32) callconv(.c) void {
+    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
+    uni.insert(tc, hashtable, key, value);
+}
+
 fn MVM_uni_hash_fsck(hashtable: Ht, mode: u32) callconv(.c) u64 {
     return uni.fsck(hashtable, mode);
 }
@@ -47,10 +62,10 @@ fn MVM_uni_hash_fsck(hashtable: Ht, mode: u32) callconv(.c) u64 {
 const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
-    @export(&MVM_uni_hash_build, .{ .name = "MVM_uni_hash_build", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_uni_hash_build_stats else &MVM_uni_hash_build, .{ .name = "MVM_uni_hash_build", .visibility = visibility });
     @export(&MVM_uni_hash_demolish, .{ .name = "MVM_uni_hash_demolish", .visibility = visibility });
     @export(&MVM_uni_hash_is_empty, .{ .name = "MVM_uni_hash_is_empty", .visibility = visibility });
     @export(&MVM_uni_hash_fetch, .{ .name = "MVM_uni_hash_fetch", .visibility = visibility });
-    @export(&MVM_uni_hash_insert, .{ .name = "MVM_uni_hash_insert", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_uni_hash_insert_stats else &MVM_uni_hash_insert, .{ .name = "MVM_uni_hash_insert", .visibility = visibility });
     @export(&MVM_uni_hash_fsck, .{ .name = "MVM_uni_hash_fsck", .visibility = visibility });
 }

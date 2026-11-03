@@ -10,6 +10,7 @@
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const stats = @import("stats.zig");
 const str = @import("str.zig");
 
 const Tc = [*c]c.MVMThreadContext;
@@ -23,7 +24,21 @@ fn MVM_str_hash_build(tc: Tc, hashtable: Ht, entry_size: u32, entries: u32) call
     str.build(tc, hashtable, entry_size, entries);
 }
 
+/// The `-Dhash-stats` twin of `MVM_str_hash_build`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_str_hash_build_stats(tc: Tc, hashtable: Ht, entry_size: u32, entries: u32) callconv(.c) void {
+    stats.setPendingSite(@returnAddress());
+    str.build(tc, hashtable, entry_size, entries);
+}
+
 fn MVM_str_hash_build_strategy(tc: Tc, hashtable: Ht, entry_size: u32, entries: u32, strategy: u8) callconv(.c) void {
+    str.buildStrategy(tc, hashtable, entry_size, entries, strategy);
+}
+
+/// The `-Dhash-stats` twin of `MVM_str_hash_build_strategy`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_str_hash_build_strategy_stats(tc: Tc, hashtable: Ht, entry_size: u32, entries: u32, strategy: u8) callconv(.c) void {
+    stats.setPendingSite(@returnAddress());
     str.buildStrategy(tc, hashtable, entry_size, entries, strategy);
 }
 
@@ -65,7 +80,21 @@ fn MVM_str_hash_lvalue_fetch_nocheck(tc: Tc, hashtable: Ht, key: Key) callconv(.
     return str.lvalueFetchNocheck(tc, hashtable, key);
 }
 
+/// The `-Dhash-stats` twin of `MVM_str_hash_lvalue_fetch_nocheck`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_str_hash_lvalue_fetch_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
+    return str.lvalueFetchNocheck(tc, hashtable, key);
+}
+
 fn MVM_str_hash_insert_nocheck(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    return str.insertNocheck(tc, hashtable, key);
+}
+
+/// The `-Dhash-stats` twin of `MVM_str_hash_insert_nocheck`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_str_hash_insert_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return str.insertNocheck(tc, hashtable, key);
 }
 
@@ -78,6 +107,13 @@ fn MVM_str_hash_fetch(tc: Tc, hashtable: Ht, want: Key) callconv(.c) ?*anyopaque
 }
 
 fn MVM_str_hash_lvalue_fetch(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    return str.lvalueFetch(tc, hashtable, key);
+}
+
+/// The `-Dhash-stats` twin of `MVM_str_hash_lvalue_fetch`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_str_hash_lvalue_fetch_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return str.lvalueFetch(tc, hashtable, key);
 }
 
@@ -131,8 +167,8 @@ fn MVM_round_up_log_base2(v: u32) callconv(.c) u32 {
 const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
-    @export(&MVM_str_hash_build, .{ .name = "MVM_str_hash_build", .visibility = visibility });
-    @export(&MVM_str_hash_build_strategy, .{ .name = "MVM_str_hash_build_strategy", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_str_hash_build_stats else &MVM_str_hash_build, .{ .name = "MVM_str_hash_build", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_str_hash_build_strategy_stats else &MVM_str_hash_build_strategy, .{ .name = "MVM_str_hash_build_strategy", .visibility = visibility });
     @export(&MVM_str_hash_demolish, .{ .name = "MVM_str_hash_demolish", .visibility = visibility });
     @export(&MVM_str_hash_count, .{ .name = "MVM_str_hash_count", .visibility = visibility });
     @export(&MVM_str_hash_entry_size, .{ .name = "MVM_str_hash_entry_size", .visibility = visibility });
@@ -141,11 +177,11 @@ comptime {
     @export(&MVM_str_hash_shallow_copy, .{ .name = "MVM_str_hash_shallow_copy", .visibility = visibility });
     @export(&MVM_str_hash_fsck, .{ .name = "MVM_str_hash_fsck", .visibility = visibility });
     @export(&MVM_str_hash_fetch_nocheck, .{ .name = "MVM_str_hash_fetch_nocheck", .visibility = visibility });
-    @export(&MVM_str_hash_lvalue_fetch_nocheck, .{ .name = "MVM_str_hash_lvalue_fetch_nocheck", .visibility = visibility });
-    @export(&MVM_str_hash_insert_nocheck, .{ .name = "MVM_str_hash_insert_nocheck", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_str_hash_lvalue_fetch_nocheck_stats else &MVM_str_hash_lvalue_fetch_nocheck, .{ .name = "MVM_str_hash_lvalue_fetch_nocheck", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_str_hash_insert_nocheck_stats else &MVM_str_hash_insert_nocheck, .{ .name = "MVM_str_hash_insert_nocheck", .visibility = visibility });
     @export(&MVM_str_hash_delete_nocheck, .{ .name = "MVM_str_hash_delete_nocheck", .visibility = visibility });
     @export(&MVM_str_hash_fetch, .{ .name = "MVM_str_hash_fetch", .visibility = visibility });
-    @export(&MVM_str_hash_lvalue_fetch, .{ .name = "MVM_str_hash_lvalue_fetch", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_str_hash_lvalue_fetch_stats else &MVM_str_hash_lvalue_fetch, .{ .name = "MVM_str_hash_lvalue_fetch", .visibility = visibility });
     @export(&MVM_str_hash_delete, .{ .name = "MVM_str_hash_delete", .visibility = visibility });
     @export(&MVM_str_hash_first, .{ .name = "MVM_str_hash_first", .visibility = visibility });
     @export(&MVM_str_hash_next_nocheck, .{ .name = "MVM_str_hash_next_nocheck", .visibility = visibility });

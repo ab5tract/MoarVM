@@ -14,6 +14,7 @@ test {
     _ = @import("str.zig");
     _ = @import("bench.zig");
     _ = @import("stats.zig");
+    _ = @import("test/stats_test.zig");
 }
 
 test "the four single-rung tables dispatch without a set comparison" {

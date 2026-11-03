@@ -188,6 +188,10 @@ pub fn build(b: *std.Build) void {
         if (b.args) |args| run.addArgs(args);
         const bench_step = b.step("hash-bench", "Run the string hash table microbenchmark against this build's engine (args after --: --sizes=, --runs=, --max-size=)");
         bench_step.dependOn(&run.step);
+        // `zig build hash-bench-exe --prefix <P>` leaves <P>/bin/hash-bench
+        // for tools/bench/hash-ab.sh (the C-API ladder under LD_LIBRARY_PATH).
+        const bench_exe_step = b.step("hash-bench-exe", "Install the microbenchmark executable as <prefix>/bin/hash-bench");
+        bench_exe_step.dependOn(&b.addInstallArtifact(bench, .{}).step);
     }
 
     const tp_step = b.step("thirdparty", "Build the bundled third-party static libraries");

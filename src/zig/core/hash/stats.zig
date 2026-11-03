@@ -96,6 +96,13 @@ pub fn siteOf(ret_addr: usize) u8 {
 /// follows on the same thread.
 pub threadlocal var pending_site: u8 = max_sites;
 
+/// Interns the caller's call site (an export's `@returnAddress()`) as the
+/// pending site of the table about to be built on this thread.
+pub fn setPendingSite(ret_addr: usize) void {
+    if (!enabled) return;
+    pending_site = siteOf(ret_addr);
+}
+
 pub fn takePendingSite() u8 {
     const s = pending_site;
     pending_site = max_sites;

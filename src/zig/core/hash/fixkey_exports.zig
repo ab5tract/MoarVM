@@ -7,6 +7,7 @@
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const stats = @import("stats.zig");
 const fixkey = @import("fixkey.zig");
 
 const Tc = [*c]c.MVMThreadContext;
@@ -14,6 +15,13 @@ const Ht = [*c]c.MVMFixKeyHashTable;
 const Key = [*c]c.MVMString;
 
 fn MVM_fixkey_hash_build(tc: Tc, hashtable: Ht, entry_size: u32) callconv(.c) void {
+    fixkey.build(tc, hashtable, entry_size);
+}
+
+/// The `-Dhash-stats` twin of `MVM_fixkey_hash_build`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_fixkey_hash_build_stats(tc: Tc, hashtable: Ht, entry_size: u32) callconv(.c) void {
+    stats.setPendingSite(@returnAddress());
     fixkey.build(tc, hashtable, entry_size);
 }
 
@@ -33,7 +41,21 @@ fn MVM_fixkey_hash_lvalue_fetch_nocheck(tc: Tc, hashtable: Ht, key: Key) callcon
     return fixkey.lvalueFetchNocheck(tc, hashtable, key);
 }
 
+/// The `-Dhash-stats` twin of `MVM_fixkey_hash_lvalue_fetch_nocheck`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_fixkey_hash_lvalue_fetch_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
+    return fixkey.lvalueFetchNocheck(tc, hashtable, key);
+}
+
 fn MVM_fixkey_hash_insert_nocheck(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    return fixkey.insertNocheck(tc, hashtable, key);
+}
+
+/// The `-Dhash-stats` twin of `MVM_fixkey_hash_insert_nocheck`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_fixkey_hash_insert_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
+    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return fixkey.insertNocheck(tc, hashtable, key);
 }
 
@@ -53,12 +75,12 @@ fn MVM_fixkey_hash_fsck(tc: Tc, hashtable: Ht, mode: u32) callconv(.c) u64 {
 const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
-    @export(&MVM_fixkey_hash_build, .{ .name = "MVM_fixkey_hash_build", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_fixkey_hash_build_stats else &MVM_fixkey_hash_build, .{ .name = "MVM_fixkey_hash_build", .visibility = visibility });
     @export(&MVM_fixkey_hash_demolish, .{ .name = "MVM_fixkey_hash_demolish", .visibility = visibility });
     @export(&MVM_fixkey_hash_is_empty, .{ .name = "MVM_fixkey_hash_is_empty", .visibility = visibility });
     @export(&MVM_fixkey_hash_fetch_nocheck, .{ .name = "MVM_fixkey_hash_fetch_nocheck", .visibility = visibility });
-    @export(&MVM_fixkey_hash_lvalue_fetch_nocheck, .{ .name = "MVM_fixkey_hash_lvalue_fetch_nocheck", .visibility = visibility });
-    @export(&MVM_fixkey_hash_insert_nocheck, .{ .name = "MVM_fixkey_hash_insert_nocheck", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_fixkey_hash_lvalue_fetch_nocheck_stats else &MVM_fixkey_hash_lvalue_fetch_nocheck, .{ .name = "MVM_fixkey_hash_lvalue_fetch_nocheck", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_fixkey_hash_insert_nocheck_stats else &MVM_fixkey_hash_insert_nocheck, .{ .name = "MVM_fixkey_hash_insert_nocheck", .visibility = visibility });
     @export(&MVM_fixkey_hash_foreach, .{ .name = "MVM_fixkey_hash_foreach", .visibility = visibility });
     @export(&MVM_fixkey_hash_fsck, .{ .name = "MVM_fixkey_hash_fsck", .visibility = visibility });
 }

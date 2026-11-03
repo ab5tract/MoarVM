@@ -68,6 +68,7 @@
 //! Specs and only Specs that publish through safepoints need the module.
 const std = @import("std");
 const tier = @import("tier.zig");
+const stats = @import("stats.zig");
 
 pub const Header = tier.Header;
 pub const Publish = enum { plain, safepoint_cas };
@@ -374,8 +375,24 @@ pub fn Table(comptime Spec: type) type {
             return if (@hasDecl(Spec, "salt")) Spec.salt(ctx) else 0;
         }
 
-        fn headerInit(entry_size: u8, set_index: u8, rung_index: u8) Header {
-            return .{ .tier = rung_index, .set = set_index, .entry_size = entry_size, .stale = 0, .cur_items = 0 };
+        fn headerInit(entry_size: u8, set_index: u8, rung_index: u8, site: u8) Header {
+            var header = std.mem.zeroes(Header);
+            header.tier = rung_index;
+            header.set = set_index;
+            header.entry_size = entry_size;
+            if (comptime stats.enabled) header.site = site;
+            return header;
+        }
+
+        /// The statistics site stored in a header (0 without stats).
+        inline fn siteOf(header: *const Header) u8 {
+            return if (comptime stats.enabled) header.site else 0;
+        }
+
+        /// The statistics site of a table (255, "other", for an unbuilt one).
+        inline fn siteOfHandle(h: Handle) u8 {
+            if (comptime !stats.enabled) return 0;
+            return if (h.*) |header| header.site else stats.max_sites;
         }
 
         /// A fresh block of rung `rung_index` sized for `wanted` entries
@@ -398,7 +415,7 @@ pub fn Table(comptime Spec: type) type {
         /// its minimum size replaces the bare header (maybe_grow_hash,
         /// str_hash_table.c:323-343).
         fn materialise(ctx: Ctx, h: Handle, header: *Header) *Header {
-            const new = initRung(ctx, header.set, rungOf(header), headerInit(header.entry_size, header.set, rungOf(header)), 0);
+            const new = initRung(ctx, header.set, rungOf(header), headerInit(header.entry_size, header.set, rungOf(header), siteOf(header)), 0);
             publish(ctx, h, header, new);
             return new;
         }
@@ -406,12 +423,16 @@ pub fn Table(comptime Spec: type) type {
         /// The rung reported full for an absent key: grow within the rung,
         /// else migrate to the next one. Returns the header to retry on.
         fn growOrMigrate(ctx: Ctx, h: Handle, header: *Header) *Header {
+            const site = siteOf(header);
+            const t0 = stats.now();
             if (dispatch(?*Header, header, ops.grow, .{ctx})) |grown| {
                 if (grown != header) publish(ctx, h, header, grown);
+                stats.countCycles(site, .grow, t0);
                 return grown;
             }
             const new = migrate(ctx, header);
             publish(ctx, h, header, new);
+            stats.countCycles(site, .migrate, t0);
             return new;
         }
 
@@ -492,10 +513,11 @@ pub fn Table(comptime Spec: type) type {
             const wanted = @max(set[next_rung].from, old.cur_items) +| 1;
             var mover = Mover{
                 .ctx = ctx,
-                .new = initRung(ctx, old.set, next_rung, headerInit(old.entry_size, old.set, next_rung), wanted),
+                .new = initRung(ctx, old.set, next_rung, headerInit(old.entry_size, old.set, next_rung, siteOf(old)), wanted),
                 .entry_size = entrySizeOf(old),
             };
             set[ri].tier.Impl(Spec).drain(old, &mover);
+            if (comptime stats.enabled) mover.new.max_items = old.max_items;
             return mover.new;
         }
 
@@ -507,6 +529,8 @@ pub fn Table(comptime Spec: type) type {
         pub fn build(ctx: Ctx, h: Handle, entry_size: u32, expected: u32, set_index: u8) void {
             if (Spec.runtime_entry_size) std.debug.assert(entry_size != 0 and entry_size <= std.math.maxInt(u8));
             if (set_index >= Spec.sets.len) fail(ctx, "hash table build called with a set index that does not exist");
+            const site: u8 = if (comptime stats.enabled) stats.takePendingSite() else 0;
+            const t0 = stats.now();
             const stored_entry_size: u8 = if (Spec.runtime_entry_size) @intCast(entry_size) else 0;
             const StartOp = struct {
                 fn f(comptime set: tier.TierSet, comptime _: usize, a: anytype) u8 {
@@ -517,17 +541,23 @@ pub fn Table(comptime Spec: type) type {
             if (expected == 0) {
                 const block = Spec.allocator(ctx).alignedAlloc(u8, .@"8", @sizeOf(Header)) catch fail(ctx, oom_msg);
                 const header: *Header = @ptrCast(block.ptr);
-                header.* = headerInit(stored_entry_size, set_index, rung_index | control_only_bit);
+                header.* = headerInit(stored_entry_size, set_index, rung_index | control_only_bit, site);
                 h.* = header;
             } else {
-                h.* = initRung(ctx, set_index, rung_index, headerInit(stored_entry_size, set_index, rung_index), expected);
+                h.* = initRung(ctx, set_index, rung_index, headerInit(stored_entry_size, set_index, rung_index, site), expected);
             }
+            stats.sizeAtBuild(site, expected);
+            stats.countCycles(site, .build, t0);
         }
 
         /// Frees the table's block and leaves `h` unbuilt.
         pub fn demolish(ctx: Ctx, h: Handle) void {
             const header = h.* orelse return;
             checkStale(ctx, header, "demolish");
+            if (comptime stats.enabled) {
+                stats.sizeAtDemolish(header.site, header.set, rungOf(header), header.max_items);
+                stats.count(header.site, .demolish);
+            }
             if (comptime publish_mode == .plain) {
                 freeNow(ctx, header);
             } else if (isControlOnly(header)) {
@@ -571,6 +601,7 @@ pub fn Table(comptime Spec: type) type {
                 return;
             };
             checkStale(ctx, header, "shallowCopy");
+            stats.count(siteOf(header), .copy);
             const block = blockOf(header);
             const copy = Spec.allocator(ctx).alignedAlloc(u8, .@"8", block.len) catch fail(ctx, oom_msg);
             @memcpy(copy, block);
@@ -584,6 +615,15 @@ pub fn Table(comptime Spec: type) type {
         // ------------------------------------------------------- access
 
         pub fn fetch(ctx: Ctx, h: Handle, key: Key) ?[*]u8 {
+            if (comptime !stats.enabled) return fetchBody(ctx, h, key);
+            const site = siteOfHandle(h);
+            const t0 = stats.now();
+            const r = fetchBody(ctx, h, key);
+            stats.countCycles(site, if (r != null) .fetch_hit else .fetch_miss, t0);
+            return r;
+        }
+
+        inline fn fetchBody(ctx: Ctx, h: Handle, key: Key) ?[*]u8 {
             const header = h.* orelse return null;
             const st = statusOf(header);
             if (st & slow_bits == 0)
@@ -597,6 +637,7 @@ pub fn Table(comptime Spec: type) type {
 
         fn lvalue(ctx: Ctx, h: Handle, key: Key, comptime who: []const u8) Found {
             var header = h.* orelse fail(ctx, "Attempting insert on a hash table without first calling build");
+            const t0 = stats.now();
             const st = statusOf(header);
             if (st & slow_bits != 0) {
                 checkStaleStatus(ctx, st, who);
@@ -604,9 +645,16 @@ pub fn Table(comptime Spec: type) type {
             }
             const result: Found = while (true) {
                 switch (dispatchInline(Lvalue, header, ops.lvalue, .{ ctx, key })) {
-                    .found => |e| break .{ .entry = e, .found = true },
+                    .found => |e| {
+                        stats.countCycles(siteOf(header), .overwrite, t0);
+                        break .{ .entry = e, .found = true };
+                    },
                     .inserted => |e| {
                         log(header, .insert, e);
+                        if (comptime stats.enabled) {
+                            if (header.cur_items > header.max_items) header.max_items = header.cur_items;
+                            stats.countCycles(header.site, .insert, t0);
+                        }
                         break .{ .entry = e, .found = false };
                     },
                     .full => header = growOrMigrate(ctx, h, header),
@@ -634,6 +682,15 @@ pub fn Table(comptime Spec: type) type {
         /// delete) unless the log hook is live, which needs the entry
         /// before it goes and costs a fetch first.
         pub fn delete(ctx: Ctx, h: Handle, key: Key) bool {
+            if (comptime !stats.enabled) return deleteBody(ctx, h, key);
+            const site = siteOfHandle(h);
+            const t0 = stats.now();
+            const removed = deleteBody(ctx, h, key);
+            stats.countCycles(site, if (removed) .delete_hit else .delete_miss, t0);
+            return removed;
+        }
+
+        inline fn deleteBody(ctx: Ctx, h: Handle, key: Key) bool {
             const header = h.* orelse return false;
             const st = statusOf(header);
             if (comptime hook_enabled) {
@@ -663,25 +720,32 @@ pub fn Table(comptime Spec: type) type {
         // first entry, and `next` walks downward (`pos` must not be 0).
 
         pub fn first(h: Handle) u32 {
+            stats.count(siteOfHandle(h), .iter_start);
             const header = h.* orelse return 0;
             if (isControlOnly(header)) return 0;
             return dispatch(u32, header, ops.first, .{});
         }
 
         pub fn next(h: Handle, pos: u32) u32 {
+            stats.count(siteOfHandle(h), .iter_step);
             const header = h.* orelse return 0;
             if (isControlOnly(header)) return 0;
             return dispatch(u32, header, ops.next, .{pos});
         }
 
         pub fn start(h: Handle) u32 {
+            stats.count(siteOfHandle(h), .iter_start);
+            return startPos(h);
+        }
+
+        fn startPos(h: Handle) u32 {
             const header = h.* orelse return 1;
             if (isControlOnly(header)) return 1;
             return dispatch(u32, header, ops.start, .{});
         }
 
         pub fn atStart(h: Handle, pos: u32) bool {
-            return pos == start(h);
+            return pos == startPos(h);
         }
 
         /// The entry at `pos`, or null at the end.

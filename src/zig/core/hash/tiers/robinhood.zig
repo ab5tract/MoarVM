@@ -84,7 +84,7 @@ const Control = extern struct {
 };
 const control_size = @sizeOf(Control);
 comptime {
-    std.debug.assert(control_size == 32);
+    std.debug.assert(control_size == @sizeOf(Header) + 24);
 }
 
 /// MVM_hash_round_size_up with sizeof(long) == 8.

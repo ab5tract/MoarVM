@@ -8,6 +8,7 @@
 //!
 //! This file is pure Zig with no C dependency.
 const std = @import("std");
+const stats = @import("stats.zig");
 
 /// The mutating operations reported to `logHook`.
 pub const Op = enum { insert, delete };
@@ -82,9 +83,26 @@ pub inline fn logHook(comptime set: TierSet, rung: u8, op: Op, entry: [*]u8) voi
     _ = entry;
 }
 
-/// The first 8 bytes of every table's control block (spec 4.2). The stored
-/// table pointer points at this header; the tier decides what lies around it.
-pub const Header = extern struct {
+/// The first 8 bytes of every table's control block (spec 4.2); 16 bytes in a
+/// `-Dhash-stats=true` build, whose extra fields carry the table's statistics
+/// site and its high-water item count. The stored table pointer points at this
+/// header; the tier decides what lies around it.
+pub const Header = if (stats.enabled) extern struct {
+    /// Rung index within the set.
+    tier: u8,
+    /// Index into the comptime list of tier sets.
+    set: u8,
+    /// Entry size as in C (0 is never stored; unbuilt is a NULL pointer).
+    entry_size: u8,
+    /// Volatile, as in C.
+    stale: u8,
+    cur_items: u32,
+    /// The statistics site the table was built at (255 is "other").
+    site: u8 = 0,
+    _pad: [3]u8 = .{ 0, 0, 0 },
+    /// The largest `cur_items` the table has had.
+    max_items: u32 = 0,
+} else extern struct {
     /// Rung index within the set.
     tier: u8,
     /// Index into the comptime list of tier sets.
@@ -124,6 +142,6 @@ test "the log hook is a comptime no-op in this campaign" {
     try std.testing.expectEqual(log_hook_enabled, comptime logHookEnabled(&flagged));
 }
 
-test "Header is 8 bytes" {
-    try std.testing.expectEqual(@as(usize, 8), @sizeOf(Header));
+test "Header is 8 bytes without stats, 16 with" {
+    try std.testing.expectEqual(@as(usize, if (stats.enabled) 16 else 8), @sizeOf(Header));
 }
