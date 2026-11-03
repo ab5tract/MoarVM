@@ -57,10 +57,6 @@ pub fn bucketOf(n: u32) usize {
 
 // ---------------------------------------------------------------- sites
 
-var site_lock: std.atomic.Value(bool) = .init(false);
-var site_addrs: [max_sites]usize = undefined;
-var site_count: usize = 0;
-
 fn lock(l: *std.atomic.Value(bool)) void {
     while (l.cmpxchgWeak(false, true, .acquire, .monotonic) != null) std.atomic.spinLoopHint();
 }
@@ -69,16 +65,31 @@ fn unlock(l: *std.atomic.Value(bool)) void {
     l.store(false, .release);
 }
 
-/// The id of the call site whose return address is `ret_addr`, interned on
-/// first sight; `max_sites` ("other") once all ids are taken.
+/// Return addresses interned to ids under a lock. The process has one
+/// (`sites`); tests make their own.
+const SiteTable = struct {
+    lock_word: std.atomic.Value(bool) = .init(false),
+    addrs: [max_sites]usize = undefined,
+    len: usize = 0,
+
+    /// The id of `addr`, interned on first sight; `max_sites` ("other")
+    /// once all ids are taken.
+    fn intern(t: *SiteTable, addr: usize) u8 {
+        lock(&t.lock_word);
+        defer unlock(&t.lock_word);
+        for (t.addrs[0..t.len], 0..) |a, i| if (a == addr) return @intCast(i);
+        if (t.len == max_sites) return max_sites;
+        t.addrs[t.len] = addr;
+        t.len += 1;
+        return @intCast(t.len - 1);
+    }
+};
+
+var sites: SiteTable = .{};
+
+/// The id of the call site whose return address is `ret_addr`.
 pub fn siteOf(ret_addr: usize) u8 {
-    lock(&site_lock);
-    defer unlock(&site_lock);
-    for (site_addrs[0..site_count], 0..) |a, i| if (a == ret_addr) return @intCast(i);
-    if (site_count == max_sites) return max_sites;
-    site_addrs[site_count] = ret_addr;
-    site_count += 1;
-    return @intCast(site_count - 1);
+    return sites.intern(ret_addr);
 }
 
 /// Set by an export that knows its caller, taken by the table call that
@@ -242,11 +253,11 @@ pub fn dump(w: *std.Io.Writer) !void {
     try w.print("# libmoar: {s}\n", .{path});
     if (!enabled) return;
 
-    lock(&site_lock);
-    const nsites = site_count;
+    lock(&sites.lock_word);
+    const nsites = sites.len;
     var addrs: [max_sites]usize = undefined;
-    @memcpy(addrs[0..nsites], site_addrs[0..nsites]);
-    unlock(&site_lock);
+    @memcpy(addrs[0..nsites], sites.addrs[0..nsites]);
+    unlock(&sites.lock_word);
     for (addrs[0..nsites], 0..) |a, i| try w.print("site\t{d}\t{x}\n", .{ i, a -% base });
 
     lock(&list_lock);
@@ -341,12 +352,13 @@ fn writeFile(dir: []const u8) !void {
 // ---------------------------------------------------------------- tests
 
 test "siteOf interns and saturates" {
+    var t: SiteTable = .{};
     var ids: [256]u8 = undefined;
-    for (0..256) |i| ids[i] = siteOf(0x10000 + i * 16);
+    for (0..256) |i| ids[i] = t.intern(0x10000 + i * 16);
     for (0..255) |i| try std.testing.expectEqual(@as(u8, @intCast(i)), ids[i]);
     try std.testing.expectEqual(@as(u8, 255), ids[255]);
-    try std.testing.expectEqual(@as(u8, 255), siteOf(0x90000));
-    try std.testing.expectEqual(@as(u8, 7), siteOf(0x10000 + 7 * 16));
+    try std.testing.expectEqual(@as(u8, 255), t.intern(0x90000));
+    try std.testing.expectEqual(@as(u8, 7), t.intern(0x10000 + 7 * 16));
 }
 
 test "buckets map sizes to the ladder" {
@@ -357,7 +369,8 @@ test "buckets map sizes to the ladder" {
 }
 
 test "dump of empty counters is only the header" {
-    // An enabled build has sites and counters from the other tests.
+    // An enabled build has sites and counters from the other tests (the
+    // dump reads the process-wide table).
     if (enabled) return error.SkipZigTest;
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();

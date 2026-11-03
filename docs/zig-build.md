@@ -312,8 +312,9 @@ test` runs them too when `-Dnqp-prefix` is given.
 diagnostic build for finding out how the engine's own tables are used, it
 exists only in the zig build, and it adds `-g` to the C objects and forces
 `-Dstrip=false` so the sites in the dump can be resolved against the debug
-info. The flag reaches the engine through a `hash_stats` declaration in the
-root source file (`src/zig/root.zig`, from the `zig_options` module).
+info. The flag reaches `stats.zig` through the `zig_options` module that
+every root reaching it is given (the engine object, the unit-test roots
+and the bench).
 
 Set `MVM_HASH_STATS=<dir>` and the process writes `<dir>/<pid>.tsv` at
 exit (an `atexit` handler; the directory is created if missing, a failure
