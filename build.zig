@@ -146,8 +146,8 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(unit_step);
 
-    // `zig build strategy-test -Dnqp-prefix=<P>`: the hashstrategy and
-    // hashseal op tests (TAP) on an installed MoarVM + nqp, with <P>/lib
+    // `zig build strategy-test -Dnqp-prefix=<P>`: the hashstrategy op
+    // tests (TAP) on an installed MoarVM + nqp, with <P>/lib
     // first on LD_LIBRARY_PATH so the installed libmoar is the one tested.
     // nqp's stage0 cannot compile the ops, hence the installed nqp-m.
     const strategy_step = b.step("strategy-test", "Run tools/bench/t/strategy.nqp on <P>/bin/nqp-m (needs -Dnqp-prefix=<P>)");

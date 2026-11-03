@@ -19,9 +19,10 @@
 # no cell there, else `-`. Size 4 is warm-up and never judged (always `-`).
 #
 # Output: markdown, one table per op in the fixed order insert, lookup_hit,
-# lookup_miss, delete, iterate, insert_nth, bulk_load, overwrite, clone,
-# iterate_delete (then any other op, by name); rows are sizes (numeric
-# order), one column per strategy (numeric order), each cell
+# lookup_miss, delete, iterate, insert_nth, overwrite, clone, iterate_delete
+# (then any other op, by name, such as the bulk_load of the bake-off's raw
+# files); rows are sizes (numeric order), one column per strategy (numeric
+# order), each cell
 #
 #     ratio [min-max] mem R verdict
 #
@@ -58,7 +59,7 @@ for my $a (@ARGV) {
 die "usage: $0 raw.tsv [--base=0] [--win=0.90]\n" unless @files == 1;
 
 my @OP_ORDER = qw(insert lookup_hit lookup_miss delete iterate insert_nth
-                  bulk_load overwrite clone iterate_delete);
+                  overwrite clone iterate_delete);
 my @LADDER = (16, 32, 63, 64, 65, 128, 256, 1024, 16384);
 my $WARMUP = 4;
 

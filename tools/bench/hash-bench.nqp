@@ -8,13 +8,12 @@
 # (nqp::existskey for N present keys), lookup miss (N keys never inserted),
 # full iteration (for %h), delete N (nqp::deletekey), and for sizes T and
 # T+1 (T = --threshold), or every size with --nth=all, the N-th insert
-# alone into hashes of N-1. Four more rows per size, all per entry:
+# alone into hashes of N-1. Three more rows per size, all per entry:
 # overwrite (bind each of the N present keys again, with a new value, on the
 # filled hash), clone (nqp::clone of the filled hash, the clones kept alive
-# until the timing ends), iterate_delete (one `for` over the filled hash
+# until the timing ends) and iterate_delete (one `for` over the filled hash
 # deleting the current key with nqp::deletekey, MVMIter's delete-at-current
-# path; the hashes are refilled after delete for it) and bulk_load (insert N
-# into fresh hashes, then nqp::hashseal each). Small
+# path; the hashes are refilled after delete for it). Small
 # sizes are measured over a batch of (65536 div N) hashes handled in turn
 # inside one timed region, so a clock read is amortised over at least 65536
 # operations; the figure is nanoseconds per operation. Memory is the
@@ -35,22 +34,17 @@
 # insert, insert_nth at the threshold and the resize sizes (49, 97) time
 # that growth. --hint=size passes the size N as the hint, so every hash is
 # built presized and no timed row grows a table (the presized variant; the
-# engine column then defaults to zig-s<N>-presized). --seal calls
-# nqp::hashseal on every hash after each fill and before the lookup,
-# iterate and delete phases; with --seal the insert and insert_nth rows are
-# not emitted (they would time the staging table, not the sealed layout).
-# The engine column defaults to zig-s<N>.
+# engine column then defaults to zig-s<N>-presized). The engine column
+# defaults to zig-s<N>.
 #
-# The two ops are not known to the JIT, so a frame calling them is never
-# JIT-compiled: they are called in MAIN, outside the timed subs, except in
-# time_bulk_load, which times insert-then-seal and so runs interpreted for
-# every strategy alike (a sub of its own, so the others stay JIT-compiled).
-# The ops need an nqp that maps them (nqp branch zig-hash-strategies, e.g.
-# <prefix>/bin/nqp-m); nqp's stage0 does not until it is rebuilt.
+# The op is not known to the JIT, so a frame calling it is never
+# JIT-compiled: it is called in MAIN, outside the timed subs. It needs an
+# nqp that maps it (nqp branch zig-hash-strategies, e.g. <prefix>/bin/nqp-m);
+# nqp's stage0 does not until it is rebuilt.
 #
 # Usage: <prefix>/bin/nqp-m tools/bench/hash-bench.nqp
 #            [--engine=NAME] [--sizes=N,N,...] [--runs=K] [--threshold=T]
-#            [--nth=all|threshold] [--strategy=N] [--hint=0|size] [--seal]
+#            [--nth=all|threshold] [--strategy=N] [--hint=0|size]
 
 my int $BATCH_OPS := 65536;
 
@@ -216,23 +210,6 @@ sub time_iterate_delete(@out, @tables, int $reps, num $ops) {
     $deleted
 }
 
-# Insert N into each fresh hash, then seal it. nqp::hashseal is a no-op
-# without a sealable strategy, so the row is comparable across strategies;
-# the op is not known to the JIT, so this sub runs interpreted for every
-# strategy alike, and is kept apart from the other timed subs for that.
-sub time_bulk_load(@out, @tables, @keys, int $reps, int $n, num $ops) {
-    my int $t0 := nqp::time();
-    my int $r := 0;
-    while $r < $reps {
-        my %h := nqp::atpos(@tables, $r);
-        my int $j := 0;
-        while $j < $n { nqp::bindkey(%h, nqp::atpos(@keys, $j), 1); $j := $j + 1 }
-        nqp::hashseal(%h);
-        $r := $r + 1;
-    }
-    nqp::push(@out, ns_per($t0, $ops));
-}
-
 # The N-th insert: one bind of $key into each table (ns per table).
 sub time_nth(@out, @tables, str $key, int $reps, num $reps_n) {
     my int $t0 := nqp::time();
@@ -245,7 +222,6 @@ sub MAIN(*@ARGS) {
     my str $engine := '';
     my int $strategy := 0;
     my int $presized := 0;
-    my int $seal := 0;
     my str $sizes := '';
     my int $runs := 3;
     my int $threshold := 64;
@@ -258,7 +234,6 @@ sub MAIN(*@ARGS) {
         elsif $a eq '--nth=all' { $nth_all := 1 }
         elsif $a eq '--nth=threshold' { $nth_all := 0 }
         elsif nqp::eqat($a, '--strategy=', 0) { $strategy := to_int(nqp::substr($a, 11)) }
-        elsif $a eq '--seal' { $seal := 1 }
         elsif $a eq '--hint=0' { $presized := 0 }
         elsif $a eq '--hint=size' { $presized := 1 }
         elsif nqp::eqat($a, '--', 0) { nqp::die("hash-bench.nqp: unknown option $a") }
@@ -299,7 +274,7 @@ sub MAIN(*@ARGS) {
         my num $reps_n := $reps;
         my num $ops := $n * $reps;
         my @insert; my @hit; my @missed; my @iterate; my @delete;
-        my @overwrite; my @clone; my @iterate_delete; my @bulk_load;
+        my @overwrite; my @clone; my @iterate_delete;
         my int $rss_before := maxrss_bytes();
         my int $run := 0;
         while $run < $runs {
@@ -307,7 +282,6 @@ sub MAIN(*@ARGS) {
             my int $r := 0;
             while $r < $reps { nqp::push(@tables, nqp::hashstrategy(nqp::hash(), $strategy, $hint)); $r := $r + 1 }
             time_insert(@insert, @tables, @present, $reps, $n, $ops);
-            if $seal { for @tables { nqp::hashseal($_) } }
             my int $hits := time_hit(@hit, @tables, @present, $reps, $n, $ops);
             my int $nohits := time_miss(@missed, @tables, @miss, $reps, $n, $ops);
             my int $seen := time_iterate(@iterate, @tables, $reps, $ops);
@@ -329,36 +303,24 @@ sub MAIN(*@ARGS) {
             for @tables -> %h {
                 my int $j := 0;
                 while $j < $n { nqp::bindkey(%h, nqp::atpos(@present, $j), 1); $j := $j + 1 }
-                nqp::hashseal(%h) if $seal;
             }
             my int $deleted := time_iterate_delete(@iterate_delete, @tables, $reps, $ops);
             $left := 0;
             for @tables { $left := $left + 1 if nqp::elems($_) }
             nqp::die("size $n: iterate_delete deleted $deleted, $left hashes not empty (expected $ops, 0)")
                 unless $deleted == $ops && $left == 0;
-
-            # bulk_load: fresh hashes, insert N then seal.
-            @tables := nqp::list();
-            $r := 0;
-            while $r < $reps { nqp::push(@tables, nqp::hashstrategy(nqp::hash(), $strategy, $hint)); $r := $r + 1 }
-            time_bulk_load(@bulk_load, @tables, @present, $reps, $n, $ops);
-            for @tables { nqp::die("size $n: a hash has " ~ nqp::elems($_) ~ " keys after bulk_load") unless nqp::elems($_) == $n }
             $run := $run + 1;
         }
         my int $rss := maxrss_bytes() - $rss_before;
-        # With --seal the insert rows would time the staging table a sealing
-        # strategy fills before it seals, not its sealed layout: not emitted.
-        emit($engine, $n, 'insert', @insert, $rss) unless $seal;
+        emit($engine, $n, 'insert', @insert, $rss);
         emit($engine, $n, 'lookup_hit', @hit, $rss);
         emit($engine, $n, 'lookup_miss', @missed, $rss);
         emit($engine, $n, 'delete', @delete, $rss);
         emit($engine, $n, 'iterate', @iterate, $rss);
-        emit($engine, $n, 'bulk_load', @bulk_load, $rss);
         emit($engine, $n, 'overwrite', @overwrite, $rss);
         emit($engine, $n, 'clone', @clone, $rss);
         emit($engine, $n, 'iterate_delete', @iterate_delete, $rss);
-        # insert_nth also times an insert into the staging table: not with --seal.
-        if !$seal && ($nth_all || $n == $threshold || $n == $threshold + 1) {
+        if $nth_all || $n == $threshold || $n == $threshold + 1 {
             # The N-th insert alone: hashes of N-1 keys, then one insert each.
             my @nth;
             my str $last := nqp::atpos(@present, $n - 1);

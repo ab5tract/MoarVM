@@ -26,7 +26,7 @@ sub engines {
 
 my ($e, $ops) = engines();
 is_deeply $e, ['zig-s0'], 'default: hint 0, engine zig-s0';
-ok $ops->{$_}, "default emits $_" for qw(insert bulk_load overwrite clone iterate_delete);
+ok $ops->{$_}, "default emits $_" for qw(insert overwrite clone iterate_delete);
 ($e) = engines('--hint=0');
 is_deeply $e, ['zig-s0'], '--hint=0 is the default';
 ($e) = engines('--hint=size');

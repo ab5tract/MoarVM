@@ -5622,15 +5622,6 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                 cur_op += 8;
                 goto NEXT;
             }
-            OP(hashseal): {
-                MVMObject *obj = GET_REG(cur_op, 2).o;
-                if (!obj || !IS_CONCRETE(obj) || REPR(obj)->ID != MVM_REPR_ID_MVMHash)
-                    MVM_exception_throw_adhoc(tc, "hashseal needs a concrete hash");
-                MVM_str_hash_seal(tc, &((MVMHash *)obj)->body.hashtable);
-                GET_REG(cur_op, 0).o = obj;
-                cur_op += 4;
-                goto NEXT;
-            }
             OP(sp_guard): {
                 MVMRegister *target = &GET_REG(cur_op, 0);
                 MVMObject *check = GET_REG(cur_op, 2).o;

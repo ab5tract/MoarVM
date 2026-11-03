@@ -216,9 +216,6 @@ void MVM_str_hash_build_strategy(MVMThreadContext *tc,
     MVM_str_hash_build(tc, hashtable, entry_size, entries);
 }
 
-void MVM_str_hash_seal(MVMThreadContext *tc, MVMStrHashTable *hashtable) {
-}
-
 static MVMuint64 hash_fsck_internal(MVMThreadContext *tc, struct MVMStrHashTableControl *hashtable, MVMuint32 mode);
 
 MVM_STATIC_INLINE struct MVMStrHashHandle *hash_insert_internal(MVMThreadContext *tc,

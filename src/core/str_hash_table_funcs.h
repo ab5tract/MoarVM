@@ -93,10 +93,6 @@ void MVM_str_hash_build_strategy(MVMThreadContext *tc,
                                  MVMuint32 entries,
                                  MVMuint8 strategy);
 
-/* Marks a table as done growing (its strategy may compact it). A no-op for
- * the strategies built in so far. */
-void MVM_str_hash_seal(MVMThreadContext *tc, MVMStrHashTable *hashtable);
-
 #if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE int MVM_str_hash_is_empty(MVMThreadContext *tc,
                                             MVMStrHashTable *hashtable) {

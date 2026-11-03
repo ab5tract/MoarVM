@@ -581,42 +581,6 @@ pub fn Table(comptime Spec: type) type {
             checkTurnedStale(ctx, header, "shallowCopy");
         }
 
-        // ---------------------------------------------------------- seal
-
-        /// Rebuilds the table as rung 0 of set `to_set` from its live
-        /// entries, through that tier's `initFrom`, and publishes the new
-        /// block as a migration does (`publish`). An unbuilt table stays
-        /// unbuilt; a control-only one becomes a block of zero entries.
-        /// Entries whose key the caller has not filled in are skipped, as
-        /// the migration skips them. The caller decides whether a table
-        /// should be sealed (the string table seals only its staging set).
-        pub fn seal(ctx: Ctx, h: Handle, comptime to_set: u8) void {
-            comptime {
-                if (to_set >= Spec.sets.len) @compileError("Table.seal: the set index is not in Spec.sets");
-                if (!@hasDecl(Spec.sets[to_set][0].tier.Impl(Spec), "initFrom"))
-                    @compileError("Table.seal: rung 0 of the target set has no initFrom");
-            }
-            const I = Spec.sets[to_set][0].tier.Impl(Spec);
-            const header = h.* orelse return;
-            checkStale(ctx, header, "seal");
-            const allocator = Spec.allocator(ctx);
-            const entries = allocator.alloc([*]u8, header.cur_items) catch fail(ctx, oom_msg);
-            defer allocator.free(entries);
-            var n: usize = 0;
-            var pos = first(h);
-            while (pos != 0) : (pos = next(h, pos)) {
-                const e = current(h, pos).?;
-                // A key the caller has not filled in yet cannot be hashed.
-                if (std.mem.allEqual(u8, e[0..key_size], 0)) continue;
-                entries[n] = e;
-                n += 1;
-            }
-            var header_init = headerInit(header.entry_size, to_set, 0);
-            header_init.cur_items = @intCast(n);
-            const new = I.initFrom(allocator, header_init, ctx, entries[0..n]) catch fail(ctx, oom_msg);
-            publish(ctx, h, header, new);
-        }
-
         // ------------------------------------------------------- access
 
         pub fn fetch(ctx: Ctx, h: Handle, key: Key) ?[*]u8 {
@@ -1192,75 +1156,4 @@ test "presized and shrunk hashes are not resized by the migration change" {
     try testing.expectEqual(grown, slot.?);
     try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
     try expectAll(h, 1, 201);
-}
-
-const FixedSpec = @import("test_spec.zig").FixedSpec;
-const TF = Table(FixedSpec);
-
-test "seal builds a sealed table that finds every key" {
-    var slot: ?*Header = null;
-    const h = &slot;
-    TF.build({}, h, test_entry_size, 0, FixedSpec.staging_set);
-    defer TF.demolish({}, h);
-    for (1..1001) |k| {
-        const e = TF.insert({}, h, k);
-        std.mem.writeInt(u64, e[0..8], k, .little);
-        std.mem.writeInt(u64, e[8..16], k * 10, .little);
-    }
-    const staging = slot.?;
-    TF.seal({}, h, FixedSpec.sealed_set);
-    try testing.expect(slot.? != staging);
-    try testing.expectEqual(FixedSpec.sealed_set, slot.?.set);
-    try testing.expectEqual(@as(u8, 0), TF.rung(h));
-    try testing.expectEqual(@as(u32, 1000), TF.count(h));
-    for (1..1001) |k| {
-        const e = TF.fetch({}, h, k) orelse return error.TestUnexpectedResult;
-        try testing.expectEqual(k, keyOf(e));
-        try testing.expectEqual(k * 10, valueOf(e));
-    }
-    for (1001..2001) |k| try testing.expectEqual(@as(?[*]u8, null), TF.fetch({}, h, k));
-    var walked: u32 = 0;
-    var pos = TF.first(h);
-    while (pos != 0) : (pos = TF.next(h, pos)) walked += 1;
-    try testing.expectEqual(@as(u32, 1000), walked);
-    try testing.expectEqual(@as(u64, 0), TF.fsck({}, h, 0));
-}
-
-test "seal of an unbuilt or empty table" {
-    var slot: ?*Header = null;
-    const h = &slot;
-    TF.seal({}, h, FixedSpec.sealed_set);
-    try testing.expectEqual(@as(?*Header, null), slot);
-
-    // Control-only: a sealed block of zero entries.
-    TF.build({}, h, test_entry_size, 0, FixedSpec.staging_set);
-    defer TF.demolish({}, h);
-    TF.seal({}, h, FixedSpec.sealed_set);
-    try testing.expectEqual(FixedSpec.sealed_set, slot.?.set);
-    try testing.expectEqual(@as(u8, 0), TF.rung(h));
-    try testing.expectEqual(@as(u32, 0), TF.count(h));
-    try testing.expectEqual(test_entry_size, TF.entrySize(h));
-    try testing.expectEqual(@as(?[*]u8, null), TF.fetch({}, h, 1));
-    try testing.expect(!TF.delete({}, h, 1));
-    try testing.expectEqual(@as(u32, 0), TF.first(h));
-    try testing.expectEqual(@as(u64, 0), TF.fsck({}, h, 0));
-
-    // Built, then emptied by deletes: also zero entries.
-    var slot2: ?*Header = null;
-    const h2 = &slot2;
-    TF.build({}, h2, test_entry_size, 10, FixedSpec.staging_set);
-    defer TF.demolish({}, h2);
-    for (1..4) |k| std.mem.writeInt(u64, TF.insert({}, h2, k)[0..8], k, .little);
-    for (1..4) |k| try testing.expect(TF.delete({}, h2, k));
-    TF.seal({}, h2, FixedSpec.sealed_set);
-    try testing.expectEqual(FixedSpec.sealed_set, slot2.?.set);
-    try testing.expectEqual(@as(u32, 0), TF.count(h2));
-    try testing.expectEqual(@as(?[*]u8, null), TF.fetch({}, h2, 1));
-
-    // The first insert into an empty sealed table migrates.
-    const e = TF.insert({}, h, 9);
-    std.mem.writeInt(u64, e[0..8], 9, .little);
-    try testing.expectEqual(@as(u8, 1), TF.rung(h));
-    try testing.expectEqual(@as(u32, 1), TF.count(h));
-    try testing.expect(TF.fetch({}, h, 9) != null);
 }

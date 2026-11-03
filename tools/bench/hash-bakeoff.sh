@@ -6,8 +6,7 @@
 # Every strategy runs in the same process image: the harness selects the
 # layout per hash with nqp::hashstrategy (--strategy=N), so <prefix> needs
 # an nqp that maps the op (nqp branch zig-hash-strategies) on a moar that
-# has the strategies built in. Strategy 3 runs with --seal (its insert and
-# insert_nth rows are therefore n/a on the scoreboard).
+# has the strategies built in.
 #
 # Per round r (numbered from 1) the strategy order is rotated: the round
 # starts at strategy index (r-1) mod k of the k strategies, so no strategy
@@ -20,7 +19,7 @@
 # never overwritten).
 #
 # Usage: tools/bench/hash-bakeoff.sh --prefix=<P> --out=<dir>
-#            [--strategies=0,1,2,3] [--rounds=7]
+#            [--strategies=0,1,2] [--rounds=7]
 #            [--sizes=N,N,...] [--runs=K] [--nth=all|threshold]
 #            [--hint=0|size]
 #        tools/bench/hash-bakeoff.sh --help
@@ -36,7 +35,7 @@ root=$(cd "$(dirname "$0")/../.." && pwd)
 
 prefix=
 out=
-strategies=0,1,2,3
+strategies=0,1,2
 rounds=7
 sizes=4,16,32,63,64,65,128,256,1024,16384,49,97
 runs=5
@@ -87,14 +86,11 @@ while [ "$round" -le "$rounds" ]; do
     while [ "$i" -lt "$k" ]; do
         idx=$(( (round - 1 + i) % k + 1 ))
         eval "strategy=\${$idx}"
-        seal=
-        [ "$strategy" = 3 ] && seal=--seal
         load=$(cut -d' ' -f1 /proc/loadavg 2>/dev/null || uptime | sed 's/.*load average: *//; s/,.*//')
         echo "round $round strategy $strategy load $load" | tee -a "$out/load.log" >&2
         start=$(date +%s)
-        # shellcheck disable=SC2086
         LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
-            "$nqp" "$root/tools/bench/hash-bench.nqp" --strategy="$strategy" $seal \
+            "$nqp" "$root/tools/bench/hash-bench.nqp" --strategy="$strategy" \
             --sizes="$sizes" --runs="$runs" --nth="$nth" --hint="$hint" > "$out/run.tsv"
         awk -F '\t' -v OFS='\t' -v r="$round" -v s="$strategy" \
             'NF >= 7 { print r, s, $2, $3, $4, $5, $6, $7 }' "$out/run.tsv" >> "$raw"

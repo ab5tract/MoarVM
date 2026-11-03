@@ -7,7 +7,7 @@ An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
     zig build check-jit-tools # diff the Zig JIT generators against the Perl originals (needs perl; exists only when the JIT is on)
     zig build test            # installs, then runs the installed moar: --version and the nqp stage0 smoke test
     zig build hash-bench -- --sizes=4,64,65  # the string hash table microbenchmark against this build's engine (tools/bench/hash-bench.sh runs it for both)
-    zig build strategy-test -Dnqp-prefix=<P>  # the hashstrategy/hashseal op tests on <P>/bin/nqp-m (needs an nqp that maps the ops)
+    zig build strategy-test -Dnqp-prefix=<P>  # the hashstrategy op tests on <P>/bin/nqp-m (needs an nqp that maps the op)
 
 Options (`zig build --help` lists them):
 
@@ -291,12 +291,10 @@ Observable changes with the Zig engine:
 
 `MVMHashStrategy` (`str_hash_table.h`) names the layout strategies of the
 hash layout bake-off: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Robin
-Hood ladder above), `MVM_HASH_STRATEGY_SWISS` (1),
-`MVM_HASH_STRATEGY_ORDERED` (2) and `MVM_HASH_STRATEGY_FIXED` (3), with
-`MVM_HASH_STRATEGY_COUNT` (4). `MVM_str_hash_build_strategy` builds a
-string table with a strategy (0 is `MVM_str_hash_build`), and
-`MVM_str_hash_seal` marks a table's key set as complete (a no-op for
-every strategy but 3). A strategy the engine lacks throws "hash strategy
+Hood ladder above), `MVM_HASH_STRATEGY_SWISS` (1) and
+`MVM_HASH_STRATEGY_ORDERED` (2), with `MVM_HASH_STRATEGY_COUNT` (3).
+`MVM_str_hash_build_strategy` builds a string table with a strategy (0 is
+`MVM_str_hash_build`). A strategy the engine lacks throws "hash strategy
 N is not available in this engine", and the C engine throws for any
 strategy but 0.
 
@@ -323,26 +321,6 @@ positions downward, which keeps "delete the current entry while holding
 the next" safe; before the first delete it is reverse insertion order.
 The block holds no pointers.
 
-Strategy 3 (`tiers/fixed.zig`) is a fixed key set sealed in one step. A
-strategy-3 table is built in the `fixed_staging` set (Robin Hood alone)
-and behaves as an ordinary Robin Hood table until `MVM_str_hash_seal`,
-which, for a table in that set only, rebuilds it as rung 0 of the
-`fixed_sealed` set through `Table.seal` (`table.zig`; the tier's
-`initFrom`) and publishes the new block as a migration does (old block
-marked stale, freed at a safepoint, the new header CASed in). The sealed
-layout is a hash-ordered dense array: 2^k buckets for at least as many
-entries, a `u32` offset table of 2^k + 1, records of the entry's 64-bit
-hash followed by the entry in bucket order, built by a counting sort; the
-bucket is the top k bits of `(hash ^ salt) * phi`, with the instance's
-salt. A lookup reads the bucket's offset pair, then compares the stored
-hash just before each candidate entry and only then the key. Delete sets
-a tombstone bit (a bit array in the block), zeroes the entry and drops the
-count; nothing is rebuilt. The sealed tier is full for every absent key
-and never grows, so the first insert after a seal migrates the table to
-rung 1 (Robin Hood) through the ordinary migration. A second seal, or a
-seal of any other strategy's table, is a no-op. Under
-`MVM_HASH_STRATEGY=3`, `MVMHash`'s deserialize seals every hash it fills.
-
 `MVMHash` and `HashAttrStore` build with the
 instance's `hash_strategy_default`, read once at startup from the
 `MVM_HASH_STRATEGY` environment variable. Unset or empty leaves the
@@ -352,16 +330,15 @@ naming strategy 255.
 The variable is a diagnostic for the bake-off, not an API; the other
 tables always use the default.
 
-Two ops drive the strategies from nqp (mapped on nqp's
+One op drives the strategies from nqp (mapped on nqp's
 `zig-hash-strategies` branch): `nqp::hashstrategy(%h, $strategy, $size)`
 (`hashstrategy w(obj) r(obj) r(int64) r(int64)`) rebuilds an empty
 `MVMHash`'s table with a strategy and a size hint and returns `%h`; it
 dies on a non-hash ("hashstrategy needs a concrete hash"), on a hash with
 entries ("hashstrategy on a non-empty hash"; one emptied by deletes is
 fine) and on a strategy the engine lacks (a negative strategy or one over
-255 counts as 255). `nqp::hashseal(%h)` (`hashseal w(obj) r(obj)`) calls
-`MVM_str_hash_seal` and returns `%h`. Both sit before the spesh ops in
-`src/core/oplist`, so only spesh op numbers moved. Their tests,
+255 counts as 255). It sits before the spesh ops in `src/core/oplist`,
+so only spesh op numbers moved. Its tests,
 `tools/bench/t/strategy.nqp` (TAP), need an nqp built with the mapping:
 `zig build strategy-test -Dnqp-prefix=<P>` runs them on `<P>/bin/nqp-m`
 with `LD_LIBRARY_PATH=<P>/lib`, and `zig build test` runs them too when

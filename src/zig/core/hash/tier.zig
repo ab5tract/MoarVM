@@ -5,13 +5,6 @@
 //!     scheme can hold. `validate` checks it against the next rung's `from`.
 //!   * `pub fn Impl(comptime Spec: type) type`: the storage operations of
 //!     spec section 5. This file never calls it.
-//!   * optionally, in `Impl(Spec)`, `pub fn initFrom(allocator:
-//!     std.mem.Allocator, header_init: Header, ctx: Spec.Ctx, entries:
-//!     []const [*]u8) !*Header`: a new block holding copies of the given
-//!     entries (each `entry_size` bytes, key first, keys distinct and
-//!     filled in; the tier hashes them with `Spec.hash(ctx, key)`), with
-//!     `cur_items` set to `entries.len`. `Table.seal` requires it of rung 0
-//!     of the set it seals into; nothing else calls it.
 //!
 //! This file is pure Zig with no C dependency.
 const std = @import("std");
