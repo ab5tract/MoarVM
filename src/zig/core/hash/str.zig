@@ -52,6 +52,12 @@ pub const ordered_only = [_]tier.TierEntry{
     .{ .tier = ordered.Tier(.{}), .from = 0 },
 };
 
+/// The array-ordered tier with incremental resize, from the first entry:
+/// strategy 3 while the bake-off's Task 10 measures it against strategy 2.
+pub const ordered_incremental = [_]tier.TierEntry{
+    .{ .tier = ordered.Tier(.{ .incremental = true }), .from = 0 },
+};
+
 /// Indexed by the header's `set` byte.
 pub const sets: []const tier.TierSet = StrSpec.sets;
 
@@ -65,12 +71,15 @@ pub const general_set: u8 = 2;
 /// Set index of `ordered_only`, the ORDERED strategy's set.
 pub const ordered_set: u8 = 3;
 
+/// Set index of `ordered_incremental`.
+pub const ordered_incremental_set: u8 = 4;
+
 pub const StrSpec = struct {
     pub const Key = [*c]c.MVMString;
     pub const Ctx = *ThreadContext;
     pub const runtime_entry_size = true;
     pub const publish: table.Publish = .safepoint_cas;
-    pub const sets: []const tier.TierSet = &.{ &standard, &large_only, &swiss_only, &ordered_only };
+    pub const sets: []const tier.TierSet = &.{ &standard, &large_only, &swiss_only, &ordered_only, &ordered_incremental };
 
     /// `MVM_string_hash_code` (`src/strings/ops.h`): the cached hash code,
     /// or, while it is still 0 (not computed yet), the out-of-line
@@ -152,12 +161,12 @@ pub fn build(tc: *ThreadContext, ht: *c.MVMStrHashTable, entry_size: u32, entrie
 }
 
 /// The number of `MVMHashStrategy` values (`str_hash_table.h`).
-pub const strategy_count: u8 = 3;
+pub const strategy_count: u8 = 4;
 
 /// The tier set of each strategy, indexed by `MVMHashStrategy`; a null slot
 /// is a strategy not built into this engine. A mapping rather than "the set
 /// index is the strategy number", so `large_only` keeps index 1.
-pub const strategy_sets = [strategy_count]?u8{ standard_set, general_set, ordered_set };
+pub const strategy_sets = [strategy_count]?u8{ standard_set, general_set, ordered_set, ordered_incremental_set };
 
 /// Whether `buildStrategy` can build `strategy`.
 pub fn strategyAvailable(strategy: u8) bool {
@@ -373,5 +382,6 @@ test "set 0 is the standard string set" {
         std.debug.assert(StrTable.dispatch_reads_set);
         std.debug.assert(sets[general_set].ptr == @as([*]const tier.TierEntry, &swiss_only));
         std.debug.assert(sets[ordered_set].ptr == @as([*]const tier.TierEntry, &ordered_only));
+        std.debug.assert(sets[ordered_incremental_set].ptr == @as([*]const tier.TierEntry, &ordered_incremental));
     }
 }
