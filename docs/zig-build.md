@@ -298,8 +298,10 @@ Strategies 1-3 are not yet built in: building with one throws "hash
 strategy N is not available in this engine", and the C engine throws for
 any strategy but 0. `MVMHash` and `HashAttrStore` build with the
 instance's `hash_strategy_default`, read once at startup from the
-`MVM_HASH_STRATEGY` environment variable (unset or empty is 0; a value that
-is not a number in 0..254 becomes 255, which the first build rejects).
+`MVM_HASH_STRATEGY` environment variable. Unset or empty leaves the
+default (0); anything other than a plain decimal number in 0..254 (no
+sign, spaces or trailing characters) makes the first hash build throw,
+naming strategy 255.
 The variable is a diagnostic for the bake-off, not an API; the other
 tables always use the default.
 

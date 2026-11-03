@@ -301,15 +301,17 @@ MVMInstance * MVM_vm_create_instance(void) {
 
     /* Hash layout strategy for MVMHash and HashAttrStore tables (a bake-off
      * diagnostic, not an API). Unset or empty is the default (0); anything
-     * that is not a number in 0..254 becomes 255, which the first build
-     * rejects with "hash strategy 255 is not available". */
+     * other than a plain decimal number in 0..254 (no sign, no spaces, no
+     * trailing characters) becomes 255, which the first build rejects with
+     * "hash strategy 255 is not available". */
     {
         char *hash_strategy = getenv("MVM_HASH_STRATEGY");
         if (hash_strategy && hash_strategy[0]) {
             char *end;
             long value = strtol(hash_strategy, &end, 10);
             instance->hash_strategy_default
-                = end == hash_strategy || value < 0 || value > 254
+                = hash_strategy[0] < '0' || hash_strategy[0] > '9'
+                    || *end != '\0' || value < 0 || value > 254
                 ? 255 : (MVMuint8)value;
         }
     }
