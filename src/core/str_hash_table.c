@@ -206,6 +206,19 @@ void MVM_str_hash_build(MVMThreadContext *tc,
     hashtable->table = control;
 }
 
+void MVM_str_hash_build_strategy(MVMThreadContext *tc,
+                                 MVMStrHashTable *hashtable,
+                                 MVMuint32 entry_size,
+                                 MVMuint32 entries,
+                                 MVMuint8 strategy) {
+    if (strategy != MVM_HASH_STRATEGY_DEFAULT)
+        MVM_exception_throw_adhoc(tc, "hash strategies need the Zig hash engine (strategy %u)", (unsigned int)strategy);
+    MVM_str_hash_build(tc, hashtable, entry_size, entries);
+}
+
+void MVM_str_hash_seal(MVMThreadContext *tc, MVMStrHashTable *hashtable) {
+}
+
 static MVMuint64 hash_fsck_internal(MVMThreadContext *tc, struct MVMStrHashTableControl *hashtable, MVMuint32 mode);
 
 MVM_STATIC_INLINE struct MVMStrHashHandle *hash_insert_internal(MVMThreadContext *tc,

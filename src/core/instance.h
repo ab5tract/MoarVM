@@ -310,6 +310,10 @@ struct MVMInstance {
     MVMint8 spesh_nodelay;
     MVMint8 spesh_blocking;
 
+    /* Layout strategy (MVMHashStrategy) of MVMHash and HashAttrStore tables,
+     * from MVM_HASH_STRATEGY; 0 is the default, 255 an invalid setting. */
+    MVMuint8 hash_strategy_default;
+
     /* Number of specializations produced, and limit on number of
      * specializations (zero if no limit). */
     MVMint32 spesh_produced;

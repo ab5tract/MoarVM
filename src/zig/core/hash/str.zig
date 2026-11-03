@@ -131,6 +131,35 @@ pub fn build(tc: *ThreadContext, ht: *c.MVMStrHashTable, entry_size: u32, entrie
     StrTable.build(tc, handleOf(ht), entry_size, entries, standard_set);
 }
 
+/// The number of `MVMHashStrategy` values (`str_hash_table.h`).
+pub const strategy_count: u8 = 4;
+
+/// The tier set of each strategy, indexed by `MVMHashStrategy`; a null slot
+/// is a strategy not built into this engine. A mapping rather than "the set
+/// index is the strategy number", so `large_only` keeps index 1.
+pub const strategy_sets = [strategy_count]?u8{ standard_set, null, null, null };
+
+/// Whether `buildStrategy` can build `strategy`.
+pub fn strategyAvailable(strategy: u8) bool {
+    return strategy < strategy_count and strategy_sets[strategy] != null;
+}
+
+/// MVM_str_hash_build_strategy: `build` with the tier set of `strategy`; a
+/// strategy this engine lacks throws.
+pub fn buildStrategy(tc: *ThreadContext, ht: *c.MVMStrHashTable, entry_size: u32, entries: u32, strategy: u8) void {
+    if (!strategyAvailable(strategy))
+        c.MVM_exception_throw_adhoc(tc, "hash strategy %u is not available in this engine", @as(c_uint, strategy));
+    if (entry_size == 0 or entry_size > 255 or entry_size & 3 != 0)
+        c.MVM_oops(tc, "Hash table entry_size %u is invalid", entry_size);
+    StrTable.build(tc, handleOf(ht), entry_size, entries, strategy_sets[strategy].?);
+}
+
+/// MVM_str_hash_seal: a no-op until a strategy compacts at seal.
+pub fn seal(tc: *ThreadContext, ht: *c.MVMStrHashTable) void {
+    _ = tc;
+    _ = ht;
+}
+
 /// MVM_str_hash_demolish: frees the block (at a safepoint unless
 /// control-only) and leaves the table unbuilt.
 pub fn demolish(tc: *ThreadContext, ht: *c.MVMStrHashTable) void {

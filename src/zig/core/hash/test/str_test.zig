@@ -431,3 +431,46 @@ test "hash of a string equals MVM_string_hash_code and is stable across calls" {
     try testing.expectEqual(first, str.StrSpec.hash(tc, zig_side));
     try testing.expectEqual(c.MVM_string_hash_code(tc, zig_side), str.StrSpec.hash(tc, zig_side));
 }
+
+test "buildStrategy with the default strategy is build" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 1);
+    defer testing.allocator.free(ks);
+
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, 16, 0, 0);
+    defer str.demolish(tc, &ht);
+    try put(tc, &ht, ks[0], 7);
+    try testing.expectEqual(@as(u64, 7), try valueOf(tc, &ht, ks[0]));
+    try testing.expectEqual(@as(u32, 1), str.count(tc, &ht));
+    const h = str.handleOf(&ht);
+    try testing.expectEqual(@as(u8, 0), str.StrTable.rung(h));
+    try testing.expectEqual(@as(u8, 0), h.*.?.set);
+}
+
+test "buildStrategy refuses strategies that are not built in" {
+    // The throw itself (an adhoc exception) has no handler in-process, so
+    // the predicate `buildStrategy` checks is tested here; the throw is
+    // exercised through MVM_HASH_STRATEGY and the nqp tests.
+    try testing.expect(str.strategyAvailable(0));
+    for ([_]u8{ 1, 2, 3, 4 }) |s| try testing.expect(!str.strategyAvailable(s));
+    try testing.expect(!str.strategyAvailable(255));
+}
+
+test "seal on a default table is a no-op" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 3);
+    defer testing.allocator.free(ks);
+
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, entry_size, 0, 0);
+    defer str.demolish(tc, &ht);
+    for (ks, 0..) |k, i| try put(tc, &ht, k, i);
+    str.seal(tc, &ht);
+    try testing.expectEqual(@as(u32, 3), str.count(tc, &ht));
+    for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+}

@@ -30,8 +30,9 @@ static void copy_to(MVMThreadContext *tc, MVMSTable *st, void *src, MVMObject *d
          * So this should be unreachable. */
         MVM_oops(tc, "copy_to on MVMHash that is already initialized");
     }
-    MVM_str_hash_build(tc, dest_hashtable, sizeof(MVMHashEntry),
-                       MVM_str_hash_count(tc, src_hashtable));
+    MVM_str_hash_build_strategy(tc, dest_hashtable, sizeof(MVMHashEntry),
+                                MVM_str_hash_count(tc, src_hashtable),
+                                tc->instance->hash_strategy_default);
     MVMStrHashIterator iterator = MVM_str_hash_first(tc, src_hashtable);
     while (!MVM_str_hash_at_end(tc, src_hashtable, iterator)) {
         MVMHashEntry *entry = MVM_str_hash_current_nocheck(tc, src_hashtable, iterator);
@@ -93,7 +94,8 @@ static void bind_attribute(MVMThreadContext *tc, MVMSTable *st, MVMObject *root,
             "HashAttrStore representation does not support native attribute storage");
 
     if (!MVM_str_hash_entry_size(tc, hashtable)) {
-        MVM_str_hash_build(tc, hashtable, sizeof(MVMHashEntry), 0);
+        MVM_str_hash_build_strategy(tc, hashtable, sizeof(MVMHashEntry), 0,
+            tc->instance->hash_strategy_default);
     }
 
     MVMHashEntry *entry = MVM_str_hash_lvalue_fetch_nocheck(tc, hashtable, name);

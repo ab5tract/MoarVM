@@ -112,7 +112,8 @@ void MVMHash_bind_key(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, void
             "MVMHash representation does not support native type storage");
 
     if (!MVM_str_hash_entry_size(tc, hashtable)) {
-        MVM_str_hash_build(tc, hashtable, sizeof(MVMHashEntry), 0);
+        MVM_str_hash_build_strategy(tc, hashtable, sizeof(MVMHashEntry), 0,
+            tc->instance->hash_strategy_default);
     }
 
     MVMHashEntry *entry = MVM_str_hash_lvalue_fetch_nocheck(tc, hashtable, key);
@@ -188,7 +189,8 @@ static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
     }
     MVMint64 elems = MVM_serialization_read_int(tc, reader);
     if (elems) {
-        MVM_str_hash_build(tc, hashtable, sizeof(MVMHashEntry), elems);
+        MVM_str_hash_build_strategy(tc, hashtable, sizeof(MVMHashEntry), elems,
+            tc->instance->hash_strategy_default);
         MVMint64 i = 0;
         do {
             MVMString *key = MVM_serialization_read_str(tc, reader);

@@ -23,6 +23,14 @@ fn MVM_str_hash_build(tc: Tc, hashtable: Ht, entry_size: u32, entries: u32) call
     str.build(tc, hashtable, entry_size, entries);
 }
 
+fn MVM_str_hash_build_strategy(tc: Tc, hashtable: Ht, entry_size: u32, entries: u32, strategy: u8) callconv(.c) void {
+    str.buildStrategy(tc, hashtable, entry_size, entries, strategy);
+}
+
+fn MVM_str_hash_seal(tc: Tc, hashtable: Ht) callconv(.c) void {
+    str.seal(tc, hashtable);
+}
+
 fn MVM_str_hash_demolish(tc: Tc, hashtable: Ht) callconv(.c) void {
     str.demolish(tc, hashtable);
 }
@@ -128,6 +136,8 @@ const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto)
 
 comptime {
     @export(&MVM_str_hash_build, .{ .name = "MVM_str_hash_build", .visibility = visibility });
+    @export(&MVM_str_hash_build_strategy, .{ .name = "MVM_str_hash_build_strategy", .visibility = visibility });
+    @export(&MVM_str_hash_seal, .{ .name = "MVM_str_hash_seal", .visibility = visibility });
     @export(&MVM_str_hash_demolish, .{ .name = "MVM_str_hash_demolish", .visibility = visibility });
     @export(&MVM_str_hash_count, .{ .name = "MVM_str_hash_count", .visibility = visibility });
     @export(&MVM_str_hash_entry_size, .{ .name = "MVM_str_hash_entry_size", .visibility = visibility });

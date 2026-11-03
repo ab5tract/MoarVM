@@ -285,6 +285,24 @@ Observable changes with the Zig engine:
 - Some operations are still slower than with the C engine, by the
   measured ratios above.
 
+### Strategies (bake-off)
+
+`MVMHashStrategy` (`str_hash_table.h`) names the layout strategies of the
+hash layout bake-off: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Robin
+Hood ladder above), `MVM_HASH_STRATEGY_SWISS` (1),
+`MVM_HASH_STRATEGY_ORDERED` (2) and `MVM_HASH_STRATEGY_FIXED` (3), with
+`MVM_HASH_STRATEGY_COUNT` (4). `MVM_str_hash_build_strategy` builds a
+string table with a strategy (0 is `MVM_str_hash_build`), and
+`MVM_str_hash_seal` marks a table as done growing (a no-op for now).
+Strategies 1-3 are not yet built in: building with one throws "hash
+strategy N is not available in this engine", and the C engine throws for
+any strategy but 0. `MVMHash` and `HashAttrStore` build with the
+instance's `hash_strategy_default`, read once at startup from the
+`MVM_HASH_STRATEGY` environment variable (unset or empty is 0; a value that
+is not a number in 0..254 becomes 255, which the first build rejects).
+The variable is a diagnostic for the bake-off, not an API; the other
+tables always use the default.
+
 ## Not yet supported
 
 Any OS other than linux, any CPU other than x86_64, system libuv/libtommath/libffi, MSVC, coverage

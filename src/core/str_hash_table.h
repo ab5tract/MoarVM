@@ -472,6 +472,17 @@ typedef struct {
 
 MVMuint32 MVM_round_up_log_base2(MVMuint32 v);
 
+/* The layout strategy a table is built with (the bake-off's names; the
+ * Zig engine maps each to a tier set, the C engine knows only the default).
+ * MVM_str_hash_build_strategy throws for a strategy the engine lacks. */
+typedef enum {
+    MVM_HASH_STRATEGY_DEFAULT = 0,
+    MVM_HASH_STRATEGY_SWISS = 1,
+    MVM_HASH_STRATEGY_ORDERED = 2,
+    MVM_HASH_STRATEGY_FIXED = 3,
+    MVM_HASH_STRATEGY_COUNT = 4
+} MVMHashStrategy;
+
 #if MVM_ZIG_IMPL && HASH_DEBUG_ITER
 #error "HASH_DEBUG_ITER is not available with the Zig hash engine"
 #endif
