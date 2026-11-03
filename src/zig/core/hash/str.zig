@@ -40,14 +40,14 @@ pub const large_only = [_]tier.TierEntry{
     .{ .tier = robinhood.Tier(.{}), .from = 0 },
 };
 
-/// The Swiss-style tier from the first entry: the GENERAL strategy
-/// (`MVM_HASH_STRATEGY_GENERAL`, 1).
+/// The Swiss-style tier from the first entry: the LOOKUP strategy
+/// (`MVM_HASH_STRATEGY_LOOKUP`, 1).
 pub const swiss_only = [_]tier.TierEntry{
     .{ .tier = swiss.Tier(.{}), .from = 0 },
 };
 
-/// The array-ordered tier from the first entry: the ORDERED strategy
-/// (`MVM_HASH_STRATEGY_ORDERED`, 2).
+/// The array-ordered tier from the first entry: the APPEND strategy
+/// (`MVM_HASH_STRATEGY_APPEND`, 2).
 pub const ordered_only = [_]tier.TierEntry{
     .{ .tier = ordered.Tier(.{}), .from = 0 },
 };
@@ -59,11 +59,11 @@ pub const sets: []const tier.TierSet = StrSpec.sets;
 /// `table.zig` specialises dispatch for set 0.
 const standard_set: u8 = 0;
 
-/// Set index of `swiss_only`, the GENERAL strategy's set.
-pub const general_set: u8 = 2;
+/// Set index of `swiss_only`, the LOOKUP strategy's set.
+pub const lookup_set: u8 = 2;
 
-/// Set index of `ordered_only`, the ORDERED strategy's set.
-pub const ordered_set: u8 = 3;
+/// Set index of `ordered_only`, the APPEND strategy's set.
+pub const append_set: u8 = 3;
 
 pub const StrSpec = struct {
     pub const Key = [*c]c.MVMString;
@@ -157,7 +157,7 @@ pub const strategy_count: u8 = 3;
 /// The tier set of each strategy, indexed by `MVMHashStrategy`; a null slot
 /// is a strategy not built into this engine. A mapping rather than "the set
 /// index is the strategy number", so `large_only` keeps index 1.
-pub const strategy_sets = [strategy_count]?u8{ standard_set, general_set, ordered_set };
+pub const strategy_sets = [strategy_count]?u8{ standard_set, lookup_set, append_set };
 
 /// Whether `buildStrategy` can build `strategy`.
 pub fn strategyAvailable(strategy: u8) bool {
@@ -371,7 +371,7 @@ test "set 0 is the standard string set" {
         std.debug.assert(sets[0].len == standard.len);
         std.debug.assert(standard_set == 0);
         std.debug.assert(StrTable.dispatch_reads_set);
-        std.debug.assert(sets[general_set].ptr == @as([*]const tier.TierEntry, &swiss_only));
-        std.debug.assert(sets[ordered_set].ptr == @as([*]const tier.TierEntry, &ordered_only));
+        std.debug.assert(sets[lookup_set].ptr == @as([*]const tier.TierEntry, &swiss_only));
+        std.debug.assert(sets[append_set].ptr == @as([*]const tier.TierEntry, &ordered_only));
     }
 }

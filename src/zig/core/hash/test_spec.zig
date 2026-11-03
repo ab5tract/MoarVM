@@ -14,12 +14,12 @@ pub const standard_test_set = [_]tier.TierEntry{
     .{ .tier = robinhood.Tier(.{}), .from = 64 },
 };
 
-/// The Swiss tier alone, from the first entry (the GENERAL strategy's shape).
+/// The Swiss tier alone, from the first entry (the LOOKUP strategy's shape).
 pub const swiss_test_set = [_]tier.TierEntry{
     .{ .tier = swiss.Tier(.{}), .from = 0 },
 };
 
-/// The array-ordered tier alone, from the first entry (the ORDERED strategy's shape).
+/// The array-ordered tier alone, from the first entry (the APPEND strategy's shape).
 pub const ordered_test_set = [_]tier.TierEntry{
     .{ .tier = ordered.Tier(.{}), .from = 0 },
 };

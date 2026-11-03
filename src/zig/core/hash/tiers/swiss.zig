@@ -1,5 +1,5 @@
-//! The Swiss-style tier of the Zig hash engine (the GENERAL strategy,
-//! `MVM_HASH_STRATEGY_GENERAL`; docs/hash-strategies.md): open addressing over 16-slot groups, with a
+//! The Swiss-style tier of the Zig hash engine (the LOOKUP strategy,
+//! `MVM_HASH_STRATEGY_LOOKUP`; docs/hash-strategies.md): open addressing over 16-slot groups, with a
 //! one-byte metadata array searched a group at a time by vector compares, in
 //! the manner of Abseil's SwissTable and Rust's hashbrown.
 //!

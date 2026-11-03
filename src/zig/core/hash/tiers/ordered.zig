@@ -1,5 +1,5 @@
-//! The array-ordered tier of the Zig hash engine (the ORDERED strategy,
-//! `MVM_HASH_STRATEGY_ORDERED`; docs/hash-strategies.md): the entries live in a dense array in
+//! The array-ordered tier of the Zig hash engine (the APPEND strategy,
+//! `MVM_HASH_STRATEGY_APPEND`; docs/hash-strategies.md): the entries live in a dense array in
 //! insertion order, found through a separate open-addressing index of small
 //! integers, in the manner of CPython's compact dict and PHP 7's arrays.
 //!

@@ -291,8 +291,8 @@ Observable changes with the Zig engine:
 
 `MVMHashStrategy` (`str_hash_table.h`) names the string table's layout
 strategies: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Robin Hood
-ladder above), `MVM_HASH_STRATEGY_GENERAL` (1, `tiers/swiss.zig`) and
-`MVM_HASH_STRATEGY_ORDERED` (2, `tiers/ordered.zig`), selected with
+ladder above), `MVM_HASH_STRATEGY_LOOKUP` (1, `tiers/swiss.zig`) and
+`MVM_HASH_STRATEGY_APPEND` (2, `tiers/ordered.zig`), selected with
 `MVM_str_hash_build_strategy`, `nqp::hashstrategy(%h, $strategy, $size)`
 or, process-wide as a diagnostic, the `MVM_HASH_STRATEGY` environment
 variable. docs/hash-strategies.md describes each one, what it won and gave

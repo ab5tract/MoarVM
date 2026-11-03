@@ -463,7 +463,7 @@ test "buildStrategy refuses strategies that are not built in" {
     try testing.expect(!str.strategyAvailable(255));
 }
 
-test "GENERAL (strategy 1) round trip through the C-shaped API" {
+test "LOOKUP (strategy 1) round trip through the C-shaped API" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -514,7 +514,7 @@ test "GENERAL (strategy 1) round trip through the C-shaped API" {
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
 }
 
-test "GENERAL (strategy 1) shallow copy is independent" {
+test "LOOKUP (strategy 1) shallow copy is independent" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -531,7 +531,7 @@ test "GENERAL (strategy 1) shallow copy is independent" {
     defer str.demolish(tc, &dst);
     try testing.expect(dst.table != src.table);
     try testing.expectEqual(str.allocatedSize(tc, &src), str.allocatedSize(tc, &dst));
-    try testing.expectEqual(@as(u8, str.general_set), str.handleOf(&dst).*.?.set);
+    try testing.expectEqual(@as(u8, str.lookup_set), str.handleOf(&dst).*.?.set);
 
     // The same iteration order, entries in the copy's own block.
     var sp = str.first(tc, &src);
@@ -563,34 +563,34 @@ test "GENERAL (strategy 1) shallow copy is independent" {
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
 }
 
-test "GENERAL (strategy 1) header set byte is the general set" {
+test "LOOKUP (strategy 1) header set byte is the lookup set" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
     const ks = try keys.make(tc, 1);
     defer testing.allocator.free(ks);
 
-    try testing.expectEqual(@as(?u8, str.general_set), str.strategy_sets[1]);
-    try testing.expect(str.sets[str.general_set].ptr == @as([*]const tier.TierEntry, &str.swiss_only));
-    // Control-only, then materialised, then presized: always the general set.
+    try testing.expectEqual(@as(?u8, str.lookup_set), str.strategy_sets[1]);
+    try testing.expect(str.sets[str.lookup_set].ptr == @as([*]const tier.TierEntry, &str.swiss_only));
+    // Control-only, then materialised, then presized: always the lookup set.
     var ht = unbuilt();
     str.buildStrategy(tc, &ht, entry_size, 0, 1);
     defer str.demolish(tc, &ht);
     const h = str.handleOf(&ht);
-    try testing.expectEqual(@as(u8, str.general_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, str.lookup_set), h.*.?.set);
     try put(tc, &ht, ks[0], 7);
-    try testing.expectEqual(@as(u8, str.general_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, str.lookup_set), h.*.?.set);
     try testing.expectEqual(@as(u8, 0), str.StrTable.rung(h));
     try testing.expectEqual(@as(u64, 7), try valueOf(tc, &ht, ks[0]));
 
     var big = unbuilt();
     str.buildStrategy(tc, &big, entry_size, 1000, 1);
     defer str.demolish(tc, &big);
-    try testing.expectEqual(@as(u8, str.general_set), str.handleOf(&big).*.?.set);
+    try testing.expectEqual(@as(u8, str.lookup_set), str.handleOf(&big).*.?.set);
     try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
 }
 
-test "ORDERED (strategy 2) round trip" {
+test "APPEND (strategy 2) round trip" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -598,14 +598,14 @@ test "ORDERED (strategy 2) round trip" {
     const ks = try keys.make(tc, n);
     defer testing.allocator.free(ks);
 
-    try testing.expectEqual(@as(?u8, str.ordered_set), str.strategy_sets[2]);
-    try testing.expect(str.sets[str.ordered_set].ptr == @as([*]const tier.TierEntry, &str.ordered_only));
+    try testing.expectEqual(@as(?u8, str.append_set), str.strategy_sets[2]);
+    try testing.expect(str.sets[str.append_set].ptr == @as([*]const tier.TierEntry, &str.ordered_only));
     var ht = unbuilt();
     str.buildStrategy(tc, &ht, entry_size, 0, 2);
     defer str.demolish(tc, &ht);
-    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&ht).*.?.set);
+    try testing.expectEqual(@as(u8, str.append_set), str.handleOf(&ht).*.?.set);
     for (ks, 0..) |k, i| try put(tc, &ht, k, i);
-    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&ht).*.?.set);
+    try testing.expectEqual(@as(u8, str.append_set), str.handleOf(&ht).*.?.set);
     try testing.expectEqual(n, str.count(tc, &ht));
     for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
@@ -637,11 +637,11 @@ test "ORDERED (strategy 2) round trip" {
     var big = unbuilt();
     str.buildStrategy(tc, &big, entry_size, 1000, 2);
     defer str.demolish(tc, &big);
-    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&big).*.?.set);
+    try testing.expectEqual(@as(u8, str.append_set), str.handleOf(&big).*.?.set);
     try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
 }
 
-test "ORDERED (strategy 2) shallow copy is independent" {
+test "APPEND (strategy 2) shallow copy is independent" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;
@@ -659,7 +659,7 @@ test "ORDERED (strategy 2) shallow copy is independent" {
     defer str.demolish(tc, &dst);
     try testing.expect(dst.table != src.table);
     try testing.expectEqual(str.allocatedSize(tc, &src), str.allocatedSize(tc, &dst));
-    try testing.expectEqual(@as(u8, str.ordered_set), str.handleOf(&dst).*.?.set);
+    try testing.expectEqual(@as(u8, str.append_set), str.handleOf(&dst).*.?.set);
 
     // The same iteration order, entries in the copy's own block.
     var sp = str.first(tc, &src);
@@ -694,7 +694,7 @@ test "ORDERED (strategy 2) shallow copy is independent" {
     try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
 }
 
-test "ORDERED (strategy 2) iteration with deletes matches MVMIter's protocol" {
+test "APPEND (strategy 2) iteration with deletes matches MVMIter's protocol" {
     const vm = Instance.create();
     defer vm.destroy();
     const tc = vm.tc;

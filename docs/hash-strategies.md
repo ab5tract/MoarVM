@@ -2,15 +2,15 @@
 
 The Zig hash engine (`docs/zig-build.md`, "Hash engine") can build a string
 hash table with one of three layouts. The default suits nearly every hash; the
-other two, GENERAL and ORDERED, are what the 2026-11-03 hash layout bake-off
+other two, LOOKUP and APPEND, are what the 2026-11-03 hash layout bake-off
 found faster for some programs, and a program (or a later heuristic) picks one
 per hash. The C hash engine knows only the default.
 
 | strategy | `MVMHashStrategy` | tier set (`src/zig/core/hash/str.zig`) | layout |
 |---|---|---|---|
 | 0 | `MVM_HASH_STRATEGY_DEFAULT` | `standard` | Small (`tiers/small.zig`) to 64 entries, then Robin Hood (`tiers/robinhood.zig`) |
-| 1 | `MVM_HASH_STRATEGY_GENERAL` | `swiss_only` | Swiss-style groups (`tiers/swiss.zig`) from the first entry |
-| 2 | `MVM_HASH_STRATEGY_ORDERED` | `ordered_only` | a dense entry array with a side index (`tiers/ordered.zig`) from the first entry |
+| 1 | `MVM_HASH_STRATEGY_LOOKUP` | `swiss_only` | Swiss-style groups (`tiers/swiss.zig`) from the first entry |
+| 2 | `MVM_HASH_STRATEGY_APPEND` | `ordered_only` | a dense entry array with a side index (`tiers/ordered.zig`) from the first entry |
 
 `MVM_HASH_STRATEGY_COUNT` is 3.
 
@@ -41,7 +41,7 @@ The figures are from the bake-off scoreboard, recorded in `traces/llm/bench/bake
 Small, then Robin Hood: what every hash gets unless a strategy is asked for.
 Below 65 entries its Small tier is compact and fast, and no other layout beat it there.
 
-## GENERAL (1)
+## LOOKUP (1)
 
 The Swiss-style tier from the first entry.
 - **Layout:**
@@ -65,11 +65,11 @@ The Swiss-style tier from the first entry.
   - Below 65 entries it has no Small tier. Insert is 1.6-1.85x, clone 1.5-1.9x, iterate 1.1-1.16x and delete-while-iterating 1.03-1.23x, on 2.0-2.2x the memory. Lookups are level there (0.94-1.07).
   - Toward 16384 entries lookup hits and deletes fall back to level (0.93-0.99).
 - **When to choose it:** a hash that will hold more than 64 entries and is used for everything (looked up, updated, iterated, cloned).
-- **Composed variant measured and rejected:** Small then Swiss (strategy 0 with Swiss in place of Robin Hood) was measured as a way to keep the Small tier below 65. It lost five of these nine blocks and was 7-21 percent slower than strategy 0 in several 16-64 cells, so GENERAL is the bare Swiss tier. See `traces/llm/bench/bakeoff-composed-general.md`.
+- **Composed variant measured and rejected:** Small then Swiss (strategy 0 with Swiss in place of Robin Hood) was measured as a way to keep the Small tier below 65. It lost five of these nine blocks and was 7-21 percent slower than strategy 0 in several 16-64 cells, so LOOKUP is the bare Swiss tier. See `traces/llm/bench/bakeoff-composed-lookup.md`.
 - **Spectest:** `MVM_HASH_STRATEGY=1` passes rakudo's spectest with no strategy failures (`traces/llm/bench/bakeoff-spectest-s1.txt`; the scoreboard's column s1).
-- **Select it:** `nqp::hashstrategy(%h, 1, $size)`, or `MVM_HASH_STRATEGY_GENERAL` from C.
+- **Select it:** `nqp::hashstrategy(%h, 1, $size)`, or `MVM_HASH_STRATEGY_LOOKUP` from C.
 
-## ORDERED (2)
+## APPEND (2)
 
 The array-ordered tier from the first entry.
 - **Layout:**
@@ -89,12 +89,12 @@ The array-ordered tier from the first entry.
   - Lookups fall behind as the table grows: lookup_hit 1.12 at 1024 and 1.30 at 16384; lookup_miss 1.13 at 256, 1.28 at 1024 and 1.48 at 16384.
   - Delete-while-iterating is 1.03-1.36.
   - Below 65 entries building is slower (insert 1.25-1.37, clone up to 1.44) on 1.07-1.33x the memory.
-- **Iteration order:** until its first delete an ORDERED hash iterates in reverse insertion order; a delete's swap-remove moves the last entry into the hole, and from then on the order is not insertion order.
+- **Iteration order:** until its first delete an APPEND hash iterates in reverse insertion order; a delete's swap-remove moves the last entry into the hole, and from then on the order is not insertion order.
   - The order is a property of this strategy, not of hashes: nqp and Raku hashes promise no order, and a hash built with another strategy, or this one after a delete, has none.
   - Code must not rely on it.
 - **When to choose it:** a hash that is built once (or mostly grown), then iterated, cloned or read, and rarely deleted from, such as a record or option set passed around and copied.
 - **Spectest:** `MVM_HASH_STRATEGY=2` passes rakudo's spectest (`traces/llm/bench/bakeoff-spectest-s2.txt`; the scoreboard's column s2).
-- **Select it:** `nqp::hashstrategy(%h, 2, $size)`, or `MVM_HASH_STRATEGY_ORDERED` from C.
+- **Select it:** `nqp::hashstrategy(%h, 2, $size)`, or `MVM_HASH_STRATEGY_APPEND` from C.
 
 ## What was measured and removed
 
@@ -102,7 +102,7 @@ The bake-off had a third candidate, a **fixed-key** layout (strategy 3): a hash-
 - It held one block, iterate and clone at 65-16384 (0.61-0.86).
 - It never won a lookup cell (lookup_hit 1.15-1.34 and lookup_miss 1.15-1.51 except at 65).
 - From 128 up it took 1.09-1.69x strategy 0's memory.
-- GENERAL and ORDERED beat it on the same ops it won.
+- LOOKUP and APPEND beat it on the same ops it won.
 
 It was deleted, and the seal mechanism with it: the `hashseal` op, `MVM_str_hash_seal`, `Table.seal`, the harness's `--seal` and `bulk_load`.
 

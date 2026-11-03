@@ -477,8 +477,8 @@ MVMuint32 MVM_round_up_log_base2(MVMuint32 v);
  * MVM_str_hash_build_strategy throws for a strategy the engine lacks. */
 typedef enum {
     MVM_HASH_STRATEGY_DEFAULT = 0,
-    MVM_HASH_STRATEGY_GENERAL = 1,
-    MVM_HASH_STRATEGY_ORDERED = 2,
+    MVM_HASH_STRATEGY_LOOKUP = 1,
+    MVM_HASH_STRATEGY_APPEND = 2,
     MVM_HASH_STRATEGY_COUNT = 3
 } MVMHashStrategy;
 

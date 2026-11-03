@@ -89,7 +89,7 @@ sub round_trip(%h, $desc) {
     ok(contains($msg, 'hash strategy 9'), "unknown strategy 9 dies ($msg)");
 }
 
-# Strategies 1 (GENERAL, the Swiss-style tier) and 2 (ORDERED, the
+# Strategies 1 (LOOKUP, the Swiss-style tier) and 2 (APPEND, the
 # array-ordered tier); docs/hash-strategies.md.
 for 1, 2 -> $s {
     {
