@@ -27,10 +27,20 @@ pub const Options = struct {
 };
 
 pub fn parse(b: *std.Build) Options {
-    const target = b.standardTargetOptions(.{
-        // Generic x86-64 like gcc's default; -Dcpu=native tunes for the host.
+    var target = b.standardTargetOptions(.{
         .default_target = .{ .cpu_model = .baseline },
     });
+    // On x86_64 the default CPU is x86-64-v3 (the AVX2 class: Haswell and
+    // Zen and everything after them), not the generic baseline gcc defaults
+    // to: the hash engine's group probes and the hot paths vectorise with
+    // it. -Dcpu=baseline restores the generic build, -Dcpu=native tunes
+    // for the host. The Perl build passes the same level through -march
+    // (Configure.pl --march), so the two builds stay in sync.
+    if (target.result.cpu.arch == .x86_64 and !b.user_input_options.contains("cpu")) {
+        var query = target.query;
+        query.cpu_model = .{ .explicit = &std.Target.x86.cpu.x86_64_v3 };
+        target = b.resolveTargetQuery(query);
+    }
     // Perl's Configure.pl defaults to --optimize (-O3); match that. Pass
     // -Doptimize=Debug for a -g style build.
     const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size (default ReleaseFast)") orelse .ReleaseFast;

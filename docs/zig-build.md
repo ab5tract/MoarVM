@@ -14,7 +14,7 @@ Options (`zig build --help` lists them):
 |---|---|---|
 | `-Doptimize=` | `ReleaseFast` | zig's standard optimisation mode (`Debug` for a -g3 style build) |
 | `-Dtarget=` | generic x86-64 linux | only glibc `x86_64-linux` is supported so far |
-| `-Dcpu=` | `baseline` | pass `-Dcpu=native` for a build tuned to the host CPU (the default matches gcc's generic x86-64) |
+| `-Dcpu=` | `x86_64_v3` on x86_64, else `baseline` | the AVX2 class (Haswell, Zen and later); `-Dcpu=baseline` for a generic x86-64 build (gcc's default), `-Dcpu=native` for the host CPU. The Perl build's `--march` (default `x86-64-v3` with `--cc=zig`) is the same knob |
 | `-Djit=` | `true` on x86_64 | build the x86-64 JIT (DynASM via the zig-built minilua, tables from the Zig generators) |
 | `-Dstatic=` | `false` | build `libmoar.a` instead of `libmoar.so` |
 | `-Dmimalloc=` | `true` | use the bundled mimalloc |

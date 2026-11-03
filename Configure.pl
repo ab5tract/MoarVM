@@ -43,7 +43,7 @@ GetOptions(\%args, qw(
     help|?
     debug:s optimize:s coverage
     os=s shell=s toolchain=s compiler=s
-    ar=s cc=s ld=s make=s zig=s zig-lto! has-sha has-libuv
+    ar=s cc=s ld=s make=s zig=s zig-lto! march=s has-sha has-libuv
     static has-libtommath has-libatomic_ops
     has-dyncall has-libffi pkgconfig=s
     build=s host=s big-endian jit! enable-jit
@@ -508,8 +508,18 @@ elsif (!defined $args{'zig-lto'}) {
     $args{'zig-lto'} = (defined $args{zig} && $zig_cc && !$args{debug}) ? 1 : 0;
 }
 
+# --march: the CPU level the C compiler targets. With --cc=zig on x86_64
+# it defaults to x86-64-v3 (the AVX2 class), matching the zig build's
+# default -Dcpu, so a Perl build with the zig toolchain is tuned like a
+# `zig build` one; --march=x86-64 restores the generic level. Other
+# compilers get no -march unless asked (gcc's default is generic x86-64).
+if (!defined $args{march} && $zig_cc && $Config{archname} =~ m/^x86_64|^amd64/) {
+    $args{march} = 'x86-64-v3';
+}
+
 # generate CFLAGS
 my @cflags;
+push @cflags, "-march=$args{march}" if defined $args{march} && $config{cc} ne 'cl';
 push @cflags, '-std=c99' if $defaults{os} eq 'mingw32';
 push @cflags, '-fwrapv'             if $config{cc} ne 'cl';
 push @cflags, $config{ccmiscflags};
@@ -849,6 +859,12 @@ if (defined $args{zig}) {
     # Always explicit: the zig build's own default is LTO on, which a gcc
     # link cannot consume.
     $config{zig_build_flags} .= $args{'zig-lto'} ? ' -Dlto=true' : ' -Dlto=false';
+    if (defined $args{march}) {
+        # zig's model names use underscores: x86-64-v3 -> x86_64_v3.
+        (my $zig_cpu = $args{march}) =~ s/-/_/g;
+        $zig_cpu = 'baseline' if $zig_cpu eq 'x86_64';
+        $config{zig_build_flags} .= " -Dcpu=$zig_cpu";
+    }
     $config{zig_objects} = '$(ZIG_OUT)/lib/moar_zig@obj@';
     $config{zig_clean}   = '$(RM_RF) zig-out .zig-cache';
 }
@@ -1300,7 +1316,7 @@ __END__
 
     ./Configure.pl [--os <os>] [--shell <shell>]
                    [--toolchain <toolchain>] [--compiler <compiler>]
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto|--no-zig-lto]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto|--no-zig-lto] [--march <level>]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--has-libtommath] [--has-sha] [--has-libuv]
@@ -1309,7 +1325,7 @@ __END__
                    [--telemeh] [--git-cache-dir <path>]
 
     ./Configure.pl --build <build-triple> --host <host-triple>
-                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto|--no-zig-lto]
+                   [--ar <ar>] [--cc <cc>] [--ld <ld>] [--make <make>] [--zig <path>] [--zig-lto|--no-zig-lto] [--march <level>]
                    [--debug] [--optimize]
                    [--static] [--prefix <path>] [--relocatable]
                    [--big-endian] [--make-install]
@@ -1404,6 +1420,15 @@ F<build/sources.list> with the given zig binary (0.16.0), in place of the C
 files they replace. The object is produced by C<zig build zig-objects> from
 F<build.zig>. Independent of C<--cc=zig>, which only selects zig as the C
 compiler.
+
+=item --march LEVEL
+
+The CPU level passed to the C compiler as C<-march=LEVEL> and to the zig
+build as C<-Dcpu=> (dashes become underscores; C<x86-64> maps to
+C<baseline>). With C<--cc=zig> on x86_64 it defaults to C<x86-64-v3>, the
+AVX2 class (Haswell, Zen and later), matching the zig build's default;
+C<--march=x86-64> restores the generic build. Other compilers get no
+C<-march> unless this is given.
 
 =item --zig-lto
 
