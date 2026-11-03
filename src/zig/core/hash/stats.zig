@@ -1,10 +1,9 @@
 //! Hash engine statistics (`-Dhash-stats=true`), a diagnostic build only.
 //!
-//! Every counting function is a comptime no-op unless the root of the
-//! compilation declares `pub const hash_stats = true` (`src/zig/root.zig`
-//! and `hash_test.zig` do, from the build options; the pure-Zig unit-test
-//! roots have no such declaration, so `enabled` is false there and nothing
-//! below reaches libc).
+//! Every counting function is a comptime no-op unless the `zig_options`
+//! module of the compilation has `hash_stats` set (`-Dhash-stats=true`);
+//! with it off nothing below reaches libc, so the pure-Zig unit-test roots
+//! compile without it.
 //!
 //! Sites are call sites of the exported table constructors, interned by
 //! return address (`siteOf`); the dump records each site's offset from the
@@ -17,9 +16,9 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
-const root = @import("root");
-
-pub const enabled: bool = @hasDecl(root, "hash_stats") and root.hash_stats;
+/// Every root whose import graph reaches this file gets a `zig_options`
+/// module carrying `hash_stats` (build.zig, zigimpl.zig).
+pub const enabled: bool = @import("zig_options").hash_stats;
 
 pub const max_sites: u8 = 255;
 /// Counter slots: the interned ids plus `other`.
@@ -358,6 +357,8 @@ test "buckets map sizes to the ladder" {
 }
 
 test "dump of empty counters is only the header" {
+    // An enabled build has sites and counters from the other tests.
+    if (enabled) return error.SkipZigTest;
     var out = std.Io.Writer.Allocating.init(std.testing.allocator);
     defer out.deinit();
     try dump(&out.writer);
@@ -369,4 +370,16 @@ test "dump of empty counters is only the header" {
         n += 1;
     }
     try std.testing.expect(n >= 4);
+}
+
+test "an enabled build counts an op and dumps it" {
+    if (!enabled) return error.SkipZigTest;
+    const site = siteOf(0x5ca1e);
+    count(site, .insert);
+    var out = std.Io.Writer.Allocating.init(std.testing.allocator);
+    defer out.deinit();
+    try dump(&out.writer);
+    var want: [64]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&want, "op\t{d}\tinsert\t", .{site});
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), prefix) != null);
 }

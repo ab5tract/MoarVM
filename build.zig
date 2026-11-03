@@ -116,19 +116,27 @@ pub fn build(b: *std.Build) void {
         }
     } else |_| {}
 
+    // Read by core/hash/stats.zig in every root that reaches it.
+    const stats_opts = b.addOptions();
+    stats_opts.addOption(bool, "hash_stats", opts.hash_stats);
+    const stats_options = stats_opts.createModule();
     // Unit tests of the build helpers; `test` runs them first.
     const unit_step = b.step("unit-test", "Run the unit tests of the build helpers");
     for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig", "build/zig/fixup_translated.zig", "build/zig/zigimpl.zig", "tools/zig/sexpr.zig", "tools/zig/oplist.zig", "tools/zig/expr_ops.zig", "tools/zig/expr_template_compiler.zig", "tools/zig/tiler_table_generator.zig", "src/zig/core/hash/tier.zig", "src/zig/core/hash/test_spec.zig", "src/zig/core/hash/table.zig", "src/zig/core/hash/stats.zig" }) |path| {
-        const t = b.addTest(.{ .root_module = b.createModule(.{
-            .root_source_file = b.path(path),
-            .target = b.graph.host,
-        }) });
+        const t = b.addTest(.{
+            .root_module = b.createModule(.{
+                .root_source_file = b.path(path),
+                .target = b.graph.host,
+                // The enabled statistics reach for libc (atexit, dladdr).
+                .link_libc = opts.hash_stats,
+                .imports = &.{.{ .name = "zig_options", .module = stats_options }},
+            }),
+        });
         unit_step.dependOn(&b.addRunArtifact(t).step);
     }
     // The hash microbenchmark reads the engine it is timing from here.
     const bench_opts = b.addOptions();
     bench_opts.addOption(bool, "zig_impl", opts.zig_impl);
-    bench_opts.addOption(bool, "hash_stats", opts.hash_stats);
     const bench_options = bench_opts.createModule();
     if (zig_impl) |impl| {
         if (opts.config_h == null) {
@@ -137,7 +145,7 @@ pub fn build(b: *std.Build) void {
             // microbenchmark's ladder test, hence build_options).
             const roots = [_]struct { []const u8, []const u8, []const std.Build.Module.Import }{
                 .{ "src/zig/moar.zig", "shim-test", &.{} },
-                .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{.{ .name = "build_options", .module = bench_options }} },
+                .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{ .{ .name = "build_options", .module = bench_options }, .{ .name = "zig_options", .module = stats_options } } },
             };
             for (roots) |root| {
                 const t = zigimpl.addShimTests(b, opts, impl, libmoar, config_h, moar.cflags(b, opts), root[0], root[1], root[2]);
@@ -175,7 +183,7 @@ pub fn build(b: *std.Build) void {
     // the benchmark's keys and types, so the translation is set up here too.
     if (opts.config_h == null) {
         const bench_impl = zig_impl orelse zigimpl.add(b, opts, .{ .generated = config_h });
-        const bench = zigimpl.addHashBench(b, opts, bench_impl, libmoar, config_h, moar.cflags(b, opts), bench_options);
+        const bench = zigimpl.addHashBench(b, opts, bench_impl, libmoar, config_h, moar.cflags(b, opts), bench_options, stats_options);
         const run = b.addRunArtifact(bench);
         if (b.args) |args| run.addArgs(args);
         const bench_step = b.step("hash-bench", "Run the string hash table microbenchmark against this build's engine (args after --: --sizes=, --runs=, --max-size=)");

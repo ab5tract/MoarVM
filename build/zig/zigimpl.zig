@@ -170,7 +170,8 @@ pub fn addShimTests(
 /// sees) plus the benchmark's C shim compiled with libmoar's flags, so with
 /// the Zig groups off the shim calls the inline C of the headers and with
 /// them on the Zig exports. `bench_options` is the `build_options` module
-/// the benchmark reads its `zig_impl` engine column from.
+/// the benchmark reads its `zig_impl` engine column from; `zig_options` carries
+/// `hash_stats` for stats.zig.
 pub fn addHashBench(
     b: *std.Build,
     opts: Options,
@@ -179,6 +180,7 @@ pub fn addHashBench(
     config_h: *std.Build.Step.ConfigHeader,
     cflags: []const []const u8,
     bench_options: *std.Build.Module,
+    zig_options: *std.Build.Module,
 ) *std.Build.Step.Compile {
     const mod = b.createModule(.{
         .root_source_file = b.path("src/zig/core/hash/bench.zig"),
@@ -188,6 +190,7 @@ pub fn addHashBench(
         .imports = &.{
             .{ .name = "moar", .module = impl.moar_mod },
             .{ .name = "build_options", .module = bench_options },
+            .{ .name = "zig_options", .module = zig_options },
         },
     });
     moar.addIncludes(b, mod);

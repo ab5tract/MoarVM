@@ -4,9 +4,6 @@
 //! pure-Zig test step) and `rng.zig`'s self-test, which needs the `moar`
 //! module too. The root sits in this directory because a module's files must
 //! lie under its root file's directory.
-/// Read by stats.zig through `@import("root")`.
-pub const hash_stats = @import("build_options").hash_stats;
-
 test {
     _ = @import("test/str_test.zig");
     _ = @import("test/ptr_test.zig");
