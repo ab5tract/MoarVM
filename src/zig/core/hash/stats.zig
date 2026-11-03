@@ -330,8 +330,8 @@ pub fn ensureRegistered() void {
 fn exitHandler() callconv(.c) void {
     const dir = std.c.getenv("MVM_HASH_STATS") orelse return;
     writeFile(std.mem.span(dir)) catch |e| {
-        var buf: [96]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "hash-stats: cannot write the dump: {s}\n", .{@errorName(e)}) catch return;
+        var buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&buf, "hash-stats: cannot write the dump to MVM_HASH_STATS={s}: {s}\n", .{ std.mem.span(dir), @errorName(e) }) catch return;
         _ = std.c.write(2, msg.ptr, msg.len);
     };
 }

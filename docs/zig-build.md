@@ -338,6 +338,20 @@ The file is TSV; header lines start with `#`: `cmdline`, `pid`, `tsc_hz`
 `demolish<TAB>site<TAB>set<TAB>rung<TAB>bucket<TAB>count`, where a bucket is
 an index into the ladder above (9 is "more").
 
+`tools/bench/hash-stats.pl DIR --lib=PATH/libmoar.so [--census] [--tsv=OUT.tsv]`
+merges every `*.tsv` in `DIR` into a markdown report. It resolves each site
+offset (minus one, the call instruction) with `addr2line` (retried with
+`llvm-addr2line`, which reads this build's DWARF where GNU addr2line does
+not), maps it to the census label (s1 ... p2 of the bake-off census) through
+a built-in survey table keyed by file, function and, for the sites inside
+`MVM_vm_create_instance`, line, and prints per site the op counts, cycles,
+cycles per op, share of hash cycles and of `total_cycles`, and the build and
+demolish histograms, then `## Hash share` per program. Unmapped sites print
+as `function@file:line`, site 255 as `other`; `grow` and `migrate` cycles
+are inside `insert`'s and stay out of the shares. Files of processes that
+built no table are counted apart. The table is meant for this branch and
+needs updating when the C sources move.
+
 ## Not yet supported
 
 Any OS other than linux, any CPU other than x86_64, system libuv/libtommath/libffi, MSVC, coverage
