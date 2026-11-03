@@ -15,7 +15,8 @@
 //!     index[slots]        slot_width bytes each: 0 empty, else the
 //!                         position of an entry plus one
 //!     entries[capacity]   entry_size bytes each, key first; the first
-//!                         `cur_items` are live, in insertion order
+//!                         `cur_items` are live, in insertion order;
+//!                         the rest are zeroed
 //!
 //! The entry capacity is half the index slots (the index's load factor is
 //! at most 1/2). The slot width is the narrowest that holds every position
@@ -48,6 +49,15 @@
 //! that moves into the hole comes from the top, which the walk has already
 //! visited, and every position below the hole is unchanged. Before the
 //! first delete the walk is reverse insertion order.
+//!
+//! Entries at positions above `cur_items` are all zero bytes: a block is
+//! allocated with them zeroed and `delete` zeroes the entry it vacates, so
+//! the dead region holds no object pointers. Deleting keys other than the
+//! current one during an iteration is unsupported (as in every tier and the
+//! C engine); here it can at worst revisit an entry or leave a held
+//! position past `cur_items`, which `entryAt` reads as a zeroed entry (the
+//! "empty key" shape of the other tiers' empty slots), never a stale
+//! pointer.
 //!
 //! Blocks are owned by the policy layer: `init` and `grow` return a new
 //! block and never free an old one, so the caller disposes of the old block
@@ -209,7 +219,9 @@ fn ImplType(comptime Spec: type) type {
                 ._pad = @splat(0),
             };
             header.cur_items = 0;
+            const cap = capacityOf(slots);
             @memset(index(header)[0 .. @as(usize, slots) * ctrl(header).slot_width], 0);
+            @memset(entries(header)[0 .. @as(usize, cap) * entry_size], 0);
             return header;
         }
 
@@ -363,6 +375,8 @@ fn ImplType(comptime Spec: type) type {
                 slotSet(header, slotOfPosition(header, ctx, last), pos + 1);
                 copyEntry(entryAtIndex(header, pos), entryAtIndex(header, last), entrySize(header));
             }
+            // The dead region holds no object pointers (see the file comment).
+            @memset(entryAtIndex(header, last)[0..entrySize(header)], 0);
             header.cur_items = last;
             return true;
         }
@@ -401,8 +415,10 @@ fn ImplType(comptime Spec: type) type {
             return @min(pos - 1, header.cur_items);
         }
 
+        /// The entry at `pos`; past `cur_items` (a position held across
+        /// an unsupported delete of another key) it is a zeroed entry.
         pub fn entryAt(header: *Header, pos: u32) [*]u8 {
-            std.debug.assert(pos >= 1 and pos <= header.cur_items);
+            std.debug.assert(pos >= 1 and pos <= capacity(header));
             return entryAtIndex(header, pos - 1);
         }
 
@@ -758,6 +774,45 @@ test "a verbatim block copy is an independent table" {
     try testing.expectEqual(@as(u32, 290), copy.cur_items);
     try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
     try testing.expectEqual(@as(u64, 0), S.fsck(copy, {}, 0));
+}
+
+fn isZeroed(e: [*]u8) bool {
+    return std.mem.allEqual(u8, e[0..test_entry_size], 0);
+}
+
+test "vacated entries are zeroed after swap-remove" {
+    const h = try testInit(8);
+    defer testFree(h);
+    for (1..9) |k| try put(h, k);
+    // The entry at position 3 is key 3; the last (key 8) moves into it.
+    try testing.expectEqual(@as(u64, 3), keyOf(S.entryAt(h, 3)));
+    try testing.expect(del(h, 3));
+    try testing.expectEqual(@as(u64, 8), keyOf(S.entryAt(h, 3)));
+    try testing.expectEqual(@as(u32, 7), h.cur_items);
+    try testing.expect(isZeroed(S.entryAtIndex(h, h.cur_items)));
+    // Deleting the last entry itself zeroes it too.
+    const last_key = keyOf(S.entryAt(h, h.cur_items));
+    try testing.expect(del(h, last_key));
+    try testing.expectEqual(@as(u32, 6), h.cur_items);
+    try testing.expect(isZeroed(S.entryAtIndex(h, h.cur_items)));
+    try testing.expect(isZeroed(S.entryAtIndex(h, h.cur_items + 1)));
+    try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
+}
+
+test "a held position past cur_items reads a zeroed entry" {
+    const h = try testInit(20);
+    defer testFree(h);
+    for (1..21) |k| try put(h, k);
+    const pos = S.first(h);
+    const held = S.next(h, pos);
+    // Delete the current key and one other (unsupported, but never a
+    // stale pointer): the held position is now past the live entries.
+    try testing.expect(del(h, keyOf(S.entryAt(h, pos))));
+    try testing.expect(del(h, 1));
+    try testing.expect(held > h.cur_items);
+    try testing.expectEqual(@as(u64, 0), keyOf(S.entryAt(h, held)));
+    try testing.expect(isZeroed(S.entryAt(h, held)));
+    try testing.expectEqual(@as(u64, 0), S.fsck(h, {}, 0));
 }
 
 test "full, grow doubles both arrays into a new block, block size" {
