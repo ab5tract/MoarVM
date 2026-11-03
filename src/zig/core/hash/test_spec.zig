@@ -7,6 +7,7 @@ const small = @import("tiers/small.zig");
 const robinhood = @import("tiers/robinhood.zig");
 const swiss = @import("tiers/swiss.zig");
 const ordered = @import("tiers/ordered.zig");
+const fixed = @import("tiers/fixed.zig");
 
 /// The ladder the tests run tables through.
 pub const standard_test_set = [_]tier.TierEntry{
@@ -22,6 +23,19 @@ pub const swiss_test_set = [_]tier.TierEntry{
 /// The array-ordered tier alone, from the first entry (strategy 2's shape).
 pub const ordered_test_set = [_]tier.TierEntry{
     .{ .tier = ordered.Tier(.{}), .from = 0 },
+};
+
+/// Strategy 3's staging set: Robin Hood alone, where a table lives until
+/// `Table.seal`.
+pub const fixed_staging_test_set = [_]tier.TierEntry{
+    .{ .tier = robinhood.Tier(.{}), .from = 0 },
+};
+
+/// Strategy 3's sealed set: the fixed tier, entered only by `Table.seal`,
+/// then Robin Hood, which the first insert after seal migrates to.
+pub const fixed_sealed_test_set = [_]tier.TierEntry{
+    .{ .tier = fixed.Tier(.{}), .from = 0 },
+    .{ .tier = robinhood.Tier(.{}), .from = 1 },
 };
 
 pub const IntSpec = struct {
@@ -58,6 +72,28 @@ pub const IntSpec = struct {
     }
 };
 
+/// `IntSpec` with strategy 3's two sets: staging is set 0, sealed set 1.
+pub const FixedSpec = struct {
+    pub const Key = IntSpec.Key;
+    pub const Ctx = IntSpec.Ctx;
+    pub const runtime_entry_size = true;
+    pub const publish = .plain;
+    pub const sets: []const tier.TierSet = &.{ &fixed_staging_test_set, &fixed_sealed_test_set };
+    pub const staging_set: u8 = 0;
+    pub const sealed_set: u8 = 1;
+    pub const hash = IntSpec.hash;
+    pub const eql = IntSpec.eql;
+    pub const allocator = IntSpec.allocator;
+    pub const onDuplicate = IntSpec.onDuplicate;
+
+    /// A nonzero salt, so the sealed layout's bucket choice is salted in
+    /// the tests.
+    pub fn salt(ctx: Ctx) u64 {
+        _ = ctx;
+        return 0x0123_4567_89ab_cdef;
+    }
+};
+
 // The tier files import `../tier.zig` and this file, which lie outside a
 // module rooted in `tiers/`, so their tests run with this file as the root.
 test {
@@ -65,7 +101,10 @@ test {
     _ = robinhood;
     _ = swiss;
     _ = ordered;
+    _ = fixed;
     comptime tier.validate(&standard_test_set);
     comptime tier.validate(&swiss_test_set);
     comptime tier.validate(&ordered_test_set);
+    comptime tier.validate(&fixed_staging_test_set);
+    comptime tier.validate(&fixed_sealed_test_set);
 }

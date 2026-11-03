@@ -458,7 +458,8 @@ test "buildStrategy refuses strategies that are not built in" {
     try testing.expect(str.strategyAvailable(0));
     try testing.expect(str.strategyAvailable(1));
     try testing.expect(str.strategyAvailable(2));
-    for ([_]u8{ 3, 4 }) |s| try testing.expect(!str.strategyAvailable(s));
+    try testing.expect(str.strategyAvailable(3));
+    try testing.expect(!str.strategyAvailable(4));
     try testing.expect(!str.strategyAvailable(255));
 }
 
@@ -758,4 +759,153 @@ test "strategy 2 iteration with deletes matches MVMIter's protocol" {
         try testing.expectEqual(left, remaining);
         try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
     }
+}
+
+test "strategy 3 seal through the C-shaped API" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const n: u32 = 300;
+    const ks = try keys.make(tc, n + 1);
+    defer testing.allocator.free(ks);
+
+    try testing.expectEqual(@as(?u8, str.fixed_staging_set), str.strategy_sets[3]);
+    try testing.expect(str.sets[str.fixed_staging_set].ptr == @as([*]const tier.TierEntry, &str.fixed_staging));
+    try testing.expect(str.sets[str.fixed_sealed_set].ptr == @as([*]const tier.TierEntry, &str.fixed_sealed));
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, entry_size, 0, 3);
+    defer str.demolish(tc, &ht);
+    const h = str.handleOf(&ht);
+    try testing.expectEqual(@as(u8, str.fixed_staging_set), h.*.?.set);
+    for (ks[0..n], 0..) |k, i| try put(tc, &ht, k, i);
+    try testing.expectEqual(@as(u8, str.fixed_staging_set), h.*.?.set);
+
+    str.seal(tc, &ht);
+    try testing.expectEqual(@as(u8, str.fixed_sealed_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, 0), str.StrTable.rung(h));
+    try testing.expectEqual(n, str.count(tc, &ht));
+    for (ks[0..n], 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &ht, ks[n]));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+
+    // MVMIter's walk sees every entry once.
+    const seen = try testing.allocator.alloc(u32, n + 1);
+    defer testing.allocator.free(seen);
+    @memset(seen, 0);
+    var it = str.first(tc, &ht);
+    while (!str.atEnd(tc, &ht, it)) : (it = str.next(tc, &ht, it)) seen[entryOf(str.current(tc, &ht, it)).value] += 1;
+    for (seen[0..n]) |count| try testing.expectEqual(@as(u32, 1), count);
+
+    // One insert: the table migrates to Robin Hood, keeping every entry.
+    try put(tc, &ht, ks[n], n);
+    try testing.expectEqual(@as(u8, str.fixed_sealed_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, 1), str.StrTable.rung(h));
+    try testing.expectEqual(n + 1, str.count(tc, &ht));
+    for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+
+    // Sealing again (a sealed set) is a no-op.
+    const migrated = h.*.?;
+    str.seal(tc, &ht);
+    try testing.expectEqual(migrated, h.*.?);
+}
+
+test "strategy 3 shallow copy of a sealed table is independent" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const n: u32 = 300;
+    const ks = try keys.make(tc, n + 1);
+    defer testing.allocator.free(ks);
+
+    var src = unbuilt();
+    str.buildStrategy(tc, &src, entry_size, 0, 3);
+    defer str.demolish(tc, &src);
+    for (ks[0..n], 0..) |k, i| try put(tc, &src, k, i);
+    str.seal(tc, &src);
+    str.delete(tc, &src, ks[5]);
+    var dst = unbuilt();
+    str.shallowCopy(tc, &src, &dst);
+    defer str.demolish(tc, &dst);
+    try testing.expect(dst.table != src.table);
+    try testing.expectEqual(str.allocatedSize(tc, &src), str.allocatedSize(tc, &dst));
+    try testing.expectEqual(@as(u8, str.fixed_sealed_set), str.handleOf(&dst).*.?.set);
+    try testing.expectEqual(@as(u8, 0), str.StrTable.rung(str.handleOf(&dst)));
+
+    // The same iteration order, entries in the copy's own block.
+    var sp = str.first(tc, &src);
+    var dp = str.first(tc, &dst);
+    while (!str.atEnd(tc, &src, sp)) : ({
+        sp = str.nextNocheck(tc, &src, sp);
+        dp = str.nextNocheck(tc, &dst, dp);
+    }) {
+        try testing.expectEqual(sp.pos, dp.pos);
+        const se = entryOf(str.currentNocheck(tc, &src, sp));
+        const de = entryOf(str.currentNocheck(tc, &dst, dp));
+        try testing.expect(se != de);
+        try testing.expectEqual(se.key, de.key);
+        try testing.expectEqual(se.value, de.value);
+    }
+    try testing.expect(str.atEnd(tc, &dst, dp));
+
+    // Insert into the copy (it migrates); the sealed original is unchanged.
+    try put(tc, &dst, ks[n], n);
+    entryOf(str.fetch(tc, &dst, ks[1])).value = 1000;
+    try testing.expectEqual(@as(u8, 1), str.StrTable.rung(str.handleOf(&dst)));
+    try testing.expectEqual(@as(u8, 0), str.StrTable.rung(str.handleOf(&src)));
+    try testing.expectEqual(n, str.count(tc, &dst));
+    try testing.expectEqual(n - 1, str.count(tc, &src));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &src, ks[n]));
+    try testing.expectEqual(@as(u64, 1), try valueOf(tc, &src, ks[1]));
+    str.delete(tc, &src, ks[0]);
+    try testing.expectEqual(@as(u64, 0), try valueOf(tc, &dst, ks[0]));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &src, ks[0]));
+    for (ks[0..n], 0..) |k, i| {
+        if (i != 5) try testing.expectEqual(if (i == 1) 1000 else i, try valueOf(tc, &dst, k));
+    }
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &src, 0));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
+}
+
+test "seal publishes with the stale mark" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 10);
+    defer testing.allocator.free(ks);
+
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, entry_size, 0, 3);
+    defer str.demolish(tc, &ht);
+    const h = str.handleOf(&ht);
+    for (ks, 0..) |k, i| try put(tc, &ht, k, i);
+    const old: *Header = h.*.?;
+    try testing.expectEqual(@as(u8, 0), old.stale);
+
+    str.seal(tc, &ht);
+    // The old block is only scheduled for freeing at a safepoint, so its
+    // stale byte is readable until the instance is destroyed.
+    try testing.expectEqual(@as(u8, 1), old.stale);
+    try testing.expect(h.*.? != old);
+    try testing.expectEqual(@as(u8, 0), h.*.?.stale);
+    try testing.expectEqual(@as(u32, 10), str.count(tc, &ht));
+    for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+
+    // A control-only staging table seals too; seal on strategy 1 does not.
+    var empty = unbuilt();
+    str.buildStrategy(tc, &empty, entry_size, 0, 3);
+    defer str.demolish(tc, &empty);
+    const bare: *Header = str.handleOf(&empty).*.?;
+    str.seal(tc, &empty);
+    try testing.expectEqual(@as(u8, 1), bare.stale);
+    try testing.expectEqual(@as(u8, str.fixed_sealed_set), str.handleOf(&empty).*.?.set);
+    try testing.expectEqual(@as(u32, 0), str.count(tc, &empty));
+    var swiss_ht = unbuilt();
+    str.buildStrategy(tc, &swiss_ht, entry_size, 0, 1);
+    defer str.demolish(tc, &swiss_ht);
+    try put(tc, &swiss_ht, ks[0], 0);
+    const swiss_block = str.handleOf(&swiss_ht).*.?;
+    str.seal(tc, &swiss_ht);
+    try testing.expectEqual(swiss_block, str.handleOf(&swiss_ht).*.?);
+    try testing.expectEqual(@as(u8, 0), swiss_block.stale);
 }

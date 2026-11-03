@@ -21,6 +21,7 @@ const small = @import("tiers/small.zig");
 const robinhood = @import("tiers/robinhood.zig");
 const swiss = @import("tiers/swiss.zig");
 const ordered = @import("tiers/ordered.zig");
+const fixed = @import("tiers/fixed.zig");
 
 const Header = table.Header;
 const ThreadContext = moar.ThreadContext;
@@ -52,6 +53,21 @@ pub const ordered_only = [_]tier.TierEntry{
     .{ .tier = ordered.Tier(.{}), .from = 0 },
 };
 
+/// Strategy 3's staging set (`MVM_HASH_STRATEGY_FIXED`): Robin Hood alone,
+/// where a strategy-3 table lives until `seal`.
+pub const fixed_staging = [_]tier.TierEntry{
+    .{ .tier = robinhood.Tier(.{}), .from = 0 },
+};
+
+/// Strategy 3's sealed set: the fixed-key tier, which only `seal` enters
+/// (nothing builds this set directly, so rung 1's `from` only has to pass
+/// `tier.validate`), then Robin Hood, to which the first insert after the
+/// seal migrates.
+pub const fixed_sealed = [_]tier.TierEntry{
+    .{ .tier = fixed.Tier(.{}), .from = 0 },
+    .{ .tier = robinhood.Tier(.{}), .from = 1 },
+};
+
 /// Indexed by the header's `set` byte.
 pub const sets: []const tier.TierSet = StrSpec.sets;
 
@@ -65,12 +81,18 @@ pub const swiss_set: u8 = 2;
 /// Set index of `ordered_only`.
 pub const ordered_set: u8 = 3;
 
+/// Set index of `fixed_staging`.
+pub const fixed_staging_set: u8 = 4;
+
+/// Set index of `fixed_sealed`.
+pub const fixed_sealed_set: u8 = 5;
+
 pub const StrSpec = struct {
     pub const Key = [*c]c.MVMString;
     pub const Ctx = *ThreadContext;
     pub const runtime_entry_size = true;
     pub const publish: table.Publish = .safepoint_cas;
-    pub const sets: []const tier.TierSet = &.{ &standard, &large_only, &swiss_only, &ordered_only };
+    pub const sets: []const tier.TierSet = &.{ &standard, &large_only, &swiss_only, &ordered_only, &fixed_staging, &fixed_sealed };
 
     /// `MVM_string_hash_code` (`src/strings/ops.h`): the cached hash code,
     /// or, while it is still 0 (not computed yet), the out-of-line
@@ -157,7 +179,7 @@ pub const strategy_count: u8 = 4;
 /// The tier set of each strategy, indexed by `MVMHashStrategy`; a null slot
 /// is a strategy not built into this engine. A mapping rather than "the set
 /// index is the strategy number", so `large_only` keeps index 1.
-pub const strategy_sets = [strategy_count]?u8{ standard_set, swiss_set, ordered_set, null };
+pub const strategy_sets = [strategy_count]?u8{ standard_set, swiss_set, ordered_set, fixed_staging_set };
 
 /// Whether `buildStrategy` can build `strategy`.
 pub fn strategyAvailable(strategy: u8) bool {
@@ -174,10 +196,14 @@ pub fn buildStrategy(tc: *ThreadContext, ht: *c.MVMStrHashTable, entry_size: u32
     StrTable.build(tc, handleOf(ht), entry_size, entries, strategy_sets[strategy].?);
 }
 
-/// MVM_str_hash_seal: a no-op until a strategy compacts at seal.
+/// MVM_str_hash_seal: a strategy-3 staging table is rebuilt as the sealed
+/// fixed-key layout (`StrTable.seal`); any other table, a sealed one
+/// included, is left as it is, so a second seal is a no-op. An unbuilt
+/// table stays unbuilt.
 pub fn seal(tc: *ThreadContext, ht: *c.MVMStrHashTable) void {
-    _ = tc;
-    _ = ht;
+    const h = handleOf(ht);
+    const header = h.* orelse return;
+    if (header.set == fixed_staging_set) StrTable.seal(tc, h, fixed_sealed_set);
 }
 
 /// MVM_str_hash_demolish: frees the block (at a safepoint unless
@@ -379,5 +405,7 @@ test "set 0 is the standard string set" {
         std.debug.assert(StrTable.dispatch_reads_set);
         std.debug.assert(sets[swiss_set].ptr == @as([*]const tier.TierEntry, &swiss_only));
         std.debug.assert(sets[ordered_set].ptr == @as([*]const tier.TierEntry, &ordered_only));
+        std.debug.assert(sets[fixed_staging_set].ptr == @as([*]const tier.TierEntry, &fixed_staging));
+        std.debug.assert(sets[fixed_sealed_set].ptr == @as([*]const tier.TierEntry, &fixed_sealed));
     }
 }

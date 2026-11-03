@@ -201,6 +201,10 @@ static void deserialize(MVMThreadContext *tc, MVMSTable *st, MVMObject *root, vo
             MVMHashEntry *entry = MVM_str_hash_insert_nocheck(tc, hashtable, key);
             MVM_ASSIGN_REF(tc, &(root->header), entry->value, value);
         } while (++i < elems);
+        /* Under the MVM_HASH_STRATEGY override (a diagnostic), strategy 3
+         * seals every deserialized hash: its key set is complete here. */
+        if (tc->instance->hash_strategy_default == MVM_HASH_STRATEGY_FIXED)
+            MVM_str_hash_seal(tc, hashtable);
     }
 }
 

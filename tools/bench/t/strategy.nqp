@@ -32,6 +32,23 @@ sub contains($haystack, $needle) {
     nqp::index($haystack, $needle) >= 0
 }
 
+# A strategy 3 hash (unsealed) holding k0..k<n-1> => 0..n-1.
+sub strategy3(int $n) {
+    my %h := nqp::hash();
+    nqp::hashstrategy(%h, 3, 0);
+    my int $i := 0;
+    while $i < $n { %h{"k$i"} := $i; $i := $i + 1 }
+    %h
+}
+
+# Whether k<from>..k<to-1> fetch their values.
+sub all_there(%h, int $from, int $to) {
+    my int $bad := 0;
+    my int $i := $from;
+    while $i < $to { $bad := $bad + 1 unless nqp::atkey(%h, "k$i") == $i; $i := $i + 1 }
+    $bad == 0
+}
+
 # bind 3 keys, check each exists, elems 3, delete one, elems 2, iterate counts 2.
 sub round_trip(%h, $desc) {
     %h<alpha> := 1;
@@ -103,8 +120,9 @@ sub round_trip(%h, $desc) {
     ok(nqp::eqaddr(nqp::hashseal(%e), %e) && nqp::elems(%e) == 0, 'hashseal on an unbuilt hash is fine');
 }
 
-# Strategies 1 (the Swiss-style tier) and 2 (the array-ordered tier).
-for 1, 2 -> $s {
+# Strategies 1 (the Swiss-style tier), 2 (the array-ordered tier) and 3
+# (the fixed-key tier; unsealed, a staging Robin Hood table).
+for 1, 2, 3 -> $s {
     {
         my %h := nqp::hash();
         my $r := nqp::hashstrategy(%h, $s, 0);
@@ -183,7 +201,77 @@ for 1, 2 -> $s {
     }
 }
 
-for nqp::list(3) -> $s {
+# Strategy 3 sealed: nqp::hashseal rebuilds the table as the fixed-key
+# layout; the first insert after it migrates to Robin Hood.
+{
+    my %h := strategy3(4);
+    my $r := nqp::hashseal(%h);
+    ok(nqp::eqaddr($r, %h), 'hashseal of a strategy 3 hash returns the hash');
+    ok(nqp::elems(%h) == 4 && all_there(%h, 0, 4) && !nqp::existskey(%h, 'k4'),
+        'strategy 3 sealed: every key fetches, an absent one misses');
+    nqp::deletekey(%h, 'k1');
+    ok(nqp::elems(%h) == 3 && !nqp::existskey(%h, 'k1') && nqp::atkey(%h, 'k2') == 2,
+        'strategy 3 sealed: delete');
+    my int $n := 0;
+    for %h { $n := $n + 1 }
+    ok($n == 3, 'strategy 3 sealed: iteration sees 3 entries');
+}
+
+{
+    my %h := strategy3(100);
+    nqp::hashseal(%h);
+    %h<new> := 'x';
+    ok(nqp::elems(%h) == 101 && nqp::atkey(%h, 'new') eq 'x' && all_there(%h, 0, 100),
+        'strategy 3: insert after seal keeps every entry');
+    my int $i := 0;
+    while $i < 1000 { %h{"m$i"} := $i; $i := $i + 1 }
+    ok(nqp::elems(%h) == 1101 && all_there(%h, 0, 100) && nqp::atkey(%h, 'm999') == 999,
+        'strategy 3: the migrated table keeps growing');
+    nqp::hashseal(%h);
+    ok(nqp::elems(%h) == 1101 && all_there(%h, 0, 100), 'strategy 3: seal after the migration is a no-op');
+}
+
+{
+    my %h := strategy3(50);
+    nqp::hashseal(%h);
+    my $r := nqp::hashseal(%h);
+    ok(nqp::eqaddr($r, %h) && nqp::elems(%h) == 50 && all_there(%h, 0, 50),
+        'strategy 3: hashseal twice is fine');
+    my %e := nqp::hash();
+    nqp::hashstrategy(%e, 3, 0);
+    nqp::hashseal(%e);
+    ok(nqp::elems(%e) == 0 && !nqp::existskey(%e, 'a'), 'strategy 3: an empty hash seals');
+    %e<a> := 1;
+    ok(nqp::elems(%e) == 1 && nqp::atkey(%e, 'a') == 1, 'strategy 3: insert into an empty sealed hash');
+}
+
+{
+    my %h := strategy3(100);
+    nqp::hashseal(%h);
+    nqp::deletekey(%h, 'k0');
+    my %c := nqp::clone(%h);
+    ok(nqp::elems(%c) == 99 && all_there(%c, 1, 100) && !nqp::existskey(%c, 'k0'),
+        'strategy 3: nqp::clone of a sealed hash keeps the contents');
+    %c<new> := 1;
+    nqp::deletekey(%c, 'k1');
+    ok(nqp::elems(%h) == 99 && !nqp::existskey(%h, 'new') && nqp::existskey(%h, 'k1'),
+        'strategy 3: the sealed original is independent of the clone');
+    %h<other> := 2;
+    ok(nqp::elems(%c) == 99 && !nqp::existskey(%c, 'other') && nqp::existskey(%c, 'new'),
+        'strategy 3: the clone is independent of the original');
+}
+
+{
+    my %h := strategy3(500);
+    nqp::hashseal(%h);
+    my int $visits := 0;
+    my int $sum := 0;
+    for %h { $visits := $visits + 1; $sum := $sum + nqp::iterval($_); nqp::deletekey(%h, nqp::iterkey_s($_)) }
+    ok($visits == 500 && $sum == 500 * 499 / 2 && nqp::elems(%h) == 0,
+        "strategy 3 sealed: deleting each entry as it is visited visits all ($visits)");
+}
+
+for nqp::list(4) -> $s {
     my %h := nqp::hash();
     my $msg := dies({ nqp::hashstrategy(%h, $s, 0) });
     ok(contains($msg, 'not available'), "strategy $s is not available ($msg)");
