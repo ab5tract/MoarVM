@@ -5596,6 +5596,41 @@ void MVM_interp_run(MVMThreadContext *tc, void (*initial_invoke)(MVMThreadContex
                 cur_op += 6;
                 goto NEXT;
             }
+            OP(hashstrategy): {
+                /* Hash layout bake-off: rebuild an empty MVMHash's table with
+                 * a layout strategy (MVMHashStrategy) and a size hint. */
+                MVMObject *obj = GET_REG(cur_op, 2).o;
+                MVMint64 strategy = GET_REG(cur_op, 4).i64;
+                MVMint64 size = GET_REG(cur_op, 6).i64;
+                if (!obj || !IS_CONCRETE(obj) || REPR(obj)->ID != MVM_REPR_ID_MVMHash)
+                    MVM_exception_throw_adhoc(tc, "hashstrategy needs a concrete hash");
+                MVMStrHashTable *hashtable = &((MVMHash *)obj)->body.hashtable;
+                if (MVM_str_hash_entry_size(tc, hashtable)) {
+                    if (MVM_str_hash_count(tc, hashtable))
+                        MVM_exception_throw_adhoc(tc, "hashstrategy on a non-empty hash");
+                    MVM_str_hash_demolish(tc, hashtable);
+                }
+                if (strategy < 0 || strategy > 255)
+                    strategy = 255;
+                if (size < 0)
+                    size = 0;
+                else if (size > (MVMint64)UINT32_MAX)
+                    size = UINT32_MAX;
+                MVM_str_hash_build_strategy(tc, hashtable, sizeof(MVMHashEntry),
+                    (MVMuint32)size, (MVMuint8)strategy);
+                GET_REG(cur_op, 0).o = obj;
+                cur_op += 8;
+                goto NEXT;
+            }
+            OP(hashseal): {
+                MVMObject *obj = GET_REG(cur_op, 2).o;
+                if (!obj || !IS_CONCRETE(obj) || REPR(obj)->ID != MVM_REPR_ID_MVMHash)
+                    MVM_exception_throw_adhoc(tc, "hashseal needs a concrete hash");
+                MVM_str_hash_seal(tc, &((MVMHash *)obj)->body.hashtable);
+                GET_REG(cur_op, 0).o = obj;
+                cur_op += 4;
+                goto NEXT;
+            }
             OP(sp_guard): {
                 MVMRegister *target = &GET_REG(cur_op, 0);
                 MVMObject *check = GET_REG(cur_op, 2).o;

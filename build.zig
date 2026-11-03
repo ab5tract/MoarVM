@@ -146,6 +146,28 @@ pub fn build(b: *std.Build) void {
     }
     test_step.dependOn(unit_step);
 
+    // `zig build strategy-test -Dnqp-prefix=<P>`: the hashstrategy and
+    // hashseal op tests (TAP) on an installed MoarVM + nqp, with <P>/lib
+    // first on LD_LIBRARY_PATH so the installed libmoar is the one tested.
+    // nqp's stage0 cannot compile the ops, hence the installed nqp-m.
+    const strategy_step = b.step("strategy-test", "Run tools/bench/t/strategy.nqp on <P>/bin/nqp-m (needs -Dnqp-prefix=<P>)");
+    if (opts.nqp_prefix) |prefix| {
+        const nqp_m = b.pathJoin(&.{ prefix, "bin", "nqp-m" });
+        const lib_dir = b.pathJoin(&.{ prefix, "lib" });
+        const run = std.Build.Step.Run.create(b, "run strategy.nqp on the installed nqp");
+        run.addFileArg(.{ .cwd_relative = nqp_m });
+        run.addFileArg(b.path("tools/bench/t/strategy.nqp"));
+        run.addFileInput(.{ .cwd_relative = b.pathJoin(&.{ lib_dir, if (opts.static) "libmoar.a" else "libmoar.so" }) });
+        run.setEnvironmentVariable("LD_LIBRARY_PATH", lib_dir);
+        run.setCwd(b.path("."));
+        run.expectExitCode(0);
+        strategy_step.dependOn(&run.step);
+        test_step.dependOn(strategy_step);
+    } else {
+        const fail = b.addFail("strategy-test needs -Dnqp-prefix=<prefix of an installed MoarVM and nqp>");
+        strategy_step.dependOn(&fail.step);
+    }
+
     // `zig build hash-bench -- <args>`: the string table microbenchmark
     // against this build's libmoar, Zig engine or C tables as -Dzig-impl
     // says. With the Zig groups off the `moar` module is still needed for

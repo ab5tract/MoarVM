@@ -24,6 +24,9 @@ pub const Options = struct {
     /// bitcode object) is the one every build exercises; `-Dlto=false`
     /// turns it off for a faster link.
     lto: bool,
+    /// Prefix of an installed MoarVM + nqp (`<P>/bin/nqp-m`) for the
+    /// `strategy-test` step; when set, `zig build test` runs it too.
+    nqp_prefix: ?[]const u8,
 };
 
 pub fn parse(b: *std.Build) Options {
@@ -68,5 +71,6 @@ pub fn parse(b: *std.Build) Options {
         .config_h = config_h,
         .strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=Debug); false keeps them for perf"),
         .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default: true unless -Doptimize=Debug); false links about three times faster") orelse (optimize != .Debug),
+        .nqp_prefix = b.option([]const u8, "nqp-prefix", "Prefix of an installed MoarVM and nqp (<P>/bin/nqp-m) for `zig build strategy-test`; when given, `zig build test` runs that step too"),
     };
 }

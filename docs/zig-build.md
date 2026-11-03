@@ -7,6 +7,7 @@ An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
     zig build check-jit-tools # diff the Zig JIT generators against the Perl originals (needs perl; exists only when the JIT is on)
     zig build test            # installs, then runs the installed moar: --version and the nqp stage0 smoke test
     zig build hash-bench -- --sizes=4,64,65  # the string hash table microbenchmark against this build's engine (tools/bench/hash-bench.sh runs it for both)
+    zig build strategy-test -Dnqp-prefix=<P>  # the hashstrategy/hashseal op tests on <P>/bin/nqp-m (needs an nqp that maps the ops)
 
 Options (`zig build --help` lists them):
 
@@ -20,6 +21,7 @@ Options (`zig build --help` lists them):
 | `-Dmimalloc=` | `true` | use the bundled mimalloc |
 | `-Dzstd=` | `true` | link the system libzstd for heap snapshot format 3 |
 | `-Dnqp-stage0=` | `../src/vm/moar/stage0` | where `zig build test` finds nqp's stage0 bytecode |
+| `-Dnqp-prefix=` | unset | prefix of an installed MoarVM and nqp (`<P>/bin/nqp-m`) for `zig build strategy-test`; when given, `zig build test` runs that step too |
 | `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
 | `-Dlto=` | `true` unless `-Doptimize=Debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
@@ -304,6 +306,21 @@ sign, spaces or trailing characters) makes the first hash build throw,
 naming strategy 255.
 The variable is a diagnostic for the bake-off, not an API; the other
 tables always use the default.
+
+Two ops drive the strategies from nqp (mapped on nqp's
+`zig-hash-strategies` branch): `nqp::hashstrategy(%h, $strategy, $size)`
+(`hashstrategy w(obj) r(obj) r(int64) r(int64)`) rebuilds an empty
+`MVMHash`'s table with a strategy and a size hint and returns `%h`; it
+dies on a non-hash ("hashstrategy needs a concrete hash"), on a hash with
+entries ("hashstrategy on a non-empty hash"; one emptied by deletes is
+fine) and on a strategy the engine lacks (a negative strategy or one over
+255 counts as 255). `nqp::hashseal(%h)` (`hashseal w(obj) r(obj)`) calls
+`MVM_str_hash_seal` and returns `%h`. Both sit before the spesh ops in
+`src/core/oplist`, so only spesh op numbers moved. Their tests,
+`tools/bench/t/strategy.nqp` (TAP), need an nqp built with the mapping:
+`zig build strategy-test -Dnqp-prefix=<P>` runs them on `<P>/bin/nqp-m`
+with `LD_LIBRARY_PATH=<P>/lib`, and `zig build test` runs them too when
+`-Dnqp-prefix` is given.
 
 ## Not yet supported
 
