@@ -88,3 +88,79 @@ test "hashCode is the C's FNV-1a times the Fibonacci constant" {
     try testing.expectEqual(@as(u32, 0xe40c292c) *% 0x9e3779b7, uni.hashCode("a", 1));
     try testing.expect(uni.hashCode("prop1", 5) != uni.hashCode("prop2", 5));
 }
+
+// ------------------------------------------------ the Swiss set (strategy 1)
+
+/// Names for the large tests: "name<i>" in one buffer that lives for the test.
+fn bigNames(alloc: std.mem.Allocator, count: usize, prefix: []const u8) ![][*c]const u8 {
+    const ks = try alloc.alloc([*c]const u8, count);
+    for (ks, 0..) |*k, i| {
+        const s = try std.fmt.allocPrintSentinel(alloc, "{s}{d}", .{ prefix, i }, 0);
+        k.* = s.ptr;
+    }
+    return ks;
+}
+
+test "widen spreads the tag bits over the property names" {
+    const keys = @embedFile("uni_bench_keys");
+    var counts = [_]u32{0} ** 128;
+    var total: u32 = 0;
+    var lines = std.mem.splitScalar(u8, keys, '\n');
+    while (lines.next()) |line| {
+        var cols = std.mem.splitScalar(u8, line, '\t');
+        const kind = cols.next() orelse continue;
+        if (!std.mem.eql(u8, kind, "prop") and !std.mem.eql(u8, kind, "alias")) continue;
+        const name = cols.next() orelse continue;
+        const h = uni.hashCode(name.ptr, name.len);
+        counts[@intCast(uni.widen(h) >> 57)] += 1;
+        total += 1;
+    }
+    try testing.expectEqual(@as(u32, 4380), total);
+    const mean = total / 128;
+    for (counts) |k| {
+        try testing.expect(k > 0);
+        try testing.expect(k <= 3 * mean);
+        try testing.expect(k * 3 >= mean);
+    }
+}
+
+test "strategy 1 round trip" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: *ThreadContext = instance.*.main_thread;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ks = try bigNames(arena.allocator(), 70_000, "swiss_name_");
+    const misses = try bigNames(arena.allocator(), 10_000, "absent_");
+
+    var ht = unbuilt();
+    uni.buildStrategy(tc, &ht, 70_000, 1);
+    defer uni.demolish(tc, &ht);
+    for (ks, 0..) |k, i| uni.insert(tc, &ht, k, @intCast(i));
+    for (ks, 0..) |k, i| try testing.expectEqual(@as(i32, @intCast(i)), (uni.fetch(tc, &ht, k) orelse return error.TestUnexpectedResult).value);
+    for (misses) |k| try testing.expectEqual(@as(?*c.MVMUniHashEntry, null), uni.fetch(tc, &ht, k));
+    try testing.expectEqual(@as(u64, 0), uni.fsck(&ht, 0));
+}
+
+test "strategy 1 grows from an implicit zero start" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: *ThreadContext = instance.*.main_thread;
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const ks = try bigNames(arena.allocator(), 5_000, "grow_");
+
+    var ht = unbuilt();
+    uni.buildStrategy(tc, &ht, 0, 1);
+    defer uni.demolish(tc, &ht);
+    for (ks, 0..) |k, i| uni.insert(tc, &ht, k, @intCast(i));
+    for (ks, 0..) |k, i| try testing.expectEqual(@as(i32, @intCast(i)), uni.fetch(tc, &ht, k).?.value);
+    try testing.expectEqual(@as(u64, 0), uni.fsck(&ht, 0));
+}
+
+test "buildStrategy refuses 2" {
+    try testing.expect(uni.strategyAvailable(0));
+    try testing.expect(uni.strategyAvailable(1));
+    try testing.expect(!uni.strategyAvailable(2));
+    try testing.expect(!uni.strategyAvailable(255));
+}

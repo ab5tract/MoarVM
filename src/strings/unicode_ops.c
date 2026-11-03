@@ -912,7 +912,8 @@ static void generate_property_codes_by_names_aliases(MVMThreadContext *tc) {
 
     uv_mutex_lock(&tc->instance->mutex_property_codes_hash_setup);
     if (MVM_uni_hash_is_empty(tc, &tc->instance->property_codes_by_names_aliases)) {
-        MVM_uni_hash_build(tc, &tc->instance->property_codes_by_names_aliases, num_names);
+        MVM_uni_hash_build_strategy(tc, &tc->instance->property_codes_by_names_aliases, num_names,
+                                    MVM_HASH_INTERNAL_UNI_PROPERTY_CODES);
 
         while (num_names--) {
             MVM_uni_hash_insert(tc, &tc->instance->property_codes_by_names_aliases,
@@ -927,7 +928,8 @@ static void generate_property_codes_by_seq_names(MVMThreadContext *tc) {
 
     uv_mutex_lock(&tc->instance->mutex_property_codes_hash_setup);
     if (MVM_uni_hash_is_empty(tc, &tc->instance->property_codes_by_seq_names)) {
-        MVM_uni_hash_build(tc, &tc->instance->property_codes_by_seq_names, num_names);
+        MVM_uni_hash_build_strategy(tc, &tc->instance->property_codes_by_seq_names, num_names,
+                                    MVM_HASH_INTERNAL_UNI_SEQ_NAMES);
 
         while (num_names--) {
             MVM_uni_hash_insert(tc, &tc->instance->property_codes_by_seq_names,
@@ -954,7 +956,18 @@ void MVM_unicode_init(MVMThreadContext *tc) {
      * is a valid start state for the hash. */
     MVMUniHashTable *hash_array = MVM_calloc(MVM_NUM_PROPERTY_CODES, sizeof(MVMUniHashTable));
     MVMuint32 index = 0;
-    for ( ; index < num_unicode_property_value_keypairs; index++) {
+    /* Count each table's entries first, so each is built once at its real
+     * size and with the layout strategy that size calls for. A table with no
+     * entries gets the 16 yes/no names below. */
+    MVMuint32 counts[MVM_NUM_PROPERTY_CODES] = { 0 };
+    for ( ; index < num_unicode_property_value_keypairs; index++)
+        counts[unicode_property_value_keypairs[index].value >> 24]++;
+    for (index = 0; index < MVM_NUM_PROPERTY_CODES; index++) {
+        MVMuint32 expected = counts[index] ? counts[index] : 16;
+        MVM_uni_hash_build_strategy(tc, &hash_array[index], expected,
+                                    MVM_HASH_INTERNAL_UNI_PROPERTY_VALUES(expected));
+    }
+    for (index = 0; index < num_unicode_property_value_keypairs; index++) {
         MVMint32 property_code = unicode_property_value_keypairs[index].value >> 24;
         MVM_uni_hash_insert(tc, &hash_array[property_code],
                             unicode_property_value_keypairs[index].name,

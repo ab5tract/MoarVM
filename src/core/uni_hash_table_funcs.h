@@ -39,6 +39,13 @@ void MVM_uni_hash_build(MVMThreadContext *tc,
                         struct MVMUniHashTable *hashtable,
                         MVMuint32 entries);
 
+/* MVM_uni_hash_build with a layout strategy (MVMHashStrategy); strategy 0 is
+ * MVM_uni_hash_build. A strategy this engine does not have throws. */
+void MVM_uni_hash_build_strategy(MVMThreadContext *tc,
+                                 struct MVMUniHashTable *hashtable,
+                                 MVMuint32 entries,
+                                 MVMuint8 strategy);
+
 #if !MVM_ZIG_IMPL
 MVM_STATIC_INLINE int MVM_uni_hash_is_empty(MVMThreadContext *tc,
                                             MVMUniHashTable *hashtable) {

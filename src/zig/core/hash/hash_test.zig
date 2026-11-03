@@ -19,9 +19,9 @@ test {
     _ = @import("test/stats_test.zig");
 }
 
-test "the four single-rung tables dispatch without a set comparison" {
+test "the three single-set tables dispatch without a set comparison" {
     comptime {
-        for (.{ @import("ptr.zig").PtrTable, @import("uni.zig").UniTable, @import("index.zig").IndexTable, @import("fixkey.zig").FixKeyTable }) |T| {
+        for (.{ @import("ptr.zig").PtrTable, @import("index.zig").IndexTable, @import("fixkey.zig").FixKeyTable }) |T| {
             if (T.dispatch_reads_set) @compileError("a single-set table reads the set byte in dispatch");
         }
     }

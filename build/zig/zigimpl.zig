@@ -157,6 +157,8 @@ pub fn addShimTests(
         },
     });
     for (extra_imports) |imp| test_mod.addImport(imp.name, imp.module);
+    // The real unicode names, for the tag-distribution test of uni_test.zig.
+    test_mod.addAnonymousImport("uni_bench_keys", .{ .root_source_file = b.path("tools/bench/uni-bench-keys.tsv") });
     moar.addIncludes(b, test_mod);
     test_mod.addConfigHeader(config_h);
     test_mod.addCSourceFile(.{ .file = b.path("src/zig/test/layout_probe.c"), .flags = cflags });

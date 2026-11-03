@@ -172,6 +172,7 @@ MVM_PUBLIC MVMint32 MVM_jit_support(void);
 #include "core/vector.h"
 #include "core/exceptions.h"
 #include "core/str_hash_table.h"
+#include "core/hash_internal_strategies.h"
 #include "core/fixkey_hash_table.h"
 #include "core/index_hash_table.h"
 #include "core/ptr_hash_table.h"

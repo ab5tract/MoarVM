@@ -27,6 +27,17 @@ noinline fn MVM_uni_hash_build_stats(tc: Tc, hashtable: Ht, entries: u32) callco
     uni.build(tc, hashtable, entries);
 }
 
+fn MVM_uni_hash_build_strategy(tc: Tc, hashtable: Ht, entries: u32, strategy: u8) callconv(.c) void {
+    uni.buildStrategy(tc, hashtable, entries, strategy);
+}
+
+/// The `-Dhash-stats` twin of `MVM_uni_hash_build_strategy`: out of line, so `@returnAddress()` is
+/// the C caller's call site, which names the statistics site of a table built here.
+noinline fn MVM_uni_hash_build_strategy_stats(tc: Tc, hashtable: Ht, entries: u32, strategy: u8) callconv(.c) void {
+    stats.setPendingSite(@returnAddress());
+    uni.buildStrategy(tc, hashtable, entries, strategy);
+}
+
 fn MVM_uni_hash_demolish(tc: Tc, hashtable: Ht) callconv(.c) void {
     uni.demolish(tc, hashtable);
 }
@@ -64,6 +75,7 @@ const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto)
 
 comptime {
     @export(if (stats.enabled) &MVM_uni_hash_build_stats else &MVM_uni_hash_build, .{ .name = "MVM_uni_hash_build", .visibility = visibility });
+    @export(if (stats.enabled) &MVM_uni_hash_build_strategy_stats else &MVM_uni_hash_build_strategy, .{ .name = "MVM_uni_hash_build_strategy", .visibility = visibility });
     @export(&MVM_uni_hash_demolish, .{ .name = "MVM_uni_hash_demolish", .visibility = visibility });
     @export(&MVM_uni_hash_is_empty, .{ .name = "MVM_uni_hash_is_empty", .visibility = visibility });
     @export(&MVM_uni_hash_fetch, .{ .name = "MVM_uni_hash_fetch", .visibility = visibility });

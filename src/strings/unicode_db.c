@@ -129536,6 +129536,17 @@ static void generate_codepoints_by_name(MVMThreadContext *tc) {
     MVMint32 codepoint = 0;
     MVMint32 codepoint_table_index = 0;
     MVMint16 i = num_unicode_namealias_keypairs - 1;
+    /* Build once at the real size: the names not starting with '<' (the
+     * placeholders are skipped below), plus the aliases. */
+    MVMuint32 expected = num_unicode_namealias_keypairs;
+    for (codepoint_table_index = 0; codepoint_table_index < MVM_CODEPOINT_NAMES_COUNT; codepoint_table_index++) {
+        const char *name = codepoint_names[codepoint_table_index];
+        if (name && *name != '<')
+            expected++;
+    }
+    codepoint_table_index = 0;
+    MVM_uni_hash_build_strategy(tc, &tc->instance->codepoints_by_name, expected,
+                                MVM_HASH_INTERNAL_UNI_CODEPOINTS);
 
     for (; extent_index < MVM_NUM_UNICODE_EXTENTS; extent_index++) {
         MVMint32 length;

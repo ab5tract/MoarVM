@@ -18,6 +18,7 @@ const c = moar.c;
 const tier = @import("tier.zig");
 const table = @import("table.zig");
 const robinhood = @import("tiers/robinhood.zig");
+const swiss = @import("tiers/swiss.zig");
 
 const Header = table.Header;
 const ThreadContext = moar.ThreadContext;
@@ -26,6 +27,18 @@ const ThreadContext = moar.ThreadContext;
 pub const only_rung = [_]tier.TierEntry{
     .{ .tier = robinhood.Tier(.{ .salt = .none }), .from = 0 },
 };
+
+/// The Swiss tier from the first entry: the LOOKUP strategy
+/// (`MVM_HASH_STRATEGY_LOOKUP`, 1). Entry size 16 is a multiple of 8, and a
+/// null `key` marks an unfilled slot.
+pub const swiss_rung = [_]tier.TierEntry{
+    .{ .tier = swiss.Tier(.{}), .from = 0 },
+};
+
+/// Set index of `only_rung`, what `build` uses: it must stay 0.
+pub const default_set: u8 = 0;
+/// Set index of `swiss_rung`, the LOOKUP strategy's set.
+pub const lookup_set: u8 = 1;
 
 /// The key fields of `MVMUniHashEntry`.
 pub const UniKey = extern struct {
@@ -53,17 +66,26 @@ pub fn hashCode(key: [*c]const u8, len: usize) u32 {
     return hash *% 0x9e3779b7;
 }
 
+/// The cached 32-bit hash as 64 bits (spec decision 9: a fixed mixing step,
+/// not a new hash). The Swiss tier takes its 7-bit tag from the top bits and
+/// its home group from the low bits; a bare 32-bit value has zero top bits.
+/// The multiply spreads the low bits upward, the shifted copy keeps the
+/// low 32 bits distinct from the multiply's.
+pub inline fn widen(h: u32) u64 {
+    return (@as(u64, h) *% 0x9E3779B97F4A7C15) ^ (@as(u64, h) << 32);
+}
+
 pub const UniSpec = struct {
     pub const Key = UniKey;
     pub const Ctx = void;
     pub const runtime_entry_size = false;
     pub const entry_size: u32 = @sizeOf(c.MVMUniHashEntry);
     pub const publish: table.Publish = .plain;
-    pub const sets: []const tier.TierSet = &.{&only_rung};
+    pub const sets: []const tier.TierSet = &.{ &only_rung, &swiss_rung };
 
     pub fn hash(ctx: Ctx, key: Key) u64 {
         _ = ctx;
-        return key.hash_val;
+        return widen(key.hash_val);
     }
 
     /// `uni_hash_table_funcs.h:120`: the cached hash, then `strcmp`.
@@ -102,6 +124,23 @@ fn wanted(key: [*c]const u8) UniKey {
 pub fn build(tc: *ThreadContext, ht: *c.MVMUniHashTable, entries: u32) void {
     _ = tc;
     UniTable.build({}, handleOf(ht), 0, entries, 0);
+}
+
+/// The tier set of each `MVMHashStrategy`; null is a strategy the uni kind
+/// lacks (APPEND).
+const strategy_sets = [3]?u8{ default_set, lookup_set, null };
+
+/// Whether `buildStrategy` can build `strategy`.
+pub fn strategyAvailable(strategy: u8) bool {
+    return strategy < strategy_sets.len and strategy_sets[strategy] != null;
+}
+
+/// `MVM_uni_hash_build_strategy`: `build` with the tier set of `strategy`;
+/// a strategy this kind lacks throws.
+pub fn buildStrategy(tc: *ThreadContext, ht: *c.MVMUniHashTable, entries: u32, strategy: u8) void {
+    if (!strategyAvailable(strategy))
+        c.MVM_exception_throw_adhoc(tc, "hash strategy %u is not available in this engine", @as(c_uint, strategy));
+    UniTable.build({}, handleOf(ht), 0, entries, strategy_sets[strategy].?);
 }
 
 /// `MVM_uni_hash_demolish`: frees the block and leaves the table unbuilt.

@@ -78,6 +78,15 @@ void MVM_uni_hash_build(MVMThreadContext *tc,
     hashtable->table = hash_allocate_common(tc, initial_size_base2);
 }
 
+void MVM_uni_hash_build_strategy(MVMThreadContext *tc,
+                                 MVMUniHashTable *hashtable,
+                                 MVMuint32 entries,
+                                 MVMuint8 strategy) {
+    if (strategy != MVM_HASH_STRATEGY_DEFAULT)
+        MVM_exception_throw_adhoc(tc, "hash strategies need the Zig hash engine (strategy %u)", (unsigned int)strategy);
+    MVM_uni_hash_build(tc, hashtable, entries);
+}
+
 static MVMuint64 uni_hash_fsck_internal(struct MVMUniHashTableControl *control, MVMuint32 mode);
 
 MVM_STATIC_INLINE struct MVMUniHashEntry *hash_insert_internal(MVMThreadContext *tc,

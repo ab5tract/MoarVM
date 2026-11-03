@@ -22,6 +22,7 @@ per hash. The C hash engine knows only the default.
   - It dies on a strategy the engine lacks. A negative strategy, or one over 255, counts as 255.
   - The op is not known to the JIT, so a frame that calls it runs interpreted. Call it where the hash is made, outside hot loops.
 - **Process-wide override (a diagnostic):** the `MVM_HASH_STRATEGY` environment variable, read once at startup into the instance's `hash_strategy_default`, makes every `MVMHash` and `HashAttrStore` table build with that strategy. The other tables (pointer, fixkey, index, Unicode) always use their own layout.
+- **Unicode tables:** `MVM_uni_hash_build_strategy(tc, hashtable, entries, strategy)` (`uni_hash_table_funcs.h`) builds a Unicode table with strategy 0 (Robin Hood, the default) or 1 (LOOKUP, Swiss); APPEND (2) is not available for this kind and throws. The Zig engine widens the cached 32-bit hash to 64 bits (`uni.widen`) so the Swiss tag bits are filled. The four internal sites (`MVM_HASH_INTERNAL_UNI_*` in `core/hash_internal_strategies.h`) build with their real entry counts and all stay on the default: Swiss won none of the unicode benchmark cells (`traces/llm/bench/internals-uni-bench.md`).
   - Unset or empty is 0.
   - Anything other than a plain decimal number in 0..254 makes the first hash build throw, naming strategy 255.
   - It exists to run a whole test suite on one strategy (the bake-off's spectest gates), not to tune a program: no single strategy is best for every hash in a process.
