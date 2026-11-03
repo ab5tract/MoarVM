@@ -397,8 +397,10 @@ fn ImplType(comptime Spec: type) type {
 
         // -------------------------------------------------- iteration
 
-        /// The highest live slot below `limit`, or null.
-        fn highestLiveBelow(header: *Header, limit: u32) ?u32 {
+        /// The highest live slot below `limit`, or null. `noinline`: inlined
+        /// into `next`, it grew the set-0 iteration dispatch and cost the
+        /// Small rung's iterate about 7 percent (task 9b).
+        noinline fn highestLiveBelow(header: *Header, limit: u32) ?u32 {
             if (limit == 0) return null;
             const md = metadata(header);
             var g = (limit - 1) / group_size;

@@ -8,7 +8,7 @@ per hash. The C hash engine knows only the default.
 
 | strategy | `MVMHashStrategy` | tier set (`src/zig/core/hash/str.zig`) | layout |
 |---|---|---|---|
-| 0 | `MVM_HASH_STRATEGY_DEFAULT` | `standard` | Small (`tiers/small.zig`) to 64 entries, then Robin Hood (`tiers/robinhood.zig`) |
+| 0 | `MVM_HASH_STRATEGY_DEFAULT` | `standard` | Small (`tiers/small.zig`) to 64 entries, then Swiss (`tiers/swiss.zig`) |
 | 1 | `MVM_HASH_STRATEGY_LOOKUP` | `swiss_only` | Swiss-style groups (`tiers/swiss.zig`) from the first entry |
 | 2 | `MVM_HASH_STRATEGY_APPEND` | `ordered_only` | a dense entry array with a side index (`tiers/ordered.zig`) from the first entry |
 
@@ -39,12 +39,12 @@ The figures are from the bake-off scoreboard, recorded in `traces/llm/bench/bake
 
 ## DEFAULT (0)
 
-Small, then Robin Hood: what every hash gets unless a strategy is asked for.
-Below 65 entries its Small tier is compact and fast, and no other layout beat it there.
+Small, then Swiss: what every hash gets unless a strategy is asked for.
+Below 65 entries its Small tier is compact and fast, and no other layout beat it there. The 65th insert migrates the table into a 128-slot Swiss block (load limit 112). Until 2026-11-03 the second rung was Robin Hood; Small then Swiss was measured against it (`traces/llm/bench/internals-set0-ladder.md`) and replaced it. Strategy sets 1 and 2 are unchanged.
 
 ## LOOKUP (1)
 
-The Swiss-style tier from the first entry.
+The Swiss-style tier from the first entry. Since the default ladder moved to Small then Swiss, LOOKUP differs from the default only below 65 entries (it has no Small tier); from 65 up both are the same tier.
 - **Layout:**
   - A power-of-two slot count, at least 16. One metadata byte per slot: `0x80` empty, `0xFE` deleted, else the top 7 bits of the salted hash.
   - Lookups search 16 slots at a time with a vector compare. Groups are probed at triangular offsets from the one the hash's low bits pick.
@@ -66,7 +66,7 @@ The Swiss-style tier from the first entry.
   - Below 65 entries it has no Small tier. Insert is 1.6-1.85x, clone 1.5-1.9x, iterate 1.1-1.16x and delete-while-iterating 1.03-1.23x, on 2.0-2.2x the memory. Lookups are level there (0.94-1.07).
   - Toward 16384 entries lookup hits and deletes fall back to level (0.93-0.99).
 - **When to choose it:** a hash that will hold more than 64 entries and is used for everything (looked up, updated, iterated, cloned).
-- **Composed variant measured and rejected:** Small then Swiss (strategy 0 with Swiss in place of Robin Hood) was measured as a way to keep the Small tier below 65. It lost five of these nine blocks and was 7-21 percent slower than strategy 0 in several 16-64 cells, so LOOKUP is the bare Swiss tier. See `traces/llm/bench/bakeoff-composed-lookup.md`.
+- **Composed variant:** Small then Swiss was first measured as a non-zero strategy set, where it lost five of these nine blocks and was 7-21 percent slower than strategy 0 in several 16-64 cells (`traces/llm/bench/bakeoff-composed-lookup.md`), so LOOKUP stayed the bare Swiss tier. Measured later as set 0 itself, it matched the old default in the 4-64 cells (`traces/llm/bench/internals-set0-ladder.md`) and is now the default.
 - **Spectest:** `MVM_HASH_STRATEGY=1` passes rakudo's spectest with no strategy failures (`traces/llm/bench/bakeoff-spectest-s1.txt`; the scoreboard's column s1).
 - **Select it:** `nqp::hashstrategy(%h, 1, $size)`, or `MVM_HASH_STRATEGY_LOOKUP` from C.
 
