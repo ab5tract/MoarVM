@@ -41,21 +41,7 @@ fn MVM_fixkey_hash_lvalue_fetch_nocheck(tc: Tc, hashtable: Ht, key: Key) callcon
     return fixkey.lvalueFetchNocheck(tc, hashtable, key);
 }
 
-/// The `-Dhash-stats` twin of `MVM_fixkey_hash_lvalue_fetch_nocheck`: out of line, so `@returnAddress()` is
-/// the C caller's call site, which names the statistics site of a table built here.
-noinline fn MVM_fixkey_hash_lvalue_fetch_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
-    return fixkey.lvalueFetchNocheck(tc, hashtable, key);
-}
-
 fn MVM_fixkey_hash_insert_nocheck(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    return fixkey.insertNocheck(tc, hashtable, key);
-}
-
-/// The `-Dhash-stats` twin of `MVM_fixkey_hash_insert_nocheck`: out of line, so `@returnAddress()` is
-/// the C caller's call site, which names the statistics site of a table built here.
-noinline fn MVM_fixkey_hash_insert_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return fixkey.insertNocheck(tc, hashtable, key);
 }
 
@@ -79,8 +65,8 @@ comptime {
     @export(&MVM_fixkey_hash_demolish, .{ .name = "MVM_fixkey_hash_demolish", .visibility = visibility });
     @export(&MVM_fixkey_hash_is_empty, .{ .name = "MVM_fixkey_hash_is_empty", .visibility = visibility });
     @export(&MVM_fixkey_hash_fetch_nocheck, .{ .name = "MVM_fixkey_hash_fetch_nocheck", .visibility = visibility });
-    @export(if (stats.enabled) &MVM_fixkey_hash_lvalue_fetch_nocheck_stats else &MVM_fixkey_hash_lvalue_fetch_nocheck, .{ .name = "MVM_fixkey_hash_lvalue_fetch_nocheck", .visibility = visibility });
-    @export(if (stats.enabled) &MVM_fixkey_hash_insert_nocheck_stats else &MVM_fixkey_hash_insert_nocheck, .{ .name = "MVM_fixkey_hash_insert_nocheck", .visibility = visibility });
+    @export(&MVM_fixkey_hash_lvalue_fetch_nocheck, .{ .name = "MVM_fixkey_hash_lvalue_fetch_nocheck", .visibility = visibility });
+    @export(&MVM_fixkey_hash_insert_nocheck, .{ .name = "MVM_fixkey_hash_insert_nocheck", .visibility = visibility });
     @export(&MVM_fixkey_hash_foreach, .{ .name = "MVM_fixkey_hash_foreach", .visibility = visibility });
     @export(&MVM_fixkey_hash_fsck, .{ .name = "MVM_fixkey_hash_fsck", .visibility = visibility });
 }

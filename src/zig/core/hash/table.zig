@@ -653,6 +653,8 @@ pub fn Table(comptime Spec: type) type {
                         log(header, .insert, e);
                         if (comptime stats.enabled) {
                             if (header.cur_items > header.max_items) header.max_items = header.cur_items;
+                            // Includes any grow or migrate this insert triggered
+                            // (those are also counted separately).
                             stats.countCycles(header.site, .insert, t0);
                         }
                         break .{ .entry = e, .found = false };

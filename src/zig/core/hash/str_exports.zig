@@ -80,21 +80,7 @@ fn MVM_str_hash_lvalue_fetch_nocheck(tc: Tc, hashtable: Ht, key: Key) callconv(.
     return str.lvalueFetchNocheck(tc, hashtable, key);
 }
 
-/// The `-Dhash-stats` twin of `MVM_str_hash_lvalue_fetch_nocheck`: out of line, so `@returnAddress()` is
-/// the C caller's call site, which names the statistics site of a table built here.
-noinline fn MVM_str_hash_lvalue_fetch_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
-    return str.lvalueFetchNocheck(tc, hashtable, key);
-}
-
 fn MVM_str_hash_insert_nocheck(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    return str.insertNocheck(tc, hashtable, key);
-}
-
-/// The `-Dhash-stats` twin of `MVM_str_hash_insert_nocheck`: out of line, so `@returnAddress()` is
-/// the C caller's call site, which names the statistics site of a table built here.
-noinline fn MVM_str_hash_insert_nocheck_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return str.insertNocheck(tc, hashtable, key);
 }
 
@@ -107,13 +93,6 @@ fn MVM_str_hash_fetch(tc: Tc, hashtable: Ht, want: Key) callconv(.c) ?*anyopaque
 }
 
 fn MVM_str_hash_lvalue_fetch(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    return str.lvalueFetch(tc, hashtable, key);
-}
-
-/// The `-Dhash-stats` twin of `MVM_str_hash_lvalue_fetch`: out of line, so `@returnAddress()` is
-/// the C caller's call site, which names the statistics site of a table built here.
-noinline fn MVM_str_hash_lvalue_fetch_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*anyopaque {
-    if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return str.lvalueFetch(tc, hashtable, key);
 }
 
@@ -177,11 +156,11 @@ comptime {
     @export(&MVM_str_hash_shallow_copy, .{ .name = "MVM_str_hash_shallow_copy", .visibility = visibility });
     @export(&MVM_str_hash_fsck, .{ .name = "MVM_str_hash_fsck", .visibility = visibility });
     @export(&MVM_str_hash_fetch_nocheck, .{ .name = "MVM_str_hash_fetch_nocheck", .visibility = visibility });
-    @export(if (stats.enabled) &MVM_str_hash_lvalue_fetch_nocheck_stats else &MVM_str_hash_lvalue_fetch_nocheck, .{ .name = "MVM_str_hash_lvalue_fetch_nocheck", .visibility = visibility });
-    @export(if (stats.enabled) &MVM_str_hash_insert_nocheck_stats else &MVM_str_hash_insert_nocheck, .{ .name = "MVM_str_hash_insert_nocheck", .visibility = visibility });
+    @export(&MVM_str_hash_lvalue_fetch_nocheck, .{ .name = "MVM_str_hash_lvalue_fetch_nocheck", .visibility = visibility });
+    @export(&MVM_str_hash_insert_nocheck, .{ .name = "MVM_str_hash_insert_nocheck", .visibility = visibility });
     @export(&MVM_str_hash_delete_nocheck, .{ .name = "MVM_str_hash_delete_nocheck", .visibility = visibility });
     @export(&MVM_str_hash_fetch, .{ .name = "MVM_str_hash_fetch", .visibility = visibility });
-    @export(if (stats.enabled) &MVM_str_hash_lvalue_fetch_stats else &MVM_str_hash_lvalue_fetch, .{ .name = "MVM_str_hash_lvalue_fetch", .visibility = visibility });
+    @export(&MVM_str_hash_lvalue_fetch, .{ .name = "MVM_str_hash_lvalue_fetch", .visibility = visibility });
     @export(&MVM_str_hash_delete, .{ .name = "MVM_str_hash_delete", .visibility = visibility });
     @export(&MVM_str_hash_first, .{ .name = "MVM_str_hash_first", .visibility = visibility });
     @export(&MVM_str_hash_next_nocheck, .{ .name = "MVM_str_hash_next_nocheck", .visibility = visibility });

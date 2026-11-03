@@ -42,6 +42,7 @@ fn MVM_ptr_hash_lvalue_fetch(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*c.M
 
 /// The `-Dhash-stats` twin of `MVM_ptr_hash_lvalue_fetch`: out of line, so `@returnAddress()` is
 /// the C caller's call site, which names the statistics site of a table built here.
+/// Minted only when the table is unbuilt: this op builds it lazily.
 noinline fn MVM_ptr_hash_lvalue_fetch_stats(tc: Tc, hashtable: Ht, key: Key) callconv(.c) ?*c.MVMPtrHashEntry {
     if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     return ptr.lvalueFetch(tc, hashtable, key);
@@ -53,6 +54,7 @@ fn MVM_ptr_hash_insert(tc: Tc, hashtable: Ht, key: Key, value: usize) callconv(.
 
 /// The `-Dhash-stats` twin of `MVM_ptr_hash_insert`: out of line, so `@returnAddress()` is
 /// the C caller's call site, which names the statistics site of a table built here.
+/// Minted only when the table is unbuilt: this op builds it lazily.
 noinline fn MVM_ptr_hash_insert_stats(tc: Tc, hashtable: Ht, key: Key, value: usize) callconv(.c) void {
     if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     ptr.insert(tc, hashtable, key, value);

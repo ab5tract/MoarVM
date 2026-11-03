@@ -11,10 +11,21 @@ const moar = @import("moar");
 const c = moar.c;
 const str = @import("../str.zig");
 const stats = @import("../stats.zig");
+const tier = @import("../tier.zig");
 const keys = @import("keys.zig");
 
 const testing = std.testing;
 const ThreadContext = moar.ThreadContext;
+
+// Under stats the exports of the two tables below are defined in this binary
+// (the stats twins that mint sites), so the C-shaped calls in the tests reach
+// them and their counters, not libmoar's copies.
+comptime {
+    if (stats.enabled) {
+        _ = @import("../str_exports.zig");
+        _ = @import("../ptr_exports.zig");
+    }
+}
 
 const entry_size: u32 = @sizeOf(c.MVMHashEntry);
 
@@ -124,6 +135,82 @@ const Inserter = struct {
         fill(self.tc, self.ht, self.ks);
     }
 };
+
+fn siteOfTable(ht: anytype) u8 {
+    const header: *tier.Header = @ptrCast(@alignCast(ht.table));
+    return header.site;
+}
+
+/// The offset recorded for `site` in the dump (the `site` line).
+fn offsetOf(text: []const u8, site: u8) !usize {
+    var buf: [24]u8 = undefined;
+    const prefix = try std.fmt.bufPrint(&buf, "site\t{d}\t", .{site});
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, prefix)) return try std.fmt.parseInt(usize, line[prefix.len..], 16);
+    }
+    return error.SiteNotInDump;
+}
+
+/// The one call instruction of the "same call site" check (kept out of line,
+/// so the optimizer cannot duplicate it).
+noinline fn buildFromOneCallSite(tc: *ThreadContext, ht: *c.MVMStrHashTable) void {
+    c.MVM_str_hash_build(tc, ht, entry_size, 0);
+    // Work after the call keeps it from becoming a tail call, whose return
+    // address would be this function's caller.
+    std.mem.doNotOptimizeAway(ht.table);
+}
+
+test "sites are minted through the exports, one per call site" {
+    if (!stats.enabled) return error.SkipZigTest;
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 8);
+    defer testing.allocator.free(ks);
+
+    // Two builds through one call instruction share a site id.
+    var looped: [2]u8 = undefined;
+    for (&looped) |*id| {
+        var ht = unbuilt();
+        buildFromOneCallSite(tc, &ht);
+        id.* = siteOfTable(ht);
+        fill(tc, &ht, ks);
+        c.MVM_str_hash_demolish(tc, &ht);
+    }
+    try testing.expectEqual(looped[0], looped[1]);
+
+    // A build from another call site gets another.
+    var other = unbuilt();
+    c.MVM_str_hash_build(tc, &other, entry_size, 0);
+    const other_id = siteOfTable(other);
+    try testing.expect(other_id != looped[0]);
+    // The pending site was consumed by the build.
+    try testing.expectEqual(@as(u8, 255), stats.pending_site);
+
+    // A table built lazily by its export mints at that call.
+    var ptr_ht = std.mem.zeroes(c.MVMPtrHashTable);
+    const e = c.MVM_ptr_hash_lvalue_fetch(tc, &ptr_ht, ks[0]);
+    e.*.key = ks[0];
+    const ptr_id = siteOfTable(ptr_ht);
+    try testing.expect(ptr_id != looped[0] and ptr_id != other_id);
+    // A lookup-or-insert on a built table leaves no pending site behind.
+    _ = c.MVM_ptr_hash_lvalue_fetch(tc, &ptr_ht, ks[0]);
+    try testing.expectEqual(@as(u8, 255), stats.pending_site);
+
+    // Every id is a real one with a nonzero recorded offset.
+    var out = std.Io.Writer.Allocating.init(testing.allocator);
+    defer out.deinit();
+    const text = try dumpOf(&out);
+    for ([_]u8{ looped[0], other_id, ptr_id }) |id| {
+        try testing.expect(id != 255);
+        try testing.expect(try offsetOf(text, id) != 0);
+    }
+    try expectLine(text, "op\t{d}\tinsert\t16\t", .{looped[0]});
+    try expectLine(text, "op\t{d}\tinsert\t1\t", .{ptr_id});
+    c.MVM_str_hash_demolish(tc, &other);
+    c.MVM_ptr_hash_demolish(tc, &ptr_ht);
+}
 
 test "two threads merge" {
     if (!stats.enabled) return error.SkipZigTest;

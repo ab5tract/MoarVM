@@ -119,6 +119,8 @@ pub fn build(b: *std.Build) void {
     // Read by core/hash/stats.zig in every root that reaches it.
     const stats_opts = b.addOptions();
     stats_opts.addOption(bool, "hash_stats", opts.hash_stats);
+    // The exports files, which the stats test links into its own binary, read it.
+    stats_opts.addOption(bool, "lto", opts.lto);
     const stats_options = stats_opts.createModule();
     // Unit tests of the build helpers; `test` runs them first.
     const unit_step = b.step("unit-test", "Run the unit tests of the build helpers");

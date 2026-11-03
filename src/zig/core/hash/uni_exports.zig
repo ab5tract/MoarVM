@@ -45,6 +45,7 @@ fn MVM_uni_hash_insert(tc: Tc, hashtable: Ht, key: Key, value: i32) callconv(.c)
 
 /// The `-Dhash-stats` twin of `MVM_uni_hash_insert`: out of line, so `@returnAddress()` is
 /// the C caller's call site, which names the statistics site of a table built here.
+/// Minted only when the table is unbuilt: this op builds it lazily.
 noinline fn MVM_uni_hash_insert_stats(tc: Tc, hashtable: Ht, key: Key, value: i32) callconv(.c) void {
     if (hashtable.*.table == null) stats.setPendingSite(@returnAddress());
     uni.insert(tc, hashtable, key, value);
