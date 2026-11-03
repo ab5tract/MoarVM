@@ -9,7 +9,13 @@
 #    scoreboard tools/bench/hash-bench.nqp on a moar built by
 #    `zig build install` once per engine into zig-out (the C engine is
 #    built last and stays installed), run with nqp's stage0
-#    (../src/vm/moar/stage0, or $NQP_STAGE0).
+#    (../src/vm/moar/stage0, or $NQP_STAGE0). The harness calls
+#    nqp::hashstrategy and nqp::hashseal, which stage0 does not map until
+#    it is rebuilt from nqp branch zig-hash-strategies: point $NQP_STAGE0
+#    at an installed nqp that maps them (NQP_STAGE0=<prefix>/share/nqp/lib).
+#    The harness also takes --strategy=N and --seal (layout strategies, see
+#    its header); this script runs the default (strategy 0, unsealed), and
+#    tools/bench/hash-bakeoff.sh runs the strategies against each other.
 # 3. With --raku-c=<raku> --raku-zig=<raku> (a raku, or any command that
 #    runs a .raku script, built on a C-engine and a Zig-engine moar), the
 #    Raku-level script tools/bench/hash-bench.raku with each.
