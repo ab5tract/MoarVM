@@ -22,8 +22,14 @@
 # Usage: tools/bench/hash-bakeoff.sh --prefix=<P> --out=<dir>
 #            [--strategies=0,1,2,3] [--rounds=7]
 #            [--sizes=N,N,...] [--runs=K] [--nth=all|threshold]
+#            [--hint=0|size]
+#        tools/bench/hash-bakeoff.sh --help
 # Defaults: --sizes= the ladder 4,16,32,63,64,65,128,256,1024,16384 plus the
-# resize cells 49,97; --runs=5; --nth=all.
+# resize cells 49,97; --runs=5; --nth=all; --hint=0.
+# --hint= goes to the harness: 0 (the default) builds every hash with size
+# hint 0, so it grows through its tiers as it fills and insert, insert_nth
+# and the resize cells time that growth; size passes N as the hint, so every
+# hash is built presized and no timed row grows a table.
 set -e
 
 root=$(cd "$(dirname "$0")/../.." && pwd)
@@ -35,6 +41,7 @@ rounds=7
 sizes=4,16,32,63,64,65,128,256,1024,16384,49,97
 runs=5
 nth=all
+hint=0
 for a in "$@"; do
     case $a in
         --prefix=*)     prefix=${a#--prefix=} ;;
@@ -44,6 +51,8 @@ for a in "$@"; do
         --sizes=*)      sizes=${a#--sizes=} ;;
         --runs=*)       runs=${a#--runs=} ;;
         --nth=*)        nth=${a#--nth=} ;;
+        --hint=0|--hint=size) hint=${a#--hint=} ;;
+        --help|-h)      sed -n '2,/^set -e/p' "$0" | sed '$d; s/^# \{0,1\}//'; exit 0 ;;
         *) echo "hash-bakeoff.sh: unknown argument $a" >&2; exit 2 ;;
     esac
 done
@@ -86,7 +95,7 @@ while [ "$round" -le "$rounds" ]; do
         # shellcheck disable=SC2086
         LD_LIBRARY_PATH=$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH} \
             "$nqp" "$root/tools/bench/hash-bench.nqp" --strategy="$strategy" $seal \
-            --sizes="$sizes" --runs="$runs" --nth="$nth" > "$out/run.tsv"
+            --sizes="$sizes" --runs="$runs" --nth="$nth" --hint="$hint" > "$out/run.tsv"
         awk -F '\t' -v OFS='\t' -v r="$round" -v s="$strategy" \
             'NF >= 7 { print r, s, $2, $3, $4, $5, $6, $7 }' "$out/run.tsv" >> "$raw"
         rm -f "$out/run.tsv"

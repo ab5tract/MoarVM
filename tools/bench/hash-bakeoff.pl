@@ -41,6 +41,8 @@
 # The ladder, in order, is 16 32 63 64 65 128 256 1024 16384: sizes are
 # adjacent when they are neighbours in this list (both measured). 49 and 97
 # are resize cells, judged but never part of a block; 4 is never judged.
+# A block needs two or more adjacent winning sizes: a lone winning size is
+# reported in its table but never listed as a block.
 use strict;
 use warnings;
 

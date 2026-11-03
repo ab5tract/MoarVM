@@ -27,13 +27,19 @@
 # columns).
 #
 # Layout strategies (the hash layout bake-off, tools/bench/hash-bakeoff.sh):
-# --strategy=N calls nqp::hashstrategy(%h, N, $n) on every hash the timed
-# phases use, right after its nqp::hash() (default 0, the default ladder:
-# the op is still called, so strategy 0 pays the same per-hash call as the
-# others). --seal calls nqp::hashseal on every hash after each fill and
-# before the lookup, iterate and delete phases; with --seal the insert and
-# insert_nth rows are not emitted (they would time the staging table, not
-# the sealed layout). The engine column defaults to zig-s<N>.
+# --strategy=N calls nqp::hashstrategy(%h, N, HINT) on every hash the
+# timed phases use, right after its nqp::hash() (default 0, the default
+# ladder: the op is still called, so strategy 0 pays the same per-hash call
+# as the others). --hint=0 (the default) passes size hint 0, so every hash
+# grows through its tiers as it fills, as the ladder records' hashes did:
+# insert, insert_nth at the threshold and the resize sizes (49, 97) time
+# that growth. --hint=size passes the size N as the hint, so every hash is
+# built presized and no timed row grows a table (the presized variant; the
+# engine column then defaults to zig-s<N>-presized). --seal calls
+# nqp::hashseal on every hash after each fill and before the lookup,
+# iterate and delete phases; with --seal the insert and insert_nth rows are
+# not emitted (they would time the staging table, not the sealed layout).
+# The engine column defaults to zig-s<N>.
 #
 # The two ops are not known to the JIT, so a frame calling them is never
 # JIT-compiled: they are called in MAIN, outside the timed subs, except in
@@ -44,7 +50,7 @@
 #
 # Usage: <prefix>/bin/nqp-m tools/bench/hash-bench.nqp
 #            [--engine=NAME] [--sizes=N,N,...] [--runs=K] [--threshold=T]
-#            [--nth=all|threshold] [--strategy=N] [--seal]
+#            [--nth=all|threshold] [--strategy=N] [--hint=0|size] [--seal]
 
 my int $BATCH_OPS := 65536;
 
@@ -238,6 +244,7 @@ sub time_nth(@out, @tables, str $key, int $reps, num $reps_n) {
 sub MAIN(*@ARGS) {
     my str $engine := '';
     my int $strategy := 0;
+    my int $presized := 0;
     my int $seal := 0;
     my str $sizes := '';
     my int $runs := 3;
@@ -252,10 +259,12 @@ sub MAIN(*@ARGS) {
         elsif $a eq '--nth=threshold' { $nth_all := 0 }
         elsif nqp::eqat($a, '--strategy=', 0) { $strategy := to_int(nqp::substr($a, 11)) }
         elsif $a eq '--seal' { $seal := 1 }
+        elsif $a eq '--hint=0' { $presized := 0 }
+        elsif $a eq '--hint=size' { $presized := 1 }
         elsif nqp::eqat($a, '--', 0) { nqp::die("hash-bench.nqp: unknown option $a") }
     }
     nqp::die("--runs must be at least 1") if $runs < 1;
-    $engine := 'zig-s' ~ $strategy if $engine eq '';
+    $engine := 'zig-s' ~ $strategy ~ ($presized ?? '-presized' !! '') if $engine eq '';
 
     my @sizes;
     if $sizes eq '' {
@@ -284,6 +293,7 @@ sub MAIN(*@ARGS) {
     }
 
     for @measured -> int $n {
+        my int $hint := $presized ?? $n !! 0;
         my int $reps := nqp::div_i($BATCH_OPS, $n);
         $reps := 1 if $reps < 1;
         my num $reps_n := $reps;
@@ -295,7 +305,7 @@ sub MAIN(*@ARGS) {
         while $run < $runs {
             my @tables;
             my int $r := 0;
-            while $r < $reps { nqp::push(@tables, nqp::hashstrategy(nqp::hash(), $strategy, $n)); $r := $r + 1 }
+            while $r < $reps { nqp::push(@tables, nqp::hashstrategy(nqp::hash(), $strategy, $hint)); $r := $r + 1 }
             time_insert(@insert, @tables, @present, $reps, $n, $ops);
             if $seal { for @tables { nqp::hashseal($_) } }
             my int $hits := time_hit(@hit, @tables, @present, $reps, $n, $ops);
@@ -330,7 +340,7 @@ sub MAIN(*@ARGS) {
             # bulk_load: fresh hashes, insert N then seal.
             @tables := nqp::list();
             $r := 0;
-            while $r < $reps { nqp::push(@tables, nqp::hashstrategy(nqp::hash(), $strategy, $n)); $r := $r + 1 }
+            while $r < $reps { nqp::push(@tables, nqp::hashstrategy(nqp::hash(), $strategy, $hint)); $r := $r + 1 }
             time_bulk_load(@bulk_load, @tables, @present, $reps, $n, $ops);
             for @tables { nqp::die("size $n: a hash has " ~ nqp::elems($_) ~ " keys after bulk_load") unless nqp::elems($_) == $n }
             $run := $run + 1;
@@ -357,7 +367,7 @@ sub MAIN(*@ARGS) {
                 my @tables;
                 my int $r := 0;
                 while $r < $reps {
-                    my %h := nqp::hashstrategy(nqp::hash(), $strategy, $n);
+                    my %h := nqp::hashstrategy(nqp::hash(), $strategy, $hint);
                     my int $j := 0;
                     while $j < $n - 1 { nqp::bindkey(%h, nqp::atpos(@present, $j), 1); $j := $j + 1 }
                     nqp::push(@tables, %h);
