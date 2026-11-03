@@ -296,9 +296,20 @@ Hood ladder above), `MVM_HASH_STRATEGY_SWISS` (1),
 `MVM_HASH_STRATEGY_COUNT` (4). `MVM_str_hash_build_strategy` builds a
 string table with a strategy (0 is `MVM_str_hash_build`), and
 `MVM_str_hash_seal` marks a table as done growing (a no-op for now).
-Strategies 1-3 are not yet built in: building with one throws "hash
+Strategies 2 and 3 are not yet built in: building with one throws "hash
 strategy N is not available in this engine", and the C engine throws for
-any strategy but 0. `MVMHash` and `HashAttrStore` build with the
+any strategy but 0.
+
+Strategy 1 (`tiers/swiss.zig`, the `swiss_only` tier set) is a Swiss-style
+table from the first entry: a power-of-two slot count (at least 16), one
+metadata byte per slot (`0x80` empty, `0xFE` deleted, else the top 7 bits
+of the salted hash) searched 16 slots at a time with a vector compare,
+groups probed at triangular offsets from the one the hash's low bits pick,
+and a load limit of 7/8 counting tombstones. A delete leaves an empty slot
+instead of a tombstone when its group still has one. A full table doubles,
+or rehashes at the same size when at most 3/4 of the limit is live (the
+tombstones filled it). Iteration walks the slots downward; the block holds
+no pointers, so the shallow copy of `nqp::clone` is a byte copy. `MVMHash` and `HashAttrStore` build with the
 instance's `hash_strategy_default`, read once at startup from the
 `MVM_HASH_STRATEGY` environment variable. Unset or empty leaves the
 default (0); anything other than a plain decimal number in 0..254 (no

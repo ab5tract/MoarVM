@@ -7,7 +7,8 @@ const moar = @import("moar");
 const c = moar.c;
 const str = @import("../str.zig");
 const keys = @import("keys.zig");
-const Header = @import("../tier.zig").Header;
+const tier = @import("../tier.zig");
+const Header = tier.Header;
 
 const testing = std.testing;
 const ThreadContext = moar.ThreadContext;
@@ -455,7 +456,8 @@ test "buildStrategy refuses strategies that are not built in" {
     // the predicate `buildStrategy` checks is tested here; the throw is
     // exercised through MVM_HASH_STRATEGY and the nqp tests.
     try testing.expect(str.strategyAvailable(0));
-    for ([_]u8{ 1, 2, 3, 4 }) |s| try testing.expect(!str.strategyAvailable(s));
+    try testing.expect(str.strategyAvailable(1));
+    for ([_]u8{ 2, 3, 4 }) |s| try testing.expect(!str.strategyAvailable(s));
     try testing.expect(!str.strategyAvailable(255));
 }
 
@@ -473,4 +475,131 @@ test "seal on a default table is a no-op" {
     str.seal(tc, &ht);
     try testing.expectEqual(@as(u32, 3), str.count(tc, &ht));
     for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+}
+
+test "strategy 1 round trip through the C-shaped API" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const n: u32 = 300;
+    const ks = try keys.make(tc, n);
+    defer testing.allocator.free(ks);
+
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, entry_size, 0, 1);
+    defer str.demolish(tc, &ht);
+    for (ks, 0..) |k, i| try put(tc, &ht, k, i);
+    try testing.expectEqual(n, str.count(tc, &ht));
+    for (ks, 0..) |k, i| try testing.expectEqual(i, try valueOf(tc, &ht, k));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+
+    // Delete the even values, fetch the rest, iterate MVMIter's way.
+    for (ks, 0..) |k, i| {
+        if (i % 2 == 0) str.delete(tc, &ht, k);
+    }
+    try testing.expectEqual(n / 2, str.count(tc, &ht));
+    for (ks, 0..) |k, i| {
+        if (i % 2 == 0) {
+            try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &ht, k));
+        } else {
+            try testing.expectEqual(i, try valueOf(tc, &ht, k));
+        }
+    }
+    const seen = try testing.allocator.alloc(u32, n);
+    defer testing.allocator.free(seen);
+    @memset(seen, 0);
+    var curr = str.start(tc, &ht);
+    try testing.expect(str.atStart(tc, &ht, curr));
+    var next = str.first(tc, &ht);
+    var walked: u32 = 0;
+    while (true) : (walked += 1) {
+        curr = next;
+        if (str.atEnd(tc, &ht, curr)) break;
+        next = str.nextNocheck(tc, &ht, curr);
+        const e = entryOf(str.currentNocheck(tc, &ht, curr));
+        try testing.expect(e.value % 2 == 1);
+        seen[e.value] += 1;
+        // Delete the current entry while holding the next.
+        if (walked % 3 == 0) str.delete(tc, &ht, e.key);
+    }
+    try testing.expectEqual(n / 2, walked);
+    for (seen, 0..) |s, i| try testing.expectEqual(@as(u32, if (i % 2 == 1) 1 else 0), s);
+    try testing.expectEqual(n / 2 - (n / 2 + 2) / 3, str.count(tc, &ht));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &ht, 0));
+}
+
+test "strategy 1 shallow copy is independent" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const n: u32 = 100;
+    const ks = try keys.make(tc, n + 1);
+    defer testing.allocator.free(ks);
+
+    var src = unbuilt();
+    str.buildStrategy(tc, &src, entry_size, 0, 1);
+    defer str.demolish(tc, &src);
+    for (ks[0..n], 0..) |k, i| try put(tc, &src, k, i);
+    var dst = unbuilt();
+    str.shallowCopy(tc, &src, &dst);
+    defer str.demolish(tc, &dst);
+    try testing.expect(dst.table != src.table);
+    try testing.expectEqual(str.allocatedSize(tc, &src), str.allocatedSize(tc, &dst));
+    try testing.expectEqual(@as(u8, str.swiss_set), str.handleOf(&dst).*.?.set);
+
+    // The same iteration order, entries in the copy's own block.
+    var sp = str.first(tc, &src);
+    var dp = str.first(tc, &dst);
+    while (!str.atEnd(tc, &src, sp)) : ({
+        sp = str.nextNocheck(tc, &src, sp);
+        dp = str.nextNocheck(tc, &dst, dp);
+    }) {
+        try testing.expectEqual(sp.pos, dp.pos);
+        const se = entryOf(str.currentNocheck(tc, &src, sp));
+        const de = entryOf(str.currentNocheck(tc, &dst, dp));
+        try testing.expect(se != de);
+        try testing.expectEqual(se.key, de.key);
+        try testing.expectEqual(se.value, de.value);
+    }
+    try testing.expect(str.atEnd(tc, &dst, dp));
+
+    // Insert into one: the other is unchanged; then delete from the other.
+    try put(tc, &dst, ks[n], n);
+    entryOf(str.fetch(tc, &dst, ks[1])).value = 1000;
+    try testing.expectEqual(n + 1, str.count(tc, &dst));
+    try testing.expectEqual(n, str.count(tc, &src));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &src, ks[n]));
+    try testing.expectEqual(@as(u64, 1), try valueOf(tc, &src, ks[1]));
+    str.delete(tc, &src, ks[0]);
+    try testing.expectEqual(@as(u64, 0), try valueOf(tc, &dst, ks[0]));
+    try testing.expectEqual(@as(?*anyopaque, null), str.fetch(tc, &src, ks[0]));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &src, 0));
+    try testing.expectEqual(@as(u64, 0), str.fsck(tc, &dst, 0));
+}
+
+test "strategy 1 header set byte is the swiss set" {
+    const vm = Instance.create();
+    defer vm.destroy();
+    const tc = vm.tc;
+    const ks = try keys.make(tc, 1);
+    defer testing.allocator.free(ks);
+
+    try testing.expectEqual(@as(?u8, str.swiss_set), str.strategy_sets[1]);
+    try testing.expect(str.sets[str.swiss_set].ptr == @as([*]const tier.TierEntry, &str.swiss_only));
+    // Control-only, then materialised, then presized: always the swiss set.
+    var ht = unbuilt();
+    str.buildStrategy(tc, &ht, entry_size, 0, 1);
+    defer str.demolish(tc, &ht);
+    const h = str.handleOf(&ht);
+    try testing.expectEqual(@as(u8, str.swiss_set), h.*.?.set);
+    try put(tc, &ht, ks[0], 7);
+    try testing.expectEqual(@as(u8, str.swiss_set), h.*.?.set);
+    try testing.expectEqual(@as(u8, 0), str.StrTable.rung(h));
+    try testing.expectEqual(@as(u64, 7), try valueOf(tc, &ht, ks[0]));
+
+    var big = unbuilt();
+    str.buildStrategy(tc, &big, entry_size, 1000, 1);
+    defer str.demolish(tc, &big);
+    try testing.expectEqual(@as(u8, str.swiss_set), str.handleOf(&big).*.?.set);
+    try testing.expect(str.allocatedSize(tc, &big) >= 1000 * entry_size);
 }

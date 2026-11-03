@@ -5,11 +5,17 @@ const std = @import("std");
 const tier = @import("tier.zig");
 const small = @import("tiers/small.zig");
 const robinhood = @import("tiers/robinhood.zig");
+const swiss = @import("tiers/swiss.zig");
 
 /// The ladder the tests run tables through.
 pub const standard_test_set = [_]tier.TierEntry{
     .{ .tier = small.Tier(.{ .max_capacity = 64 }), .from = 0 },
     .{ .tier = robinhood.Tier(.{}), .from = 64 },
+};
+
+/// The Swiss tier alone, from the first entry (strategy 1's shape).
+pub const swiss_test_set = [_]tier.TierEntry{
+    .{ .tier = swiss.Tier(.{}), .from = 0 },
 };
 
 pub const IntSpec = struct {
@@ -51,5 +57,7 @@ pub const IntSpec = struct {
 test {
     _ = small;
     _ = robinhood;
+    _ = swiss;
     comptime tier.validate(&standard_test_set);
+    comptime tier.validate(&swiss_test_set);
 }
