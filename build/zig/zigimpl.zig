@@ -78,6 +78,7 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
     // Read by src/zig/core/hash/*_exports.zig for the exports' visibility.
     const zig_opts = b.addOptions();
     zig_opts.addOption(bool, "lto", opts.lto);
+    zig_opts.addOption(bool, "hash_stats", opts.hash_stats);
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/zig/root.zig"),
         .target = opts.target,

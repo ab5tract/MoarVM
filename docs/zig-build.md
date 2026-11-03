@@ -24,6 +24,7 @@ Options (`zig build --help` lists them):
 | `-Dnqp-prefix=` | unset | prefix of an installed MoarVM and nqp (`<P>/bin/nqp-m`) for `zig build strategy-test`; when given, `zig build test` runs that step too |
 | `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
 | `-Dlto=` | `true` unless `-Doptimize=Debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
+| `-Dhash-stats=` | `false` | diagnostic build with the hash engine's statistics compiled in (see "Statistics"); keeps debug info and forces `-Dstrip=false` |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
@@ -303,6 +304,38 @@ numbers moved when it was added. Its tests, `tools/bench/t/strategy.nqp`
 `zig-hash-strategies`): `zig build strategy-test -Dnqp-prefix=<P>` runs
 them on `<P>/bin/nqp-m` with `LD_LIBRARY_PATH=<P>/lib`, and `zig build
 test` runs them too when `-Dnqp-prefix` is given.
+
+### Statistics
+
+`-Dhash-stats=true` compiles the hash engine's counting hooks in
+(`core/hash/stats.zig`); in a normal build they are comptime no-ops. It is a
+diagnostic build for finding out how the engine's own tables are used, it
+exists only in the zig build, and it adds `-g` to the C objects and forces
+`-Dstrip=false` so the sites in the dump can be resolved against the debug
+info. The flag reaches the engine through a `hash_stats` declaration in the
+root source file (`src/zig/root.zig`, from the `zig_options` module).
+
+Set `MVM_HASH_STATS=<dir>` and the process writes `<dir>/<pid>.tsv` at
+exit (an `atexit` handler; the directory is created if missing, a failure
+prints one line to stderr). Counters are kept per thread and merged at the
+dump, so the hot path has no atomics; cycles are `rdtsc` on x86_64. A site
+is a call site of an exported table constructor, interned by return
+address (at most 255, then `other`). What is counted, per site: operations
+(build, insert, overwrite, fetch hit and miss, delete hit and miss,
+iterator start and step, copy, grow, migrate, demolish) with their cycles,
+probe lengths of lookups (count, sum, maximum, hit and miss apart), the
+size requested at build and the maximum item count at demolish (the latter
+by set and rung), both bucketed as `<=4, 16, 32, 64, 65, 128, 256, 1024,
+16384` and more.
+
+The file is TSV; header lines start with `#`: `cmdline`, `pid`, `tsc_hz`
+(calibrated from the first counted use to the dump), `total_cycles` and
+`libmoar` (the path from `dladdr`). Rows: `site<TAB>id<TAB>offset_hex`
+(offset from libmoar's load base), `op<TAB>site<TAB>op<TAB>count<TAB>cycles`,
+`probe<TAB>site<TAB>hit|miss<TAB>count<TAB>sum_len<TAB>max_len`,
+`build<TAB>site<TAB>bucket<TAB>count` and
+`demolish<TAB>site<TAB>set<TAB>rung<TAB>bucket<TAB>count`, where a bucket is
+an index into the ladder above (9 is "more").
 
 ## Not yet supported
 

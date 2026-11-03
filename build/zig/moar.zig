@@ -21,6 +21,7 @@ pub fn cflags(b: *std.Build, opts: Options) []const []const u8 {
         // clang honours the last -O flag.
         flags.appendSlice(b.allocator, &.{ "-DNDEBUG", "-O3" }) catch @panic("OOM");
     }
+    if (opts.hash_stats) flags.append(b.allocator, "-g") catch @panic("OOM");
     return flags.items;
 }
 
