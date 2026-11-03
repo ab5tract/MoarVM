@@ -52,7 +52,8 @@
 //! Dispatch is specialised for set 0. `dispatch` tests `header.set == 0`
 //! first (not at all when `Spec.sets.len == 1`) and then switches once on
 //! the `tier` byte over the rungs of `Spec.sets[0]`, known at comptime;
-//! any other set index goes through `resolve`. The string table's
+//! any other set index goes through `resolve`, out of line (a call)
+//! except in `fetch`, `lvalue` and `delete`. The string table's
 //! `standard` set is index 0 (`str.zig` asserts it), so every hash the C
 //! API builds takes the switch and only `large_only` the general path.
 //! `fetch`, `lvalue` and `delete` read the header's first four bytes
@@ -226,11 +227,34 @@ pub fn Table(comptime Spec: type) type {
         }
 
         /// Returns `op(Impl, header, args)` for the rung of `header`.
+        /// Any set but 0 goes through `dispatchOtherCall`, a call of its
+        /// own, so this function stays the size of the set-0 switch however
+        /// many sets `Spec.sets` holds, and LLVM inlines it into its callers
+        /// (the iteration exports, `blockOf`, `growOrMigrate`) as it did
+        /// with two sets. Inlining every set's ops here instead grew each
+        /// instance past the inliner's threshold once the string table had
+        /// six sets, which put a call into set 0's clone, iteration and
+        /// grow paths.
         fn dispatch(comptime R: type, header: *Header, comptime op: anytype, args: anytype) R {
             std.debug.assert(!isControlOnly(header));
             if (!dispatch_reads_set or header.set == 0)
                 return @call(.always_inline, dispatchSet0, .{ R, header, header.tier, op, args });
+            return @call(.never_inline, dispatchOtherCall, .{ R, header, header.set, op, args });
+        }
+
+        /// `dispatch` with every set's op inline, for the insert probe
+        /// (`lvalue`), which wants the candidate sets' probes in the
+        /// caller's frame too.
+        inline fn dispatchInline(comptime R: type, header: *Header, comptime op: anytype, args: anytype) R {
+            std.debug.assert(!isControlOnly(header));
+            if (!dispatch_reads_set or header.set == 0)
+                return @call(.always_inline, dispatchSet0, .{ R, header, header.tier, op, args });
             return dispatchOther(R, header, header.set, op, args);
+        }
+
+        /// `dispatchOther` out of line, for `dispatch`.
+        fn dispatchOtherCall(comptime R: type, header: *Header, set_index: u8, comptime op: anytype, args: anytype) R {
+            return dispatchOther(R, header, set_index, op, args);
         }
 
         /// The specialised path: rung `rung_index` of `Spec.sets[0]`, one switch
@@ -437,17 +461,23 @@ pub fn Table(comptime Spec: type) type {
                     }
                 }
 
-                pub fn visit(self: *@This(), e: [*]u8) void {
+                /// `inline`, with the hash forced inline too, so the drain
+                /// loop keeps the per-entry work in its own frame: left to
+                /// LLVM, both became calls once more sets shared the tiers'
+                /// instances, which cost set 0's 65th insert about 6
+                /// percent.
+                pub inline fn visit(self: *@This(), e: [*]u8) void {
                     // A key the caller has not filled in yet cannot be hashed.
                     if (std.mem.allEqual(u8, e[0..key_size], 0)) return;
                     const key = std.mem.bytesToValue(Key, e[0..key_size]);
+                    const hash = @call(.always_inline, N.hash, .{ self.ctx, key });
                     if (comptime @hasDecl(N, "insertKnownAbsent")) {
                         if (N.isFull(self.new)) self.growNew();
-                        N.insertKnownAbsent(self.new, self.ctx, key, N.hash(self.ctx, key), e);
+                        N.insertKnownAbsent(self.new, self.ctx, key, hash, e);
                         return;
                     }
                     while (true) {
-                        switch (N.lvalueFetch(self.new, self.ctx, key, N.hash(self.ctx, key))) {
+                        switch (N.lvalueFetch(self.new, self.ctx, key, hash)) {
                             .inserted => |ne| {
                                 @memcpy(ne[0..self.entry_size], e[0..self.entry_size]);
                                 return;
@@ -609,7 +639,7 @@ pub fn Table(comptime Spec: type) type {
                 if (st & control_only_bits != 0) header = materialise(ctx, h, header);
             }
             const result: Found = while (true) {
-                switch (@call(.always_inline, dispatch, .{ Lvalue, header, ops.lvalue, .{ ctx, key } })) {
+                switch (dispatchInline(Lvalue, header, ops.lvalue, .{ ctx, key })) {
                     .found => |e| break .{ .entry = e, .found = true },
                     .inserted => |e| {
                         log(header, .insert, e);
