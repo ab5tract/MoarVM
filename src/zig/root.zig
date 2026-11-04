@@ -11,4 +11,5 @@ comptime {
     _ = @import("core/hash/uni_exports.zig");
     _ = @import("gc/worklist.zig");
     _ = @import("gc/allocation.zig");
+    _ = @import("gc/gen2.zig");
 }

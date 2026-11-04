@@ -5,4 +5,5 @@
 test {
     _ = @import("test/worklist_test.zig");
     _ = @import("test/allocation_test.zig");
+    _ = @import("test/gen2_test.zig");
 }

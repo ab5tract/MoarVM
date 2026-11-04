@@ -212,3 +212,4 @@ src/zig/core/hash/index_exports.zig: src/core/index_hash_table.c
 src/zig/core/hash/uni_exports.zig: src/core/uni_hash_table.c
 src/zig/gc/worklist.zig: src/gc/worklist.c
 src/zig/gc/allocation.zig: src/gc/allocation.c
+src/zig/gc/gen2.zig: src/gc/gen2.c
