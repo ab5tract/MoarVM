@@ -15,6 +15,7 @@ tools/check.mk
 .cache/
 tools/lib/.precomp/
 lib/.precomp/
+tools/bench/gc/lib/.precomp/
 
 # Releases
 MoarVM-*
