@@ -172,6 +172,18 @@ MVMInstance * MVM_vm_create_instance(void) {
     init_cond(instance->cond_gc_completed, "GC completed");
     init_cond(instance->cond_gc_intrays_clearing, "GC intrays clearing");
     init_cond(instance->cond_blocked_can_continue, "GC thread unblock");
+#if MVM_GC_DEBUG
+    {
+        /* Debug-only GC observability: the RSS pin for the full collection
+         * decision, in bytes, and the per-collection log, appended to. */
+        char *gc_debug_rss = getenv("MVM_GC_DEBUG_RSS");
+        char *gc_log = getenv("MVM_GC_LOG");
+        if (gc_debug_rss && gc_debug_rss[0])
+            instance->gc_debug_rss_override = (size_t)strtoull(gc_debug_rss, NULL, 10);
+        if (gc_log && gc_log[0])
+            instance->gc_debug_log = fopen(gc_log, "a");
+    }
+#endif
 
     /* Safe point free list. */
     instance->free_at_safepoint = NULL;

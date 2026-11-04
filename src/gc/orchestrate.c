@@ -232,6 +232,10 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
             MVM_gc_gen2_transfer(other, tc);
             GCDEBUG_LOG(tc, MVM_GC_DEBUG_ORCHESTRATE,
                 "Thread %d run %d : destroying thread %d\n", other->thread_id);
+#if MVM_GC_DEBUG
+            /* Its log line now: it is gone by the end of finish_gc. */
+            MVM_gc_debug_log_collection(tc, other, gen == MVMGCGenerations_Both);
+#endif
             tc->gc_work[i].tc = thread_obj->body.tc = NULL;
             MVM_tc_destroy(other);
             MVM_store(&thread_obj->body.stage, MVM_thread_stage_destroyed);
@@ -287,6 +291,16 @@ static void finish_gc(MVMThreadContext *tc, MVMuint8 gen, MVMuint8 is_coordinato
             }
         }
     }
+
+#if MVM_GC_DEBUG
+    /* One per-collection log line per thread this one collected (the
+     * coordinator's work list, or a non-coordinator's own entry), before
+     * gc_completed lets the next run start; threads destroyed above have
+     * already written theirs. */
+    for (i = 0; i < tc->gc_work_count; i++)
+        if (tc->gc_work[i].tc)
+            MVM_gc_debug_log_collection(tc, tc->gc_work[i].tc, gen == MVMGCGenerations_Both);
+#endif
 
     if (is_coordinator) {
         uv_mutex_lock(&tc->instance->mutex_gc_orchestrate);
@@ -419,6 +433,11 @@ static MVMint32 is_full_collection(MVMThreadContext *tc) {
         return 1;
 
     /* Otherwise, consider percentage of resident set size. */
+#if MVM_GC_DEBUG
+    if (tc->instance->gc_debug_rss_override)
+        rss = tc->instance->gc_debug_rss_override;
+    else
+#endif
     if (uv_resident_set_memory(&rss) < 0 || rss == 0)
         rss = 50 * 1024 * 1024;
     percent_growth = (100 * promoted) / (MVMuint64)rss;

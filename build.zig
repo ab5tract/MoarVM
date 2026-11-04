@@ -125,7 +125,7 @@ pub fn build(b: *std.Build) void {
     const stats_options = stats_opts.createModule();
     // Unit tests of the build helpers; `test` runs them first.
     const unit_step = b.step("unit-test", "Run the unit tests of the build helpers");
-    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/version.zig", "build/zig/config.zig", "build/zig/fixup_translated.zig", "build/zig/zigimpl.zig", "tools/zig/sexpr.zig", "tools/zig/oplist.zig", "tools/zig/expr_ops.zig", "tools/zig/expr_template_compiler.zig", "tools/zig/tiler_table_generator.zig", "src/zig/core/hash/tier.zig", "src/zig/core/hash/test_spec.zig", "src/zig/core/hash/table.zig", "src/zig/core/hash/stats.zig" }) |path| {
+    for ([_][]const u8{ "build/zig/sources.zig", "build/zig/options.zig", "build/zig/version.zig", "build/zig/config.zig", "build/zig/fixup_translated.zig", "build/zig/zigimpl.zig", "tools/zig/sexpr.zig", "tools/zig/oplist.zig", "tools/zig/expr_ops.zig", "tools/zig/expr_template_compiler.zig", "tools/zig/tiler_table_generator.zig", "src/zig/core/hash/tier.zig", "src/zig/core/hash/test_spec.zig", "src/zig/core/hash/table.zig", "src/zig/core/hash/stats.zig" }) |path| {
         const t = b.addTest(.{
             .root_module = b.createModule(.{
                 .root_source_file = b.path(path),

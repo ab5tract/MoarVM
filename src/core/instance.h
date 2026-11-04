@@ -218,6 +218,15 @@ struct MVMInstance {
      * that filled its nursery fastest). */
     MVMThreadContext *thread_to_blame_for_gc;
 
+#if MVM_GC_DEBUG
+    /* $MVM_GC_DEBUG_RSS: a resident set size in bytes that the full
+     * collection decision uses in place of the live one (0 = unset). */
+    size_t gc_debug_rss_override;
+
+    /* $MVM_GC_LOG: the per-collection log (NULL = off). */
+    FILE *gc_debug_log;
+#endif
+
     /* Persistent object ID hash, used to give nursery objects a lifetime
      * unique ID. Plus a lock to protect it. */
     MVMPtrHashTable     object_ids;

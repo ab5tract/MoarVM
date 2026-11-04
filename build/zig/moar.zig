@@ -16,6 +16,8 @@ pub fn cflags(b: *std.Build, opts: Options) []const []const u8 {
     flags.appendSlice(b.allocator, &thirdparty.base_cflags) catch @panic("OOM");
     flags.appendSlice(b.allocator, &.{ "-DMVM_TRACING=0", "-DMVM_CGOTO=1" }) catch @panic("OOM");
     flags.append(b.allocator, b.fmt("-DMVM_HEAPSNAPSHOT_FORMAT={d}", .{heapSnapshotFormat(opts)})) catch @panic("OOM");
+    flags.append(b.allocator, b.fmt("-DMVM_GC_DEBUG={d}", .{opts.gc_debug})) catch @panic("OOM");
+    flags.append(b.allocator, b.fmt("-DMVM_NURSERY_SIZE={d}", .{opts.nursery_size})) catch @panic("OOM");
     if (opts.optimize != .Debug) {
         // zig's ReleaseFast compiles C at -O2; Perl's --optimize uses -O3.
         // clang honours the last -O flag.
@@ -80,6 +82,8 @@ pub fn defines(b: *std.Build, opts: Options) []const Define {
         .{ .name = "MVM_TRACING", .value = "0" },
         .{ .name = "MVM_CGOTO", .value = "1" },
         .{ .name = "MVM_HEAPSNAPSHOT_FORMAT", .value = b.fmt("{d}", .{heapSnapshotFormat(opts)}) },
+        .{ .name = "MVM_GC_DEBUG", .value = b.fmt("{d}", .{opts.gc_debug}) },
+        .{ .name = "MVM_NURSERY_SIZE", .value = b.fmt("{d}", .{opts.nursery_size}) },
         .{ .name = "MVM_BUILD_SHARED", .value = null },
     }) catch @panic("OOM");
     if (opts.optimize != .Debug) out.append(b.allocator, .{ .name = "NDEBUG", .value = null }) catch @panic("OOM");

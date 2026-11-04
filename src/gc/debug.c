@@ -43,4 +43,31 @@ void MVM_gc_debug_find_region(MVMThreadContext *tc, void *ptr) {
     }
     printf("Not found\n");
 }
+
+/* Writes one line of the per-collection log ($MVM_GC_LOG) for the run that
+ * tc has just finished on behalf of for_tc, then resets for_tc's counters.
+ * coord is 1 for the thread that started the run. */
+void MVM_gc_debug_log_collection(MVMThreadContext *tc, MVMThreadContext *for_tc, MVMuint8 full) {
+    FILE *log = tc->instance->gc_debug_log;
+    if (log) {
+        fprintf(log,
+            "seq=%"PRIu64" tid=%"PRIu32" full=%d coord=%d from=%"PRIu32" next=%"PRIu32
+            " promoted=%"PRIu32" since_full=%"PRIu64" gen2_freed=%"PRIu64
+            " stables_freed=%"PRIu32" finalizing=%"PRIu32"\n",
+            (MVMuint64)MVM_load(&tc->instance->gc_seq_number),
+            (MVMuint32)for_tc->thread_id,
+            full ? 1 : 0,
+            for_tc == tc->instance->thread_to_blame_for_gc ? 1 : 0,
+            for_tc->nursery_fromspace_size,
+            for_tc->nursery_tospace_size,
+            for_tc->gc_promoted_bytes,
+            (MVMuint64)MVM_load(&tc->instance->gc_promoted_bytes_since_last_full),
+            for_tc->gc_debug_gen2_freed_bytes,
+            for_tc->gc_debug_stables_freed,
+            for_tc->num_finalizing);
+        fflush(log);
+    }
+    for_tc->gc_debug_gen2_freed_bytes = 0;
+    for_tc->gc_debug_stables_freed = 0;
+}
 #endif

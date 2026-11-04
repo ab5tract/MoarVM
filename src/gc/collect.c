@@ -622,6 +622,9 @@ void MVM_gc_collect_free_stables(MVMThreadContext *tc) {
         st = st_to_free->header.sc_forward_u.st;
         st_to_free->header.sc_forward_u.st = NULL;
         MVM_6model_stable_gc_free(tc, st_to_free);
+#if MVM_GC_DEBUG
+        tc->gc_debug_stables_freed++;
+#endif
     }
 #endif
     tc->instance->stables_to_free = NULL;
@@ -748,6 +751,9 @@ void MVM_gc_collect_free_gen2_unmarked(MVMThreadContext *executing_thread, MVMTh
 
                     /* Update the pointer to the insert position to point to us */
                     freelist_insert_pos = (char ***)cur_ptr;
+#if MVM_GC_DEBUG
+                    tc->gc_debug_gen2_freed_bytes += obj_size;
+#endif
                 }
 
                 /* Move to the next object. */
@@ -780,6 +786,9 @@ void MVM_gc_collect_free_gen2_unmarked(MVMThreadContext *executing_thread, MVMTh
                 else {
                     MVM_panic(MVM_exitcode_gcnursery, "Internal error: gen2 overflow contains non-object");
                 }
+#if MVM_GC_DEBUG
+                tc->gc_debug_gen2_freed_bytes += col->size;
+#endif
                 MVM_free(col);
                 gen2->overflows[i] = NULL;
             }

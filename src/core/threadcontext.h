@@ -246,6 +246,11 @@ struct MVMThreadContext {
     /* Whether we are currently in the specializer. Used to catch GC runs that
      * take place at times they never should. */
     MVMint32 in_spesh;
+
+    /* Per-collection log counters (src/gc/debug.c): bytes of this thread's
+     * gen2 freed, and STables freed by this thread, since its last log line. */
+    MVMuint64 gc_debug_gen2_freed_bytes;
+    MVMuint32 gc_debug_stables_freed;
 #endif
 
     /* State to cheaply determine if we should look again for the availability
