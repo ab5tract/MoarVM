@@ -65,10 +65,33 @@ fn isCollectablePtr(comptime P: type) bool {
     return isCollectable(T);
 }
 
+// ---- MVM_ASSERT_NOT_FROMSPACE from src/gc/debug.h -----------------------
+
+/// MVM_ASSERT_NOT_FROMSPACE(check_tc, c) (debug.h:12-26): panics if `p`
+/// lies in any thread's nursery fromspace or is on a gen2 free list.
+/// Compiled in when MVM_GC_DEBUG is non-zero; a no-op otherwise (debug.h:41).
+pub inline fn assertNotFromspace(check_tc: *ThreadContext, p: ?*anyopaque) void {
+    if (comptime c.MVM_GC_DEBUG == 0) return;
+    var cur_thread: [*c]c.MVMThread = check_tc.instance.*.threads;
+    if (p != null) {
+        while (cur_thread != null) {
+            const thread_tc: [*c]ThreadContext = cur_thread.*.body.tc;
+            if (thread_tc != null and thread_tc.*.nursery_fromspace != null and
+                @intFromPtr(p) >= @intFromPtr(thread_tc.*.nursery_fromspace) and
+                @intFromPtr(p) < @intFromPtr(thread_tc.*.nursery_fromspace) + thread_tc.*.nursery_fromspace_size)
+                c.MVM_panic(1, "Collectable %p in fromspace accessed", p);
+            cur_thread = cur_thread.*.body.next;
+        }
+        if (@as(*Collectable, @ptrCast(@alignCast(p))).flags2 & c.MVM_CF_DEBUG_IN_GEN2_FREE_LIST != 0)
+            c.MVM_panic(1, "Collectable %p in a gen2 freelist accessed", p);
+    }
+}
+
 // ---- MVM_ASSIGN_REF from src/gc/wb.h ------------------------------------
 
-/// MVM_ASSIGN_REF(tc, update_root, update_addr, referenced): write barrier,
-/// then the store. `addr` is a pointer to the slot (`*?*T` or `*[*c]T`);
+/// MVM_ASSIGN_REF(tc, update_root, update_addr, referenced) (wb.h:22-38):
+/// under MVM_GC_DEBUG the owner check and MVM_ASSERT_NOT_FROMSPACE, then the
+/// write barrier, then the store. `addr` is a pointer to the slot (`*?*T` or `*[*c]T`);
 /// `v` is the collectable pointer being stored, or `null`.
 pub inline fn assignRef(tc: *ThreadContext, update_root: *Collectable, addr: anytype, v: anytype) void {
     const V = @TypeOf(v);
@@ -79,10 +102,11 @@ pub inline fn assignRef(tc: *ThreadContext, update_root: *Collectable, addr: any
     const A = @TypeOf(addr);
     if (comptime (@typeInfo(A) != .pointer or @typeInfo(A).pointer.size != .one or !isCollectablePtr(@typeInfo(A).pointer.child)))
         @compileError("assignRef: expected a pointer to a collectable pointer slot, got " ++ @typeName(A));
-    if (c.MVM_GC_DEBUG != 0) {
+    if (comptime c.MVM_GC_DEBUG != 0) {
         if (referenced) |r| {
             if (r.owner == 0) c.MVM_panic(1, "Invalid assignment (maybe of heap frame to stack frame?)");
         }
+        assertNotFromspace(tc, referenced);
     }
     c.MVM_gc_write_barrier(tc, update_root, referenced);
     addr.* = v;
@@ -272,6 +296,26 @@ test "assignRef stores and applies the write barrier" {
     tc.num_gen2roots = gen2_before;
     value.?.header.flags2 &= ~@as(u8, c.MVM_CF_REF_FROM_GEN2);
     try std.testing.expectEqual(gen2_before, tc.num_gen2roots);
+}
+
+test "assignRef of a live nursery object passes the debug checks" {
+    // At -Dgc-debug=1 this walks every thread's fromspace and the gen2
+    // free-list flag (MVM_ASSERT_NOT_FROMSPACE); at 0 the checks are absent.
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: *ThreadContext = instance.*.main_thread;
+    const array_type: *Object = instance.*.boot_types.BOOTArray;
+    var holder: ?*Object = c.MVM_repr_alloc_init(tc, array_type);
+    const r = root(tc, &holder);
+    defer r.pop(tc);
+    const value: ?*Object = c.MVM_repr_alloc_init(tc, array_type);
+    try std.testing.expect(@intFromPtr(value) >= @intFromPtr(tc.nursery_tospace) and
+        @intFromPtr(value) < @intFromPtr(tc.nursery_alloc_limit));
+    var slot: ?*Object = null;
+    assignRef(tc, @ptrCast(holder.?), &slot, value);
+    try std.testing.expectEqual(value, slot);
+    assignRef(tc, @ptrCast(holder.?), &slot, null);
+    try std.testing.expectEqual(@as(?*Object, null), slot);
 }
 
 test "stable, repr, objectBody and isConcrete" {

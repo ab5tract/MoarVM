@@ -5,9 +5,10 @@
 //! src/gc/allocation.h (`MVM_gc_allocate`, `MVM_gc_allocate_zeroed` and the
 //! gen2 default set/clear) stay C; the allocators below call the translated
 //! `MVM_gc_allocate_zeroed`, which reaches `MVM_gc_allocate_nursery` (the
-//! export below) as the C does. The `MVMROOT` and `MVM_ASSIGN_REF` macros,
-//! which translate-c cannot translate, are spelled out from src/gc/roots.h
-//! and src/gc/wb.h (with src/gc/debug.h's `MVM_ASSERT_NOT_FROMSPACE`).
+//! export below) as the C does. The `MVMROOT` macro, which translate-c
+//! cannot translate, is spelled out from src/gc/roots.h; `MVM_ASSIGN_REF`
+//! (src/gc/wb.h, with src/gc/debug.h's `MVM_ASSERT_NOT_FROMSPACE`) is the
+//! shared `moar.assignRef`.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
@@ -35,39 +36,12 @@ pub inline fn alignSize(size: usize) usize {
     if (comptime @hasDecl(c, "MVM_CAN_UNALIGNED_INT64") and @hasDecl(c, "MVM_CAN_UNALIGNED_NUM64")) {
         return size;
     } else {
-        const mask: usize = @as(c.MVMuint32, @alignOf(c.MVMint64)) - 1;
-        return (size + mask) & ~mask;
+        // MVM_ALIGN_SECTION_MASK is `(MVMuint32)ALIGNOF(MVMint64) - 1`, so in
+        // MVM_ALIGN_SECTION the add is size_t-wide but `~mask` is 32-bit:
+        // zero-extended, it also clears bits 32 and up. Same widths here.
+        const mask: c.MVMuint32 = @as(c.MVMuint32, @alignOf(c.MVMint64)) - 1;
+        return (size + mask) & @as(usize, ~mask);
     }
-}
-
-/// `MVM_ASSERT_NOT_FROMSPACE` (debug.h:12-26), compiled in when
-/// MVM_GC_DEBUG is non-zero.
-inline fn assertNotFromspace(check_tc: Tc, p: ?*anyopaque) void {
-    var cur_thread: [*c]c.MVMThread = check_tc.*.instance.*.threads;
-    if (p != null) {
-        while (cur_thread != null) {
-            const thread_tc: Tc = cur_thread.*.body.tc;
-            if (thread_tc != null and thread_tc.*.nursery_fromspace != null and
-                @intFromPtr(p) >= @intFromPtr(thread_tc.*.nursery_fromspace) and
-                @intFromPtr(p) < @intFromPtr(thread_tc.*.nursery_fromspace) + thread_tc.*.nursery_fromspace_size)
-                c.MVM_panic(1, "Collectable %p in fromspace accessed", p);
-            cur_thread = cur_thread.*.body.next;
-        }
-        if (@as(*c.MVMCollectable, @ptrCast(@alignCast(p))).flags2 & c.MVM_CF_DEBUG_IN_GEN2_FREE_LIST != 0)
-            c.MVM_panic(1, "Collectable %p in a gen2 freelist accessed", p);
-    }
-}
-
-/// `MVM_ASSIGN_REF(tc, update_root, *update_addr, referenced)` (wb.h:22-38).
-inline fn assignRef(tc: Tc, update_root: [*c]c.MVMCollectable, update_addr: anytype, referenced: anytype) void {
-    const r: ?*anyopaque = @ptrCast(referenced);
-    if (comptime c.MVM_GC_DEBUG != 0) {
-        if (r != null and @as(*c.MVMCollectable, @ptrCast(@alignCast(r))).owner == 0)
-            c.MVM_panic(1, "Invalid assignment (maybe of heap frame to stack frame?)");
-        assertNotFromspace(tc, r);
-    }
-    c.MVM_gc_write_barrier(tc, update_root, @ptrCast(@alignCast(r)));
-    update_addr.* = @ptrCast(@alignCast(r));
 }
 
 /// Allocate the specified amount of memory from the nursery. Will trigger a
@@ -127,7 +101,7 @@ pub fn allocateStable(tc: Tc, repr: [*c]const c.MVMREPROps, how_in: [*c]c.MVMObj
         st.*.REPR = repr;
         st.*.type_cache_id = c.MVM_6model_next_type_cache_id(tc);
         st.*.debug_name = null;
-        assignRef(tc, &st.*.header, &st.*.HOW, how);
+        moar.assignRef(tc, &st.*.header, @as(*[*c]c.MVMObject, &st.*.HOW), how);
     }
     c.MVM_gc_root_temp_pop(tc);
     return st;
@@ -144,7 +118,7 @@ pub fn allocateTypeObject(tc: Tc, st_in: [*c]c.MVMSTable) callconv(.c) [*c]c.MVM
         obj.*.header.flags1 = c.MVM_CF_TYPE_OBJECT;
         obj.*.header.size = @sizeOf(c.MVMObject);
         obj.*.header.owner = tc.*.thread_id;
-        assignRef(tc, &obj.*.header, &obj.*.st, st);
+        moar.assignRef(tc, &obj.*.header, @as(*[*c]c.MVMSTable, &obj.*.st), st);
     }
     c.MVM_gc_root_temp_pop(tc);
     return obj;
@@ -161,7 +135,7 @@ pub fn allocateObject(tc: Tc, st_in: [*c]c.MVMSTable) callconv(.c) [*c]c.MVMObje
         obj = @ptrCast(@alignCast(c.MVM_gc_allocate_zeroed(tc, st.*.size)));
         obj.*.header.size = @truncate(st.*.size);
         obj.*.header.owner = tc.*.thread_id;
-        assignRef(tc, &obj.*.header, &obj.*.st, st);
+        moar.assignRef(tc, &obj.*.header, @as(*[*c]c.MVMSTable, &obj.*.st), st);
         if (st.*.mode_flags & c.MVM_FINALIZE_TYPE != 0)
             c.MVM_gc_finalize_add_to_queue(tc, obj);
     }
