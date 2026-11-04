@@ -4,4 +4,5 @@
 //! under its root file's directory.
 test {
     _ = @import("test/worklist_test.zig");
+    _ = @import("test/allocation_test.zig");
 }
