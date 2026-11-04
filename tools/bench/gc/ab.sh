@@ -26,8 +26,11 @@
 # LIBDIR holds the libmoar.so of a side (<prefix>/lib). --rakudo defaults to
 # $RAKUDO, else /home/longwalker/code/raku/x.core/zmoarz/rakudo/rakudo-m;
 # --rakulib defaults to tools/bench/gc/lib plus the lib/ beside --rakudo.
-# DIR must not exist. Exit: 0 done, 1 a run failed or the load never fell,
-# 64 misuse.
+# DIR must not exist. The two LIBDIR strings must be of equal length: the
+# install path is baked into libmoar's config strings, and its length changes
+# the allocation sequence, so an unequal pair is refused (exit 4) before
+# anything runs. Exit: 0 done, 1 a run failed or the load never fell,
+# 4 the LIBDIRs differ in length, 64 misuse.
 set -e
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -62,6 +65,10 @@ done
 for l in "$base" "$head"; do
     [ -e "$l/libmoar.so" ] || usage "$l/libmoar.so missing"
 done
+if [ "${#base}" != "${#head}" ]; then
+    echo "ab.sh: --base and --head differ in length (base $base is ${#base} characters, head $head is ${#head}); the install path changes the allocation sequence, use paths of equal length" >&2
+    exit 4
+fi
 [ -x "$rakudo" ] || usage "$rakudo is not executable"
 [ -e "$out" ] && usage "$out exists; pick a fresh --out"
 case $out in /*) ;; *) out=$PWD/$out ;; esac

@@ -46,8 +46,12 @@
 # installed, so `use NativeCall` needs its source directory). DIR must not
 # exist, except with --compare-only, which runs nothing and compares the
 # <side>-<i>.log files already in DIR.
+# The two PREFIX strings must be of equal length: the install path is baked
+# into libmoar's config strings, and its length changes the allocation
+# sequence, so an unequal pair is refused (exit 4) before anything runs.
 # Exit: 0 identical, 1 base and head differ, 2 a side not repeatable,
-# 3 malformed or empty log, 4 a run failed, 64 misuse.
+# 3 malformed or empty log, 4 a run failed or the prefixes differ in length,
+# 64 misuse.
 set -e
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -86,6 +90,10 @@ else
     for p in "$base" "$head"; do
         [ -e "$p/lib/libmoar.so" ] || usage "$p/lib/libmoar.so missing"
     done
+    if [ "${#base}" != "${#head}" ]; then
+        echo "oracle.sh: --base and --head differ in length (base $base is ${#base} characters, head $head is ${#head}); the install path changes the allocation sequence, use prefixes of equal length" >&2
+        exit 4
+    fi
     [ -x "$rakudo" ] || usage "$rakudo is not executable"
     [ -e "$out" ] && usage "$out exists; pick a fresh --out"
     [ -n "$rakulib" ] || rakulib="$root/tools/bench/gc/lib,$(dirname "$rakudo")/lib"

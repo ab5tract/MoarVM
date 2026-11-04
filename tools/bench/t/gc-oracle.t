@@ -91,6 +91,23 @@ SKIP: {
     like $out, qr/base-1\.log:\d+: seq=x tid=1/, 'malformed line: named';
 }
 
+# Prefixes of unequal length are refused (exit 4) by both scripts, naming
+# both lengths; $dir/p is a symlink to the prefix with a different length.
+symlink($prefix, "$dir/p") or die "$dir/p: $!";
+my ($lb, $lh) = (length $prefix, length "$dir/p");
+die "symlink path has the prefix's length" if $lb == $lh;
+($code, $out) = oracle("--base=$prefix", "--head=$dir/p", '--volume=1000', "--out=$dir/len");
+is $code, 4, 'oracle.sh: unequal prefix lengths: exit 4' or diag $out;
+like $out, qr/\b$lb characters\b.*\b$lh\b/, 'oracle.sh: unequal prefix lengths: both lengths named';
+ok !-e "$dir/len", 'oracle.sh: unequal prefix lengths: nothing ran';
+my $ab = File::Spec->catfile(dirname($script), 'ab.sh');
+$out = qx{sh $ab --base=$prefix/lib --head=$dir/p/lib --rounds=1 --runs=1 --volume=1 --out=$dir/ablen 2>&1};
+$code = $? >> 8;
+($lb, $lh) = (length "$prefix/lib", length "$dir/p/lib");
+is $code, 4, 'ab.sh: unequal lib lengths: exit 4' or diag $out;
+like $out, qr/\b$lb characters\b.*\b$lh\b/, 'ab.sh: unequal lib lengths: both lengths named';
+ok !-e "$dir/ablen", 'ab.sh: unequal lib lengths: nothing ran';
+
 # Misuse exits non-zero.
 ($code, $out) = oracle('--volume=1000');
 isnt $code, 0, 'missing --out: non-zero exit';
