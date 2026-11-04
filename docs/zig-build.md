@@ -26,6 +26,7 @@ Options (`zig build --help` lists them):
 | `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
 | `-Dlto=` | `true` unless `-Doptimize=Debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
 | `-Dhash-stats=` | `false` | diagnostic build with the hash engine's statistics compiled in (see "Statistics"); keeps debug info and forces `-Dstrip=false` |
+| `-Duni-swiss=` | `false` | compile the Unicode hash tables' Swiss set (strategy 1 of `MVM_uni_hash_build_strategy`) into libmoar; no internal site uses it, so the shipped build leaves it out and strategy 1 throws; the uni benchmark needs it, unit tests always have it |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
@@ -315,6 +316,8 @@ them on `<P>/bin/nqp-m` with `LD_LIBRARY_PATH=<P>/lib`, and `zig build
 test` runs them too when `-Dnqp-prefix` is given.
 
 ### Statistics
+
+The `stats_test.zig` tests skip unless `-Dhash-stats` is given, so run `zig build unit-test` and `zig build test` both with and without it.
 
 `-Dhash-stats=true` compiles the hash engine's counting hooks in
 (`core/hash/stats.zig`); in a normal build they are comptime no-ops. It is a

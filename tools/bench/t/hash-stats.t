@@ -132,11 +132,11 @@ SKIP: {
     # `moar --version` and `--help` exit before any table is built, so the
     # exit handler is never registered and no file is written; an nqp that
     # runs against the stats libmoar builds tables at startup. HASH_STATS_NQP
-    # names it (default: the tune prefix's nqp-m), run with the stats
+    # (else NQP) names it (default: the tune prefix's nqp-m), run with the stats
     # prefix's lib (next to HASH_STATS_MOAR's bin) in LD_LIBRARY_PATH.
     my $moar = $ENV{HASH_STATS_MOAR};
     skip 'set HASH_STATS_MOAR to a stats-build moar', 7 unless $moar;
-    my $nqp = $ENV{HASH_STATS_NQP} // '/tmp/claude-1000/tune-zig-prefix/bin/nqp-m';
+    my $nqp = $ENV{HASH_STATS_NQP} // $ENV{NQP} // '/tmp/claude-1000/tune-zig-prefix/bin/nqp-m';
     skip "no nqp at $nqp (set HASH_STATS_NQP)", 7 unless -x $nqp;
     local $ENV{LD_LIBRARY_PATH} = File::Spec->catdir(dirname($moar), '..', 'lib');
     my $stderr = "$tmp/err.txt";

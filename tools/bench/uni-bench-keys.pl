@@ -47,6 +47,9 @@ for my $i (0 .. $#kp) {
     $count{$kind}++;
 }
 
+# MVM_unicode_init files an entry under hash[value >> 24]; the 39 "20-" keys carry
+# a different property code there, so a lookup of their own key misses: skipped.
+# So are values whose code (value & 0xFFFFFF) is 0: a hit would read as a miss.
 my @pv = grep { $_->[0] =~ /^(\d+)-/ && $1 == ($_->[1] >> 24) && ($_->[1] & 0xFFFFFF) } pairs('unicode_property_value_keypairs');
 my $stride = int(@pv / 1024);
 for (my $i = 0, my $n = 0; $n < 1024 && $i < @pv; $i += $stride, $n++) {

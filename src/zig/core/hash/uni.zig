@@ -13,6 +13,7 @@
 //! published plainly (the C frees with `MVM_free`); `Ctx` is nothing, and
 //! the `tc` the C API takes is only for `MVM_oops`.
 const std = @import("std");
+const builtin = @import("builtin");
 const moar = @import("moar");
 const c = moar.c;
 const tier = @import("tier.zig");
@@ -27,6 +28,13 @@ const ThreadContext = moar.ThreadContext;
 pub const only_rung = [_]tier.TierEntry{
     .{ .tier = robinhood.Tier(.{ .salt = .none }), .from = 0 },
 };
+
+/// Whether the Swiss set (the LOOKUP strategy) is compiled in. No internal
+/// site uses it, and having it in `libmoar` moved the C-API `delete`
+/// off its loop alignment (`traces/llm/bench/internals-delete-bisect.md`), so
+/// the shipped build leaves it out: `-Duni-swiss` (the uni benchmark, the strategy
+/// tests) or a unit-test build turn it on.
+pub const swiss_enabled: bool = builtin.is_test or @import("zig_options").uni_swiss;
 
 /// The Swiss tier from the first entry: the LOOKUP strategy
 /// (`MVM_HASH_STRATEGY_LOOKUP`, 1). Entry size 16 is a multiple of 8, and a
@@ -66,8 +74,8 @@ pub fn hashCode(key: [*c]const u8, len: usize) u32 {
     return hash *% 0x9e3779b7;
 }
 
-/// The cached 32-bit hash as 64 bits (spec decision 9: a fixed mixing step,
-/// not a new hash). The Swiss tier takes its 7-bit tag from the top bits and
+/// The cached 32-bit hash as 64 bits for the Swiss set (spec decision 9: a
+/// fixed mixing step, not a new hash). The Swiss tier takes its 7-bit tag from the top bits and
 /// its home group from the low bits; a bare 32-bit value has zero top bits.
 /// The multiply spreads the low bits upward, the shifted copy keeps the
 /// low 32 bits distinct from the multiply's.
@@ -81,11 +89,13 @@ pub const UniSpec = struct {
     pub const runtime_entry_size = false;
     pub const entry_size: u32 = @sizeOf(c.MVMUniHashEntry);
     pub const publish: table.Publish = .plain;
-    pub const sets: []const tier.TierSet = &.{ &only_rung, &swiss_rung };
+    pub const sets: []const tier.TierSet = if (swiss_enabled) &.{ &only_rung, &swiss_rung } else &.{&only_rung};
 
+    /// The cached hash as it is, as in the C engine; only a build that has
+    /// the Swiss set widens it (for every set, as the hash does not see which).
     pub fn hash(ctx: Ctx, key: Key) u64 {
         _ = ctx;
-        return widen(key.hash_val);
+        return if (swiss_enabled) widen(key.hash_val) else key.hash_val;
     }
 
     /// `uni_hash_table_funcs.h:120`: the cached hash, then `strcmp`.
@@ -128,7 +138,7 @@ pub fn build(tc: *ThreadContext, ht: *c.MVMUniHashTable, entries: u32) void {
 
 /// The tier set of each `MVMHashStrategy`; null is a strategy the uni kind
 /// lacks (APPEND).
-const strategy_sets = [3]?u8{ default_set, lookup_set, null };
+const strategy_sets = [3]?u8{ default_set, if (swiss_enabled) lookup_set else null, null };
 
 /// Whether `buildStrategy` can build `strategy`.
 pub fn strategyAvailable(strategy: u8) bool {

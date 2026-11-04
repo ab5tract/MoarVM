@@ -9,7 +9,7 @@
 #   * the C-API ladder, when BENCH_EXE is given (the `zig build
 #     hash-bench-exe` executable): LD_LIBRARY_PATH=LIBDIR BENCH_EXE
 #     --sizes=S --runs=K --nth=N
-# <nqp> is --nqp= (default /tmp/claude-1000/tune-zig-prefix/bin/nqp-m); it
+# <nqp> is --nqp=, else $NQP when set, else /tmp/claude-1000/tune-zig-prefix/bin/nqp-m; it
 # runs against each variant's libmoar through LD_LIBRARY_PATH, so it must
 # be an nqp whose moar is the one that LIBDIR replaces.
 #
@@ -36,7 +36,7 @@
 #            [--max-load=L (default 2.0)]
 #        tools/bench/hash-ab.sh --help
 # Before each run the script waits until the 1-minute load average is below
-# --max-load.
+# --max-load (30 minutes at most, then the script exits 1).
 # Defaults: --rounds=5; --sizes= the ladder 4,16,32,63,64,65,128,256,1024,16384.
 set -e
 
@@ -47,7 +47,7 @@ rounds=5
 sizes=4,16,32,63,64,65,128,256,1024,16384
 runs=5
 nth=all
-nqp=/tmp/claude-1000/tune-zig-prefix/bin/nqp-m
+nqp=${NQP:-/tmp/claude-1000/tune-zig-prefix/bin/nqp-m}
 max_load=2.0
 ladder=hash
 variants=
@@ -126,7 +126,15 @@ load() {
 }
 
 wait_load() {
-    until awk -v m="$max_load" '{ exit !($1 < m) }' /proc/loadavg; do sleep 10; done
+    waited=0
+    until awk -v m="$max_load" '{ exit !($1 < m) }' /proc/loadavg; do
+        if [ "$waited" -ge 1800 ]; then
+            echo "hash-ab.sh: load average stayed at or above $max_load for 30 minutes; giving up" >&2
+            exit 1
+        fi
+        sleep 10
+        waited=$((waited + 10))
+    done
 }
 
 cd "$root"

@@ -28,6 +28,8 @@ pub const Options = struct {
     /// (src/zig/core/hash/stats.zig) and keep debug info and symbols so the
     /// dump's call sites can be resolved; forces `strip` off.
     hash_stats: bool,
+    /// Compile the Unicode tables' Swiss set into libmoar (`-Duni-swiss`).
+    uni_swiss: bool,
     /// Prefix of an installed MoarVM + nqp (`<P>/bin/nqp-m`) for the
     /// `strategy-test` step; when set, `zig build test` runs it too.
     nqp_prefix: ?[]const u8,
@@ -67,6 +69,8 @@ pub fn parse(b: *std.Build) Options {
     const strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=Debug); false keeps them for perf");
     const hash_stats = b.option(bool, "hash-stats", "Diagnostic build with the hash engine's statistics (dump to $MVM_HASH_STATS/<pid>.tsv at exit); keeps debug info, forces -Dstrip=false (default false)") orelse false;
 
+    const uni_swiss = b.option(bool, "uni-swiss", "Compile the Swiss set (strategy 1) of the Unicode hash tables into libmoar; no internal site uses it, the uni benchmark and the strategy tests do (default false)") orelse false;
+
     return .{
         .target = target,
         .optimize = optimize,
@@ -77,6 +81,7 @@ pub fn parse(b: *std.Build) Options {
         .zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true,
         .config_h = config_h,
         .hash_stats = hash_stats,
+        .uni_swiss = uni_swiss,
         .strip = if (hash_stats) false else strip,
         .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default: true unless -Doptimize=Debug); false links about three times faster") orelse (optimize != .Debug),
         .nqp_prefix = b.option([]const u8, "nqp-prefix", "Prefix of an installed MoarVM and nqp (<P>/bin/nqp-m) for `zig build strategy-test`; when given, `zig build test` runs that step too"),
