@@ -29,10 +29,10 @@ const ThreadContext = moar.ThreadContext;
 /// "Spike results": 99.5% of tables stay at or below it).
 pub const small_threshold: u32 = 64;
 
-/// The ladder of `MVM_str_hash_build`: Small, then the Swiss-style tier.
+/// The ladder of `MVM_str_hash_build`: Small, then Robin Hood.
 pub const standard = [_]tier.TierEntry{
     .{ .tier = small.Tier(.{ .max_capacity = small_threshold }), .from = 0 },
-    .{ .tier = swiss.Tier(.{}), .from = small_threshold },
+    .{ .tier = robinhood.Tier(.{}), .from = small_threshold },
 };
 
 /// Robin Hood from the first entry, for a future "pre-allocate big" hint.

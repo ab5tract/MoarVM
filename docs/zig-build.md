@@ -131,16 +131,15 @@ engine's safepoint discipline), `tier.zig` (tier sets) and the two tiers in
 | Tier | Storage | Used by |
 |---|---|---|
 | `small.zig` | a flat array of entries in insertion order, each tagged with the top byte of its cached hash and found by a vector compare of the tags, up to `max_capacity` entries | the string table's first rung |
-| `robinhood.zig` | the open-addressing Robin Hood table the C files implement today, with the same growth and probe-limit rules | the pointer, fixkey, index and Unicode tables, and `large_only` |
-| `swiss.zig` | Swiss-style 16-slot groups with a metadata byte per slot (docs/hash-strategies.md) | the string table's final rung, and the LOOKUP strategy |
+| `robinhood.zig` | the open-addressing Robin Hood table the C files implement today, with the same growth and probe-limit rules | every table's final rung |
 
 A table is built on a *tier set*, a ladder of rungs with the entry count at
 which each takes over. The string table (`str.zig`) builds on `standard`:
-Small from 0 entries, Swiss from `small_threshold` entries, where
+Small from 0 entries, Robin Hood from `small_threshold` entries, where
 `small_threshold` is 64 (`str.zig`; chosen from a histogram of final table
 sizes over the rakudo build and spectest, in which 99.7 percent of non-empty
 tables hold at most 64 entries). The insert that takes a table past 64
-migrates it into a 128-slot Swiss block in one step (it was Robin Hood until the 2026-11-03 ladder measurement, `traces/llm/bench/internals-set0-ladder.md`). `large_only` (Robin Hood
+migrates it into a Robin Hood block in one step. `large_only` (Robin Hood
 from 0) is defined for a future pre-allocate-big hint and is not used yet.
 The pointer, fixkey, index and Unicode tables each use a single unsalted
 Robin Hood rung (`only_rung` in `ptr.zig`, `fixkey.zig`, `index.zig`,
@@ -210,10 +209,7 @@ scoreboard is the nqp-level harness `tools/bench/hash-bench.nqp`
 Zig time over C time, both engines built the same way: with LTO (the
 default) and with `-Dlto=false`, from the same interleaved rounds after
 LTO became the default (the per-cell tables are in
-`traces/llm/bench/tuning-lto-default-nqp.md`). These tables predate the
-Small then Swiss default ladder: read "Robin Hood" in them as the old
-second rung; `traces/llm/bench/internals-set0-ladder.md` has the ladder's
-own comparison:
+`traces/llm/bench/tuning-lto-default-nqp.md`):
 
 | Operation | Small, LTO | Small, no LTO | Robin Hood, LTO | Robin Hood, no LTO |
 |---|---|---|---|---|
@@ -286,9 +282,9 @@ Observable changes with the Zig engine:
   that entry is then visited where the deleted one was. A hash is in the
   Small tier while it has never held more than 64 entries and was not
   built for more; one presized above 64, or one that grew past 64 and
-  shrank, stays in Swiss (migration is upward only).
+  shrank, stays in Robin Hood (migration is upward only).
 - Hash creation and growth no longer consume the user-visible RNG (the
-  Swiss and Robin Hood salts come from the engine's own generator, `rng.zig`).
+  Robin Hood salt comes from the engine's own generator, `rng.zig`).
 - `HASH_DEBUG_ITER` is unavailable (`#error` at compile time).
 - Some operations are still slower than with the C engine, by the
   measured ratios above.
@@ -296,7 +292,7 @@ Observable changes with the Zig engine:
 ### Strategies
 
 `MVMHashStrategy` (`str_hash_table.h`) names the string table's layout
-strategies: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Swiss
+strategies: `MVM_HASH_STRATEGY_DEFAULT` (0, the Small then Robin Hood
 ladder above), `MVM_HASH_STRATEGY_LOOKUP` (1, `tiers/swiss.zig`) and
 `MVM_HASH_STRATEGY_APPEND` (2, `tiers/ordered.zig`), selected with
 `MVM_str_hash_build_strategy`, `nqp::hashstrategy(%h, $strategy, $size)`

@@ -455,8 +455,8 @@ pub fn Table(comptime Spec: type) type {
 
         /// Builds the next rung sized for one entry past its threshold (the
         /// next rung's `from`, or the old rung's count if that is larger,
-        /// plus one: 65 entries, a 128-slot Swiss block) and drains the old rung
-        /// into it. A tier with
+        /// plus one: 65 entries, 128 Robin Hood slots, the C's own size
+        /// there) and drains the old rung into it. A tier with
         /// `insertKnownAbsent` takes each entry's bytes directly into their
         /// slot (the keys of one table are distinct, so no key compare);
         /// otherwise each entry's bytes are copied verbatim after its key
@@ -1057,40 +1057,6 @@ const TwoSetSpec = struct {
     pub const onDuplicate = IntSpec.onDuplicate;
 };
 
-/// Set 0 is the retired Small then Robin Hood ladder.
-const RhLadderSpec = struct {
-    pub const Key = IntSpec.Key;
-    pub const Ctx = IntSpec.Ctx;
-    pub const runtime_entry_size = true;
-    pub const publish = .plain;
-    pub const sets: []const tier.TierSet = &.{&@import("test_spec.zig").standard_rh_test_set};
-    pub const hash = IntSpec.hash;
-    pub const eql = IntSpec.eql;
-    pub const allocator = IntSpec.allocator;
-    pub const onDuplicate = IntSpec.onDuplicate;
-};
-
-test "the retired Small then Robin Hood ladder still migrates at the 65th insert" {
-    const TR = Table(RhLadderSpec);
-    var slot: ?*Header = null;
-    const h = &slot;
-    TR.build({}, h, test_entry_size, 0, 0);
-    defer TR.demolish({}, h);
-    for (1..65) |k| {
-        const e = TR.insert({}, h, k);
-        std.mem.writeInt(u64, e[0..8], k, .little);
-        std.mem.writeInt(u64, e[8..16], k * 10, .little);
-    }
-    try testing.expectEqual(@as(u8, 0), TR.rung(h));
-    const e = TR.insert({}, h, 65);
-    std.mem.writeInt(u64, e[0..8], 65, .little);
-    std.mem.writeInt(u64, e[8..16], 650, .little);
-    try testing.expectEqual(@as(u8, 1), TR.rung(h));
-    try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
-    for (1..66) |k| try testing.expectEqual(k * 10, valueOf(TR.fetch({}, h, k).?));
-    try testing.expectEqual(@as(u64, 0), TR.fsck({}, h, 0));
-}
-
 test "a set other than 0 reaches every rung through resolve" {
     const T2 = Table(TwoSetSpec);
     comptime std.debug.assert(T2.dispatch_reads_set);
@@ -1122,10 +1088,8 @@ test "a set other than 0 reaches every rung through resolve" {
     }
 }
 
-/// The test ladder's second (Swiss) rung, for its geometry.
-/// The retired ladder's Robin Hood rung, for its geometry.
+/// The test ladder's Robin Hood rung, for its geometry.
 const TestRH = @import("tiers/robinhood.zig").Tier(.{}).Impl(IntSpec);
-const TestSwiss = @import("tiers/swiss.zig").Tier(.{}).Impl(IntSpec);
 
 /// Every key in `keys` maps to its `key * 10` payload.
 fn expectAll(h: T.Handle, from: u64, to: u64) !void {
@@ -1144,22 +1108,22 @@ test "migration target is sized for the threshold plus one" {
 
     for (1..66) |k| try put(h, k);
     try testing.expectEqual(@as(u8, 1), T.rung(h));
-    // The next rung's `from` (64) plus one at the 7/8 load limit: 128
-    // slots (limit 112), the first power of two that holds 65 entries.
-    try testing.expectEqual(@as(u32, 128), TestSwiss.slotCount(slot.?));
+    // The next rung's `from` (64) plus one at the 3/4 load factor: 128
+    // official slots, the C's own size at 65 entries.
+    try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
     try testing.expectEqual(@as(u32, 65), slot.?.cur_items);
     try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
     try expectAll(h, 1, 66);
 
-    // 128 slots hold 112 entries; the 113th grows to 256.
+    // 128 slots hold 96 entries; the 97th grows to 256, as the C's does.
     const migrated = slot.?;
-    for (66..113) |k| try put(h, k);
+    for (66..97) |k| try put(h, k);
     try testing.expectEqual(migrated, slot.?);
-    try put(h, 113);
-    try testing.expectEqual(@as(u32, 256), TestSwiss.slotCount(slot.?));
-    try testing.expectEqual(@as(u32, 113), T.count(h));
+    try put(h, 97);
+    try testing.expectEqual(@as(u32, 256), TestRH.officialSize(slot.?));
+    try testing.expectEqual(@as(u32, 97), T.count(h));
     try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
-    try expectAll(h, 1, 114);
+    try expectAll(h, 1, 98);
 }
 
 test "bulk migration keeps every key and tolerates one unfilled entry" {
@@ -1179,7 +1143,7 @@ test "bulk migration keeps every key and tolerates one unfilled entry" {
         try testing.expectEqual(@as(u8, 0), T.rung(h));
         try put(h, 65); // migrates with the unfilled entry in the source
         try testing.expectEqual(@as(u8, 1), T.rung(h));
-        try testing.expectEqual(@as(u32, 128), TestSwiss.slotCount(slot.?));
+        try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
         try testing.expectEqual(@as(u32, 64), T.count(h));
         try testing.expectEqual(@as(u64, 0), T.fsck({}, h, 0));
         try expectAll(h, 1, 64);
@@ -1197,7 +1161,7 @@ test "bulk migration keeps every key and tolerates one unfilled entry" {
         for (1..65) |k| try put(h, k);
         const e = T.lvalueFetch({}, h, 65);
         try testing.expectEqual(@as(u8, 1), T.rung(h));
-        try testing.expectEqual(@as(u32, 128), TestSwiss.slotCount(slot.?));
+        try testing.expectEqual(@as(u32, 128), TestRH.officialSize(slot.?));
         try testing.expectEqual(@as(u64, 0), keyOf(e));
         try testing.expectEqual(@as(u32, 65), T.count(h));
         try put(h, 66);
@@ -1229,11 +1193,11 @@ test "presized and shrunk hashes are not resized by the migration change" {
     const h = &slot;
 
     // A hint above the threshold starts on rung 1, sized by the tier's
-    // own rule for the hint (200 / 0.875 rounds up to 256), not by the
+    // own rule for the hint (200 / 0.75 rounds up to 512), not by the
     // migration's.
     build(h, 200);
     try testing.expectEqual(@as(u8, 1), T.rung(h));
-    try testing.expectEqual(@as(u32, 256), TestSwiss.slotCount(slot.?));
+    try testing.expectEqual(@as(u32, 512), TestRH.officialSize(slot.?));
     const presized = slot.?;
     for (1..201) |k| try put(h, k);
     try testing.expectEqual(presized, slot.?);
@@ -1247,7 +1211,7 @@ test "presized and shrunk hashes are not resized by the migration change" {
     build(h, 0);
     defer T.demolish({}, h);
     for (1..301) |k| try put(h, k);
-    try testing.expectEqual(@as(u32, 512), TestSwiss.slotCount(slot.?));
+    try testing.expectEqual(@as(u32, 512), TestRH.officialSize(slot.?));
     const grown = slot.?;
     for (11..301) |k| try testing.expect(T.delete({}, h, k));
     try testing.expectEqual(@as(u32, 10), T.count(h));

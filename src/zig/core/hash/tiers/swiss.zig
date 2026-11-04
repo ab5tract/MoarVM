@@ -397,11 +397,8 @@ fn ImplType(comptime Spec: type) type {
 
         // -------------------------------------------------- iteration
 
-        /// The highest live slot below `limit`, or null. `noinline`: inlined
-        /// into `next`, it grew the set-0 iteration dispatch and cost the
-        /// Small rung's iterate 5-9 percent (task 9b). It also adds a call per
-        /// step to the `swiss_only` (LOOKUP) iteration; that cost is unmeasured.
-        noinline fn highestLiveBelow(header: *Header, limit: u32) ?u32 {
+        /// The highest live slot below `limit`, or null.
+        fn highestLiveBelow(header: *Header, limit: u32) ?u32 {
             if (limit == 0) return null;
             const md = metadata(header);
             var g = (limit - 1) / group_size;

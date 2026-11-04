@@ -8,14 +8,8 @@ const robinhood = @import("tiers/robinhood.zig");
 const swiss = @import("tiers/swiss.zig");
 const ordered = @import("tiers/ordered.zig");
 
-/// The ladder the tests run tables through: the default, Small then Swiss.
+/// The ladder the tests run tables through.
 pub const standard_test_set = [_]tier.TierEntry{
-    .{ .tier = small.Tier(.{ .max_capacity = 64 }), .from = 0 },
-    .{ .tier = swiss.Tier(.{}), .from = 64 },
-};
-
-/// The retired default, Small then Robin Hood, kept for the table-level migration test in `table.zig`.
-pub const standard_rh_test_set = [_]tier.TierEntry{
     .{ .tier = small.Tier(.{ .max_capacity = 64 }), .from = 0 },
     .{ .tier = robinhood.Tier(.{}), .from = 64 },
 };
@@ -72,7 +66,6 @@ test {
     _ = swiss;
     _ = ordered;
     comptime tier.validate(&standard_test_set);
-    comptime tier.validate(&standard_rh_test_set);
     comptime tier.validate(&swiss_test_set);
     comptime tier.validate(&ordered_test_set);
 }
