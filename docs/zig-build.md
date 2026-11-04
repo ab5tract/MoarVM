@@ -125,13 +125,17 @@ implementations under `src/zig/core/hash/`, one `[zig]` line each
 (`str_exports.zig: src/core/str_hash_table.c` and so on). They share one
 engine: `table.zig` (the policy layer, `Table(Spec)`, which owns the control
 block, grows, migrates between tiers and publishes new blocks under the C
-engine's safepoint discipline), `tier.zig` (tier sets) and the two tiers in
+engine's safepoint discipline), `tier.zig` (tier sets) and the four tiers in
 `tiers/`:
 
 | Tier | Storage | Used by |
 |---|---|---|
 | `small.zig` | a flat array of entries in insertion order, each tagged with the top byte of its cached hash and found by a vector compare of the tags, up to `max_capacity` entries | the string table's first rung |
-| `robinhood.zig` | the open-addressing Robin Hood table the C files implement today, with the same growth and probe-limit rules | every table's final rung |
+| `robinhood.zig` | the open-addressing Robin Hood table the C files implement today, with the same growth and probe-limit rules | the final rung of the default string ladder (set 0), and of the pointer, fixkey, index and Unicode tables |
+| `swiss.zig` | Swiss-style 16-slot groups with a metadata byte per slot | the LOOKUP strategy (set 1) and the Unicode tables' Swiss set |
+| `ordered.zig` | a dense entry array with a side index | the APPEND strategy (set 2) |
+
+The strategy-to-tier mapping is in `docs/hash-strategies.md`.
 
 A table is built on a *tier set*, a ladder of rungs with the entry count at
 which each takes over. The string table (`str.zig`) builds on `standard`:
