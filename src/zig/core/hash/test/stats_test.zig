@@ -216,7 +216,6 @@ test "a migration past the Small rung is counted once" {
     const text = try dumpOf(&out);
     try testing.expectEqual(@as(u64, 100), try countOf(text, site, "insert"));
     try testing.expectEqual(@as(u64, 1), try countOf(text, site, "migrate"));
-    std.debug.print("grow count for 100 inserts from hint 0: {d}\n", .{try countOf(text, site, "grow")});
 }
 
 test "sites are minted through the exports, one per call site" {

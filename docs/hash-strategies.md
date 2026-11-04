@@ -21,7 +21,8 @@ per hash. The C hash engine knows only the default.
   - It dies on a non-hash ("hashstrategy needs a concrete hash") and on a hash with entries ("hashstrategy on a non-empty hash"). A hash emptied by deletes is fine.
   - It dies on a strategy the engine lacks. A negative strategy, or one over 255, counts as 255.
   - The op is not known to the JIT, so a frame that calls it runs interpreted. Call it where the hash is made, outside hot loops.
-- **Process-wide override (a diagnostic):** the `MVM_HASH_STRATEGY` environment variable, read once at startup into the instance's `hash_strategy_default`, makes every `MVMHash` and `HashAttrStore` table build with that strategy. The other tables (pointer, fixkey, index, Unicode) always use their own layout.
+- **Process-wide override (a diagnostic):** the `MVM_HASH_STRATEGY` environment variable, read once at startup into the instance's `hash_strategy_default`, makes every `MVMHash` and `HashAttrStore` table build with that strategy. The other tables (pointer, fixkey, index, Unicode) are built by their own call sites; "Internal tables" below lists each site and its layout.
+- **Statistics (a diagnostic build):** a libmoar built with `-Dhash-stats=true` writes per-site operation counts and cycles to `$MVM_HASH_STATS/<pid>.tsv` at exit; it is how the internal tables below were surveyed and is described in `docs/zig-build.md`, "Statistics". The variable has no effect on a normal build.
 - **Unicode tables:** `MVM_uni_hash_build_strategy(tc, hashtable, entries, strategy)` (`uni_hash_table_funcs.h`) builds a Unicode table with strategy 0 (Robin Hood, the default) or 1 (LOOKUP, Swiss); APPEND (2) is not available for this kind and throws. The Zig engine widens the cached 32-bit hash to 64 bits (`uni.widen`) so the Swiss tag bits are filled. The four internal sites (`MVM_HASH_INTERNAL_UNI_*` in `core/hash_internal_strategies.h`) build with their real entry counts and all stay on the default: Swiss won none of the unicode benchmark cells (`traces/llm/bench/internals-uni-bench.md`).
   - Unset or empty is 0.
   - Anything other than a plain decimal number in 0..254 makes the first hash build throw, naming strategy 255.
@@ -96,6 +97,22 @@ The array-ordered tier from the first entry.
 - **When to choose it:** a hash that is built once (or mostly grown), then iterated, cloned or read, and rarely deleted from, such as a record or option set passed around and copied.
 - **Spectest:** `MVM_HASH_STRATEGY=2` passes rakudo's spectest (`traces/llm/bench/bakeoff-spectest-s2.txt`; the scoreboard's column s2).
 - **Select it:** `nqp::hashstrategy(%h, 2, $size)`, or `MVM_HASH_STRATEGY_APPEND` from C.
+
+## Internal tables
+
+MoarVM builds 26 hash tables of its own (call sites of the five table kinds; the 2026-11-03 census names them s1-s9 for string tables, f1-f8 fixkey, i1-i3 index, p1-p2 pointer, u1-u4 Unicode). The campaign surveyed them under a `-Dhash-stats=true` build over startup, the core setting build, the full spectest and the Unicode benchmark (`traces/llm/bench/internals-survey.md`, with `internals-survey-binned.md` for lookups by table size), measured the candidates, and assigned layouts. **Every internal site stays on the default layout.** A layout is chosen only when a table is built, from the size known there; nothing re-lays a live table.
+
+| site | kind | layout | reason | record |
+|---|---|---|---|---|
+| s5 MVMHash (`MVMHash.c`, `bind_key`; also s9, the shallow copy, which inherits it) | str | default | 63-82 percent of hash cycles but built with hint 0, so no size is known at the build call; Small then Swiss as the default ladder won every cell from 65 entries up and cost 3.1 percent of spectest wall, so it was reverted | `internals-set0-ladder.md`, `internals-set0-investigation.md` |
+| s1 SC weak hash, s6 deserialize, s3/s4 HashAttrStore, s2, s7, s8 | str | default | cold (s1 at most 1.0 percent of hash cycles, s6 at most 0.8) or never seen in the workloads | `internals-survey.md` |
+| i2 lexical names (`bytecode.c`; i3, the static-frame clone, inherits it) | index | default | 94.6-98.6 percent of tables hold 64 entries or fewer; closed by ruling, Swiss for the index kind was not built | `internals-survey.md`, `internals-survey-binned.md` |
+| i1 REPR registry | index | default | one 47-key table per process, cold | `internals-survey.md` |
+| f1-f8 | fixkey | default | built at instance creation and syscall setup, cold (f8 3.4 percent at most) | `internals-survey.md` |
+| p1 object ids, p2 heap-snapshot seen set | ptr | default | p1 is live but below the 5 percent line, p2 never seen | `internals-survey.md` |
+| u1 property names (4380), u2 sequence names (3680), u3 codepoint names (about 52K), u4 property values (115 tables) | uni | default, built at the real size | Swiss (`MVM_uni_hash_build_strategy`, strategy 1) won no nqp cell of the Unicode benchmark; the sized builds stay, u3 builds once instead of growing 24 times | `internals-uni-bench.md` |
+
+The macros that pick each unicode site's strategy are in `src/core/hash_internal_strategies.h` (all `MVM_HASH_STRATEGY_DEFAULT`); changing one is changing one line. Whole-system evidence for the campaign is `internals-final-ladder.md` and `internals-final-spectest.txt` under `traces/llm/bench/`, summarised in the plan's "Acceptance".
 
 ## What was measured and removed
 

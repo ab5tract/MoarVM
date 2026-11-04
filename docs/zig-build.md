@@ -145,9 +145,13 @@ sizes over the rakudo build and spectest, in which 99.7 percent of non-empty
 tables hold at most 64 entries). The insert that takes a table past 64
 migrates it into a Robin Hood block in one step. `large_only` (Robin Hood
 from 0) is defined for a future pre-allocate-big hint and is not used yet.
-The pointer, fixkey, index and Unicode tables each use a single unsalted
-Robin Hood rung (`only_rung` in `ptr.zig`, `fixkey.zig`, `index.zig`,
-`uni.zig`).
+The pointer, fixkey and index tables each use a single unsalted
+Robin Hood rung (`only_rung` in `ptr.zig`, `fixkey.zig`, `index.zig`). The
+Unicode table has two sets: `only_rung` (unsalted Robin Hood, the default)
+and `swiss_rung` (Swiss groups, with the cached 32-bit hash widened to 64
+bits), selected with `MVM_uni_hash_build_strategy` (strategy 0 or 1; 2 is
+refused). Every internal Unicode site stays on the default; the table of
+assignments is in `docs/hash-strategies.md`, "Internal tables".
 
 The headers switch on `MVM_ZIG_IMPL`, which `config.h` defines to 1 when the
 Zig implementations are built (`zig build` unless `-Dzig-impl=false`;
@@ -329,16 +333,18 @@ is a call site of an exported table constructor, interned by return
 address (at most 255, then `other`). What is counted, per site: operations
 (build, insert, overwrite, fetch hit and miss, delete hit and miss,
 iterator start and step, copy, grow, migrate, demolish) with their cycles,
-probe lengths of lookups (count, sum, maximum, hit and miss apart), the
-size requested at build and the maximum item count at demolish (the latter
+fetches binned by the table's entry count at the fetch (hit and miss apart),
+the size requested at build and the maximum item count at demolish (the latter
 by set and rung), both bucketed as `<=4, 16, 32, 64, 65, 128, 256, 1024,
-16384` and more.
+16384` and more. Probe lengths are not measured: `stats.probe` and the
+`probe` row of the dump format exist, but no engine hook calls them, so a
+dump carries no `probe` rows and cycles per fetch stand in for probe depth.
 
 The file is TSV; header lines start with `#`: `cmdline`, `pid`, `tsc_hz`
 (calibrated from the first counted use to the dump), `total_cycles` and
 `libmoar` (the path from `dladdr`). Rows: `site<TAB>id<TAB>offset_hex`
 (offset from libmoar's load base), `op<TAB>site<TAB>op<TAB>count<TAB>cycles`,
-`probe<TAB>site<TAB>hit|miss<TAB>count<TAB>sum_len<TAB>max_len`,
+`probe<TAB>site<TAB>hit|miss<TAB>count<TAB>sum_len<TAB>max_len` (defined, never written),
 `build<TAB>site<TAB>bucket<TAB>count` and
 `demolish<TAB>site<TAB>set<TAB>rung<TAB>bucket<TAB>count`, where a bucket is
 an index into the ladder above (9 is "more").
