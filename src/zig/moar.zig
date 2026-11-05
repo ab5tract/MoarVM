@@ -112,6 +112,47 @@ pub inline fn assignRef(tc: *ThreadContext, update_root: *Collectable, addr: any
     addr.* = v;
 }
 
+// ---- MVM_gc_worklist_add from src/gc/worklist.h -------------------------
+
+/// MVM_gc_worklist_add(tc, worklist, item) (worklist.h:33-60 under
+/// MVM_GC_DEBUG, :69-78 otherwise), which translate-c cannot express (a
+/// statement macro). `item` is the address of a collectable pointer slot
+/// (`*?*T`, `**T`, `*[*c]T` or `[*c][*c]T`); the macro casts it to
+/// `MVMCollectable **`. A non-null pointee is pushed unless it is in gen2
+/// and the worklist excludes gen2; a full list goes to
+/// MVM_gc_worklist_add_slow.
+pub inline fn worklistAdd(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, item: anytype) void {
+    const item_to_add: [*c][*c]Collectable = @ptrCast(@alignCast(item));
+    if (comptime c.MVM_GC_DEBUG != 0) {
+        const o = item_to_add.*;
+        if (o != null) {
+            if (o.*.owner == 0)
+                c.MVM_panic(1, "Zeroed owner in item added to GC worklist");
+            // MVMuint32 against AO_t: the C widens the owner.
+            if (@as(c.AO_t, o.*.owner) > tc.*.instance.*.next_user_thread_id)
+                c.MVM_panic(1, "Invalid owner in item added to GC worklist");
+            if (o.*.flags2 & c.MVM_CF_DEBUG_IN_GEN2_FREE_LIST != 0)
+                c.MVM_panic(1, "Adding item to worklist already freed in gen2\n");
+            if (o.*.flags1 & c.MVM_CF_FRAME != 0) {
+                if (@as([*c]c.MVMFrame, @ptrCast(@alignCast(o))).*.static_info == null)
+                    c.MVM_panic(1, "Frame with NULL static_info added to worklist");
+            } else if ((o.*.flags1 & c.MVM_CF_STABLE) == 0 and @as([*c]Object, @ptrCast(@alignCast(o))).*.st == null)
+                c.MVM_panic(1, "NULL STable in item added to GC worklist");
+            if (@intFromPtr(o) >= @intFromPtr(tc.*.nursery_alloc) and
+                @intFromPtr(o) < @intFromPtr(tc.*.nursery_alloc_limit))
+                c.MVM_panic(1, "Adding pointer %p to past fromspace to GC worklist", @as(?*anyopaque, @ptrCast(o)));
+        }
+    }
+    if (item_to_add.* != null and (worklist.*.include_gen2 != 0 or (item_to_add.*.*.flags2 & c.MVM_CF_SECOND_GEN) == 0)) {
+        if (worklist.*.items == worklist.*.alloc) {
+            c.MVM_gc_worklist_add_slow(tc, worklist, item_to_add);
+        } else {
+            worklist.*.list[worklist.*.items] = item_to_add;
+            worklist.*.items += 1;
+        }
+    }
+}
+
 // ---- MVMROOT .. MVMROOT6 from src/gc/roots.h ----------------------------
 
 /// Handle returned by `root`/`rootN`; `defer r.pop(tc)` ends the scope.
@@ -316,6 +357,29 @@ test "assignRef of a live nursery object passes the debug checks" {
     try std.testing.expectEqual(value, slot);
     assignRef(tc, @ptrCast(holder.?), &slot, null);
     try std.testing.expectEqual(@as(?*Object, null), slot);
+}
+
+test "worklistAdd skips null and, unless include_gen2, gen2 items" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: *ThreadContext = instance.*.main_thread;
+    var gen2_obj: ?*Object = instance.*.VMNull; // allocated in gen2 at boot
+    try std.testing.expect(gen2_obj.?.header.flags2 & c.MVM_CF_SECOND_GEN != 0);
+    var nursery_obj: ?*Object = c.MVM_repr_alloc_init(tc, instance.*.boot_types.BOOTArray);
+    var none: ?*Object = null;
+    inline for (.{ 0, 1 }) |include_gen2| {
+        const wl = c.MVM_gc_worklist_create(tc, include_gen2);
+        defer c.MVM_gc_worklist_destroy(tc, wl);
+        worklistAdd(tc, wl, &none);
+        worklistAdd(tc, wl, &gen2_obj);
+        worklistAdd(tc, wl, &nursery_obj);
+        try std.testing.expectEqual(@as(u32, 1 + include_gen2), wl.*.items);
+        try std.testing.expectEqual(@intFromPtr(&nursery_obj), @intFromPtr(wl.*.list[include_gen2]));
+        // Past alloc the slow path grows the list.
+        for (0..300) |_| worklistAdd(tc, wl, &nursery_obj);
+        try std.testing.expectEqual(@as(u32, 301 + include_gen2), wl.*.items);
+        try std.testing.expectEqual(@as(u32, 512), wl.*.alloc);
+    }
 }
 
 test "stable, repr, objectBody and isConcrete" {
