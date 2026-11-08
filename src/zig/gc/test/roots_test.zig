@@ -211,7 +211,9 @@ test "tc roots add dispatch resumption init args of object and string kind" {
 
     // As resume_init_capture sets it (src/disp/program.c). roots.c:233-241
     // adds the object and string arguments through add_collectable, the
-    // last roots of the tc walk.
+    // last roots of the tc walk. This covers the GC (worklist) path only,
+    // not the heap snapshot branch of add_collectable, which would need a
+    // real MVMHeapSnapshotState.
     var flags = [_]c.MVMCallsiteEntry{ c.MVM_CALLSITE_ARG_OBJ, c.MVM_CALLSITE_ARG_INT, c.MVM_CALLSITE_ARG_STR };
     var cs = std.mem.zeroes(c.MVMCallsite);
     cs.arg_flags = &flags;
