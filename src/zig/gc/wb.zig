@@ -34,7 +34,7 @@ pub fn hitBy(tc: Tc, update_root: Col, referenced: Col) callconv(.c) void {
 // dynamic table for outside callers, while calls from inside libmoar bind to
 // these definitions, which is what lets the LTO link inline them into their
 // C callers. Otherwise they are plain default-visibility exports.
-const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
+const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
     @export(&hit, .{ .name = "MVM_gc_write_barrier_hit", .visibility = visibility });

@@ -65,7 +65,7 @@ pub fn destroy(tc: Tc, worklist: Worklist) callconv(.c) void {
 // dynamic table for outside callers, while calls from inside libmoar bind to
 // these definitions, which is what lets the LTO link inline them into their
 // C callers. Otherwise they are plain default-visibility exports.
-const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
+const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
     @export(&create, .{ .name = "MVM_gc_worklist_create", .visibility = visibility });

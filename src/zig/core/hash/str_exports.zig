@@ -143,7 +143,7 @@ fn MVM_round_up_log_base2(v: u32) callconv(.c) u32 {
 // calls from inside libmoar bind to these definitions, which is what lets
 // the LTO link inline them into their C callers. Otherwise they are plain
 // default-visibility exports, as `export fn` would make them.
-const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
+const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
     @export(if (stats.enabled) &MVM_str_hash_build_stats else &MVM_str_hash_build, .{ .name = "MVM_str_hash_build", .visibility = visibility });

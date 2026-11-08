@@ -16,7 +16,7 @@ const Object = [*c]c.MVMObject;
 /// C `assert`: checked only when the C is built without NDEBUG, which the
 /// build ties to a Debug optimize mode.
 inline fn cAssert(ok: bool) void {
-    if (comptime builtin.mode == .Debug) std.debug.assert(ok);
+    if (comptime builtin.mode == .debug) std.debug.assert(ok);
 }
 
 /// Gets a stable identifier for an object, which will not change even if
@@ -74,7 +74,7 @@ pub fn clear(tc: Tc, item: Col) callconv(.c) void {
 // dynamic table for outside callers, while calls from inside libmoar bind to
 // these definitions, which is what lets the LTO link inline them into their
 // C callers. Otherwise they are plain default-visibility exports.
-const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
+const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
     @export(&objectId, .{ .name = "MVM_gc_object_id", .visibility = visibility });

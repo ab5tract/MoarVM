@@ -58,7 +58,7 @@ fn MVM_fixkey_hash_fsck(tc: Tc, hashtable: Ht, mode: u32) callconv(.c) u64 {
 // calls from inside libmoar bind to these definitions, which is what lets
 // the LTO link inline them into their C callers. Otherwise they are plain
 // default-visibility exports, as `export fn` would make them.
-const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
+const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
     @export(if (stats.enabled) &MVM_fixkey_hash_build_stats else &MVM_fixkey_hash_build, .{ .name = "MVM_fixkey_hash_build", .visibility = visibility });

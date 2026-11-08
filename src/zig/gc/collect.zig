@@ -37,7 +37,7 @@ const worklistAdd = moar.worklistAdd;
 /// C `assert`: checked only when the C is built without NDEBUG, which the
 /// build ties to a Debug optimize mode.
 inline fn cAssert(ok: bool) void {
-    if (comptime builtin.mode == .Debug) std.debug.assert(ok);
+    if (comptime builtin.mode == .debug) std.debug.assert(ok);
 }
 
 /// `#ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX` (src/moar.h:136).
@@ -881,7 +881,7 @@ pub fn freeGen2Unmarked(executing_thread: Tc, tc: Tc, global_destruction: c.MVMi
 // dynamic table for outside callers, while calls from inside libmoar bind to
 // these definitions, which is what lets the LTO link inline them into their
 // C callers. Otherwise they are plain default-visibility exports.
-const visibility: std.builtin.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
+const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
     @export(&newThreadNurserySize, .{ .name = "MVM_gc_new_thread_nursery_size", .visibility = visibility });
