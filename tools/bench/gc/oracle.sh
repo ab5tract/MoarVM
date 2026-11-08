@@ -27,7 +27,7 @@
 # real RSS) deletes the full= and gen2_freed= fields before comparing; tier 2
 # compares every field. The filtered logs are left in <out>/<side>-<i>.cmp.
 #
-# Reading the log (from the Task 1 review of 139d404ed): one line per thread
+# Reading the log (from the Task 1 review of 96d049123): one line per thread
 # per collection; coord=1 marks the thread that started the run; a thread
 # destroyed mid-run is logged just before its destruction; stables_freed
 # appears on the coordinator's line of the run that frees them; nothing is

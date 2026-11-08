@@ -455,7 +455,7 @@ The machinery is in `tools/bench/gc/` (its `README.md`; every script takes
 `LD_LIBRARY_PATH=<prefix>/lib` with one installed nqp and rakudo.
 
 - Oracle: build both collectors at `-Dgc-debug=1` (the campaign's C side is
-  commit 139d404ed, the C collector with the Zig hash engine), then
+  commit 96d049123, the C collector with the Zig hash engine), then
   `tools/bench/gc/oracle.sh --base=<C prefix> --head=<Zig prefix> --volume=100000 [--bad-packages] [--tier=1|2] --out=<dir>`.
   It runs `crc-sequential.raku` three times per side with
   `MVM_SPESH_DISABLE=1 RAKUDO_NO_PRECOMPILATION=1` and the log on, checks
@@ -489,7 +489,7 @@ same pattern for `-stress` and `-base`.
 
 Recipes the campaign used, for a maintainer repeating the comparison:
 
-- Prefixes: check out the C side (139d404ed, or whatever commit the
+- Prefixes: check out the C side (96d049123, or whatever commit the
   comparison is against) and `zig build install --prefix <P> [-Dgc-debug=1]
   [-Dnursery-size=524288]`, then the same from the Zig side with a prefix
   of equal length. Each prefix needs an nqp and rakudo installed against it

@@ -141,7 +141,7 @@ test "instance roots are added in the C order" {
     defer c.MVM_gc_worklist_destroy(tc, wl);
     roots.addInstanceRootsToWorklist(tc, wl, null);
     // Captured from one run of the C collector (src/gc/roots.c), at commit
-    // 4bf1abc71 before the [zig] line for roots.zig was added: the gc-test
+    // 9a3ebce05 before the [zig] line for roots.zig was added: the gc-test
     // binary of `zig build unit-test` (-Dgc-debug=0) called the C
     // MVM_gc_root_add_instance_roots_to_worklist on a fresh instance with an
     // include_gen2 worklist, five instances in a row, and printed items=37
