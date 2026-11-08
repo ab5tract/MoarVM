@@ -172,12 +172,12 @@ fn counterSlow() *Counters {
 
 pub inline fn count(site: u8, op: Op) void {
     if (!enabled) return;
-    counters().ops[site][@intFromEnum(op)].count += 1;
+    counters().ops[site][@backingInt(op)].count += 1;
 }
 
 pub inline fn countCycles(site: u8, op: Op, t0: u64) void {
     if (!enabled) return;
-    const e = &counters().ops[site][@intFromEnum(op)];
+    const e = &counters().ops[site][@backingInt(op)];
     e.count += 1;
     e.cycles += now() -% t0;
 }
@@ -188,7 +188,7 @@ pub inline fn countFetch(site: u8, hit: bool, items: u32, t0: u64) void {
     if (!enabled) return;
     const cs = counters();
     const cyc = now() -% t0;
-    const e = &cs.ops[site][@intFromEnum(if (hit) Op.fetch_hit else Op.fetch_miss)];
+    const e = &cs.ops[site][@backingInt(if (hit) Op.fetch_hit else Op.fetch_miss)];
     e.count += 1;
     e.cycles += cyc;
     const f = &cs.fetches[site][@intFromBool(hit)][bucketOf(items)];
