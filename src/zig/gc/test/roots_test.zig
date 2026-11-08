@@ -161,6 +161,44 @@ test "instance roots are added in the C order" {
     }
 }
 
+test "instance roots mark both VM event subscription types" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc = instance.*.main_thread;
+    const wl = c.MVM_gc_worklist_create(tc, 1);
+    defer c.MVM_gc_worklist_destroy(tc, wl);
+    // As nqp::vmeventsubscribe would set them (src/moar.c); any collectable
+    // will do for the walk. roots.c:136-139 adds GCEvent and then
+    // SpeshOverviewEvent, so each slot is on the worklist exactly once.
+    instance.*.subscriptions.GCEvent = instance.*.VMNull;
+    instance.*.subscriptions.SpeshOverviewEvent = instance.*.VMNull;
+    defer {
+        instance.*.subscriptions.GCEvent = null;
+        instance.*.subscriptions.SpeshOverviewEvent = null;
+    }
+    roots.addInstanceRootsToWorklist(tc, wl, null);
+    try std.testing.expectEqual(@as(u32, 37 + 2), wl.*.items);
+    const gc_event = @intFromPtr(&instance.*.subscriptions.GCEvent);
+    const spesh_overview = @intFromPtr(&instance.*.subscriptions.SpeshOverviewEvent);
+    var seen_gc_event: u32 = 0;
+    var seen_spesh_overview: u32 = 0;
+    var at_gc_event: usize = 0;
+    for (0..wl.*.items) |i| {
+        const a = @intFromPtr(wl.*.list[i]);
+        if (a == gc_event) {
+            seen_gc_event += 1;
+            at_gc_event = i;
+        }
+        if (a == spesh_overview) {
+            seen_spesh_overview += 1;
+            // The second subscription root, right after GCEvent.
+            try std.testing.expectEqual(at_gc_event + 1, i);
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 1), seen_gc_event);
+    try std.testing.expectEqual(@as(u32, 1), seen_spesh_overview);
+}
+
 test "frame registers add only object and string registers" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);

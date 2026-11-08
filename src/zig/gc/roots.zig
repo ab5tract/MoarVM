@@ -143,10 +143,8 @@ pub fn addInstanceRootsToWorklist(tc: Tc, worklist: Worklist, snapshot: Snapshot
 
     addCollectable(tc, worklist, snapshot, &instance.*.subscriptions.subscription_queue, "VM Event Subscription Queue");
 
-    // The C adds GCEvent twice, the second time under the SpeshOverviewEvent
-    // description (roots.c:136-139); ported as written.
     addCollectable(tc, worklist, snapshot, &instance.*.subscriptions.GCEvent, "VM Event GCEvent type");
-    addCollectable(tc, worklist, snapshot, &instance.*.subscriptions.GCEvent, "VM Event SpeshOverviewEvent type");
+    addCollectable(tc, worklist, snapshot, &instance.*.subscriptions.SpeshOverviewEvent, "VM Event SpeshOverviewEvent type");
 
     c.MVM_callsite_mark_interns(tc, worklist, snapshot);
 
