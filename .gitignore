@@ -95,3 +95,4 @@ tools/repr_size_table.exe
 # zig build
 .zig-cache/
 zig-out/
+zig-pkg/

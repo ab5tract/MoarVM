@@ -1,16 +1,18 @@
 //! The Zig implementations: translate-c of src/moar.h (through
-//! src/zig/moar_c.h), the fixup pass, the `moar` module, and the single
-//! object `moar_zig` that holds every file under src/zig/ named in
-//! build/sources.list's [zig] section. See docs/zig-build.md.
+//! src/zig/moar_c.h, by the translate_c package), the `moar` module, and
+//! the single object `moar_zig` that holds every file under src/zig/ named
+//! in build/sources.list's [zig] section. See docs/zig-build.md.
 const std = @import("std");
 const Options = @import("options.zig").Options;
 const moar = @import("moar.zig");
 const sources = @import("sources.zig");
 const root_files = @import("root_files.zig");
+const Translator = @import("translate_c").Translator;
 
 pub const Impl = struct {
-    translate: *std.Build.Step.TranslateC,
-    /// The fixed translate-c output as a module (import name "c").
+    /// The translate-c output for src/zig/moar_c.h.
+    translated: std.Build.LazyPath,
+    /// The translate-c output as a module (import name "c").
     c_mod: *std.Build.Module,
     /// src/zig/moar.zig with "c" imported.
     moar_mod: *std.Build.Module,
@@ -37,38 +39,23 @@ fn configDirName(config_h: []const u8) []const u8 {
 }
 
 pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
-    const translate = b.addTranslateC(.{
-        .root_source_file = b.path("src/zig/moar_c.h"),
+    const t: Translator = .init(b.dependency("translate_c", .{}), .{
+        .c_source_file = b.path("src/zig/moar_c.h"),
         .target = opts.target,
         .optimize = opts.optimize,
         .link_libc = true,
     });
     switch (config) {
-        .generated => |h| translate.addConfigHeader(h),
-        .existing => |dir| translate.addIncludePath(dir),
+        .generated => |h| t.addConfigHeader(h),
+        .existing => |dir| t.addIncludePath(dir),
     }
-    for (moar.include_paths) |p| translate.addIncludePath(b.path(p));
-    for (moar.system_include_paths) |p| translate.addSystemIncludePath(b.path(p));
-    for (moar.defines(b, opts)) |d| translate.defineCMacro(d.name, d.value);
+    for (moar.include_paths) |p| t.addIncludePath(b.path(p));
+    for (moar.system_include_paths) |p| t.addSystemIncludePath(b.path(p));
+    for (moar.defines(b, opts)) |d| t.defineCMacro(d.name, d.value);
 
-    const fixup = b.addExecutable(.{
-        .name = "fixup_translated",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("build/zig/fixup_translated.zig"),
-            .target = b.graph.host,
-            .optimize = .debug,
-        }),
-    });
-    const run = b.addRunArtifact(fixup);
-    run.addFileArg2(translate.getOutput(), .{});
-    const fixed = run.addOutputFileArg2("moar_c.zig", .{});
-
-    const c_mod = b.createModule(.{
-        .root_source_file = fixed,
-        .target = opts.target,
-        .optimize = opts.optimize,
-        .link_libc = true,
-    });
+    // Rooted at t.output_file, with the package's c_builtins and helpers
+    // modules the translated file imports.
+    const c_mod = t.mod;
     const moar_mod = b.createModule(.{
         .root_source_file = b.path("src/zig/moar.zig"),
         .target = opts.target,
@@ -98,7 +85,7 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
     const object = b.addObject(.{ .name = "moar_zig", .root_module = root_mod });
     if (opts.lto) object.lto = .full;
 
-    return .{ .translate = translate, .c_mod = c_mod, .moar_mod = moar_mod, .object = object };
+    return .{ .translated = t.output_file, .c_mod = c_mod, .moar_mod = moar_mod, .object = object };
 }
 
 /// `zig build zig-objects`: install the object to <prefix>/lib/moar_zig.o.

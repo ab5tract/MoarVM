@@ -96,13 +96,19 @@ files it replaces:
 All Zig files compile into one object, `moar_zig.o`, whose root is
 `src/zig/root.zig`. They see the C API through `src/zig/moar.zig`, which
 imports the translate-c output of `src/zig/moar_c.h` (a wrapper around
-`src/moar.h` that neutralises C11 `_Atomic`, which Zig cannot express) after
-`build/zig/fixup_translated.zig` has repaired the compound assignments
-translate-c 0.16 gets wrong, and which defines Zig equivalents of the macros
-translate-c cannot handle: `stable`, `repr`, `objectBody`, `isConcrete`,
+`src/moar.h` that neutralises C11 `_Atomic`, which Zig cannot express), and
+which defines Zig equivalents of the macros translate-c cannot handle: `stable`, `repr`, `objectBody`, `isConcrete`,
 `assignRef`, `root`/`rootN`. `zig build unit-test` checks the translated
 struct layouts against the C compiler and runs the shim tests against a real
 instance.
+
+The translation is done by the `translate_c` package
+(`codeberg.org/ziglang/translate-c`, branch `zig-0.17.x`, pinned in
+`build.zig.zon`), not by the compiler. The first build fetches it over the
+network, once: the archive lands in the global cache
+(`ZIG_GLOBAL_CACHE_DIR`, by default `~/.cache/zig`) and is unpacked into
+`zig-pkg/` in the checkout (`--pkg-dir` or `ZIG_LOCAL_PKG_DIR` moves it);
+later builds, including fresh checkouts on the same machine, work offline.
 
 The C files stay in the tree and are still compiled with
 `-Dzig-impl=false`. The Perl build gets the same object from
