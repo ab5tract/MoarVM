@@ -127,7 +127,7 @@ fn ImplType(comptime Spec: type) type {
         const Ctx = Spec.Ctx;
         const key_size = @sizeOf(Key);
         /// The key's bytes as one unsigned integer, for the zero-key test.
-        const KeyBits = std.meta.Int(.unsigned, key_size * 8);
+        const KeyBits = @Int(.unsigned, key_size * 8);
 
         pub const LvalueResult = union(enum) { found: [*]u8, inserted: [*]u8, full };
 
@@ -611,8 +611,8 @@ test "grow keeps every entry" {
     try testing.expectEqual(@as(u32, n), T.count(h));
     for (1..n + 1) |k| try testing.expectEqual(@as(u64, k * 10), valueOf(T.fetch({}, h, k).?));
     try testing.expectEqual(@as(?[*]u8, null), T.fetch({}, h, n + 1));
-    var seen = try std.DynamicBitSet.initEmpty(testing.allocator, n + 1);
-    defer seen.deinit();
+    var seen: std.bit_set.Dynamic = try .initEmpty(testing.allocator, n + 1);
+    defer seen.deinit(testing.allocator);
     var visits: u32 = 0;
     var pos = T.first(h);
     while (pos != 0) : (pos = T.next(h, pos)) {

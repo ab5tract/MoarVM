@@ -98,7 +98,7 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
         const Ctx = Spec.Ctx;
         const key_size = @sizeOf(Key);
         /// The key's bytes as one unsigned integer, for the zero-key test.
-        const KeyBits = std.meta.Int(.unsigned, key_size * 8);
+        const KeyBits = @Int(.unsigned, key_size * 8);
 
         pub const LvalueResult = union(enum) { found: [*]u8, inserted: [*]u8, full };
 

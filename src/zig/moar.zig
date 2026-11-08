@@ -42,11 +42,12 @@ fn isCollectable(comptime T: type) bool {
     if (T == Collectable) return true;
     const info = @typeInfo(T);
     if (info != .@"struct") return false;
-    const fields = info.@"struct".fields;
-    if (fields.len == 0) return false;
-    const first = fields[0];
-    if (std.mem.eql(u8, first.name, "header") and first.type == Collectable) return true;
-    if (std.mem.eql(u8, first.name, "common") and isCollectable(first.type)) return true;
+    const st = info.@"struct";
+    if (st.field_names.len == 0) return false;
+    const first_name = st.field_names[0];
+    const first_type = st.field_types[0];
+    if (std.mem.eql(u8, first_name, "header") and first_type == Collectable) return true;
+    if (std.mem.eql(u8, first_name, "common") and isCollectable(first_type)) return true;
     return false;
 }
 

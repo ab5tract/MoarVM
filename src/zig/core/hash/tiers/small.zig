@@ -52,7 +52,7 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         const Ctx = Spec.Ctx;
         const key_size = @sizeOf(Key);
         /// The key read as one unsigned integer, for the zero-key test.
-        const KeyBits = std.meta.Int(.unsigned, key_size * 8);
+        const KeyBits = @Int(.unsigned, key_size * 8);
         const tags_offset = @sizeOf(Header) + @sizeOf(Payload);
         /// `find`'s result for an absent key. Returning a plain index (not
         /// `?u32`) keeps the result in a register: an optional comes back
@@ -141,7 +141,7 @@ fn ImplType(comptime max_capacity: u32, comptime Spec: type) type {
         /// Index of `key`'s entry, or `absent`, comparing tags `N` at a time.
         /// The zero-key test runs only on tag-matched candidates.
         fn findIn(comptime N: comptime_int, header: *Header, ctx: Ctx, key: Key, tag: u8) u32 {
-            const Mask = std.meta.Int(.unsigned, N);
+            const Mask = @Int(.unsigned, N);
             const t = tags(header);
             const n = header.cur_items;
             const base_entry = entries(header);
