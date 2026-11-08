@@ -1001,41 +1001,52 @@ pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
         c.MVM_profiler_log_gc_end(tc);
 }
 
-/// Run the global destruction phase. (orchestrate.c:800-855)
+/// Run the global destruction phase. (orchestrate.c:800-868)
 pub fn globalDestruction(tc: Tc) callconv(.c) void {
     var nursery_tmp: [*c]u8 = undefined;
 
     const vm: [*c]c.MVMInstance = tc.*.instance;
     var cur_thread: Thread = null;
 
-    // Ask all threads to suspend on the next chance they get
-    // uv_mutex_lock(&vm->mutex_threads) (orchestrate.c:808).
+    // Ask all threads to suspend on the next chance they get. Like the
+    // debugserver, mark ourselves blocked while holding mutex_threads, so a
+    // GC run started by another thread meanwhile does not wait for us.
+    markThreadBlocked(tc);
+    // uv_mutex_lock(&vm->mutex_threads) (orchestrate.c:811).
     c.uv_mutex_lock(&vm.*.mutex_threads);
 
     cur_thread = vm.*.threads;
     while (cur_thread != null) {
-        if (cur_thread.*.body.tc != tc) {
+        const other: Tc = cur_thread.*.body.tc;
+        // A thread that has been cleaned up already has no tc left. Only ask
+        // threads that are running or blocked; one that is in the middle of a
+        // GC run (or already has a suspend bit) is left alone.
+        var ask = false;
+        if (other != null and other != tc) {
+            // MVM_load(&other->gc_status) (orchestrate.c:821).
+            const current: Status = atomic.load(&other.*.gc_status);
+            ask = current == NONE or current == UNABLE;
+        }
+        if (ask) {
             while (true) {
                 // Is the thread currently doing completely ordinary code execution?
-                // MVM_cas(&tc->gc_status, MVMGCStatus_NONE, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST)
-                // (orchestrate.c:815): on the caller's own tc, ported as written
-                // (the plan's "C observations for a later campaign" list).
-                if (atomic.cas(&tc.*.gc_status, NONE, INTERRUPT | SUSPEND_REQUEST) == NONE) {
+                // MVM_cas(&other->gc_status, MVMGCStatus_NONE, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:827).
+                if (atomic.cas(&other.*.gc_status, NONE, INTERRUPT | SUSPEND_REQUEST) == NONE) {
                     break;
                 }
                 // Is the thread in question currently blocked, i.e. spending time in
                 // some long-running piece of C code, waiting for I/O, etc.?
                 // If so, just store the suspend request bit so when it unblocks itself
                 // it'll suspend execution.
-                // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:823).
-                if (atomic.cas(&tc.*.gc_status, UNABLE, UNABLE | SUSPEND_REQUEST) == UNABLE) {
+                // MVM_cas(&other->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:835).
+                if (atomic.cas(&other.*.gc_status, UNABLE, UNABLE | SUSPEND_REQUEST) == UNABLE) {
                     break;
                 }
                 // Was the thread faster than us? For example by running into
                 // a breakpoint, completing a step, or encountering an
                 // unhandled exception? If so, we're done here.
-                // MVM_load(&tc->gc_status) (orchestrate.c:830).
-                if ((atomic.load(&tc.*.gc_status) & SUSPEND_MASK) == SUSPEND_REQUEST) {
+                // MVM_load(&other->gc_status) (orchestrate.c:842).
+                if ((atomic.load(&other.*.gc_status) & SUSPEND_MASK) == SUSPEND_REQUEST) {
                     break;
                 }
                 _ = c.MVM_platform_thread_yield();
@@ -1044,8 +1055,9 @@ pub fn globalDestruction(tc: Tc) callconv(.c) void {
         cur_thread = cur_thread.*.body.next;
     }
 
-    // uv_mutex_unlock(&vm->mutex_threads) (orchestrate.c:839).
+    // uv_mutex_unlock(&vm->mutex_threads) (orchestrate.c:851).
     c.uv_mutex_unlock(&vm.*.mutex_threads);
+    markThreadUnblocked(tc);
 
     // Allow other threads to do a little more work before we continue here
     _ = c.MVM_platform_thread_yield();

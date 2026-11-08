@@ -1,7 +1,7 @@
 //! Tests of `orchestrate.zig` (the port of src/gc/orchestrate.c) on a booted
 //! VM: the stop-the-world protocol on one thread, the blocked/unblocked
 //! transitions, the coordinator stealing a blocked thread's run, the
-//! as-written behaviour of global destruction, and the debug-only RSS
+//! suspend requests of global destruction, and the debug-only RSS
 //! override of the full-collection decision. The two-thread test waits only
 //! on observable state (an atomic phase counter and `gc_status`), never on
 //! time.
@@ -264,7 +264,7 @@ test "a suspend request without a debugserver parks until the bits clear" {
     try std.testing.expectEqual(s0, seq(instance));
 }
 
-test "global_destruction requests suspend on the calling tc" {
+test "global_destruction asks the other running and blocked threads to suspend" {
     // The instance is not destroyed afterwards: MVM_vm_destroy_instance
     // runs global destruction itself, and a second pass would free the
     // heap twice. The steps destroy_instance takes before it are taken
@@ -278,24 +278,34 @@ test "global_destruction requests suspend on the calling tc" {
     c.MVM_io_eventloop_destroy(tc);
     orchestrate.enterFromAllocator(tc);
     c.MVM_profile_instrumented_free_data(tc);
-    // Another registered thread, so the loop over the other threads
-    // (orchestrate.c:810-837) runs its body once.
-    var thread: [*c]c.MVMThread = null;
-    c.MVM_gc_root_temp_push(tc, @ptrCast(&thread));
-    const other_tc = registerThread(tc, &thread);
-    c.MVM_gc_root_temp_pop(tc);
+    // Four other registered threads for the loop over the threads
+    // (orchestrate.c:813-849): one running, one blocked, one in the middle
+    // of a GC run, and one already cleaned up (no tc left).
+    var threads: [4][*c]c.MVMThread = @splat(null);
+    for (&threads) |*t| c.MVM_gc_root_temp_push(tc, @ptrCast(t));
+    var others: [4]Tc = undefined;
+    for (&threads, &others) |*t, *o| o.* = registerThread(tc, t);
+    c.MVM_gc_root_temp_pop_n(tc, threads.len);
+    const running = others[0];
+    const blocked = others[1];
+    const busy = others[2];
+    @atomicStore(c.AO_t, &blocked.*.gc_status, c.MVMGCStatus_UNABLE, .seq_cst);
+    @atomicStore(c.AO_t, &busy.*.gc_status, c.MVMGCStatus_INTERRUPT, .seq_cst);
+    threads[3].*.body.tc = null;
     try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(other_tc));
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(running));
     const fromspace = tc.*.nursery_fromspace;
     const tospace = tc.*.nursery_tospace;
     orchestrate.globalDestruction(tc);
-    // As written (orchestrate.c:815; the plan's "C observations" list): the
-    // CAS inside the loop is on the caller's own tc, so the caller ends up
-    // INTERRUPT | SUSPEND_REQUEST and the other thread is left as it was.
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(tc) & c.MVMSUSPENDSTATUS_MASK);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(other_tc));
-    // The faked nursery run swapped the semi-spaces (orchestrate.c:846-848).
+    // The caller was blocked around the loop and is running again
+    // (orchestrate.c:810, :852); the running thread is interrupted with a
+    // suspend request (:827), the blocked one keeps UNABLE and gets the
+    // suspend bit (:835), and the one in a GC run is left alone (:820-823).
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(running));
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(blocked));
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_INTERRUPT), gcStatus(busy));
+    // The faked nursery run swapped the semi-spaces (orchestrate.c:859-861).
     try std.testing.expectEqual(tospace, tc.*.nursery_fromspace);
     try std.testing.expectEqual(fromspace, tc.*.nursery_tospace);
     try std.testing.expect(instance.*.stables_to_free == null);
