@@ -18,4 +18,5 @@ comptime {
     _ = @import("gc/objectid.zig");
     _ = @import("gc/finalize.zig");
     _ = @import("gc/debug.zig");
+    _ = @import("gc/orchestrate.zig");
 }

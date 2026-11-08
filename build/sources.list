@@ -219,3 +219,4 @@ src/zig/gc/wb.zig: src/gc/wb.c
 src/zig/gc/objectid.zig: src/gc/objectid.c
 src/zig/gc/finalize.zig: src/gc/finalize.c
 src/zig/gc/debug.zig: src/gc/debug.c
+src/zig/gc/orchestrate.zig: src/gc/orchestrate.c
