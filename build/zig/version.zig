@@ -1,5 +1,6 @@
 //! MoarVM version string, mirroring Configure.pl.
 const std = @import("std");
+const root_files = @import("root_files.zig");
 
 pub const Version = struct {
     full: []const u8,
@@ -38,21 +39,23 @@ fn digitsEnd(s: []const u8, start: usize) usize {
 pub fn detect(b: *std.Build) Version {
     var full: []const u8 = "0.0-0";
 
-    if (b.build_root.handle.readFileAlloc(b.graph.io, "VERSION", b.allocator, .unlimited)) |text| {
+    if (root_files.readRootFile(b, "VERSION")) |text| {
         const trimmed = std.mem.trim(u8, text, " \t\r\n");
         if (trimmed.len > 0) full = trimmed;
-    } else |_| {}
+    }
 
-    if (b.build_root.handle.access(b.graph.io, ".git", .{})) |_| {
-        var code: u8 = 0;
+    if (root_files.rootExists(b, ".git")) {
         const argv = [_][]const u8{
-            "git", "-C", b.build_root.path orelse ".", "describe", "--tags", "--match=20*",
+            "git", "-C", b.root.toString(b.allocator) catch @panic("OOM"), "describe", "--tags", "--match=20*",
         };
-        if (b.runAllowFail(&argv, &code, .ignore)) |out| {
-            const trimmed = std.mem.trim(u8, out, " \t\r\n");
-            if (code == 0 and trimmed.len > 0) full = trimmed;
-        } else |_| {}
-    } else |_| {}
+        switch (b.runFallible(&argv, .{ .stderr_behavior = .ignore })) {
+            .success => |out| {
+                const trimmed = std.mem.trim(u8, out, " \t\r\n");
+                if (trimmed.len > 0) full = trimmed;
+            },
+            .spawn_failed, .bad_exit_code, .crashed => {},
+        }
+    }
 
     return parse(full);
 }

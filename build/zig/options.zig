@@ -2,7 +2,7 @@ const std = @import("std");
 
 pub const Options = struct {
     target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
+    optimize: std.lang.Optimize,
     jit: bool,
     static: bool,
     mimalloc: bool,
@@ -14,13 +14,13 @@ pub const Options = struct {
     /// generated one. Only the `zig-objects` step is supported in this mode.
     config_h: ?[]const u8,
     /// Strip symbols from libmoar's C objects and the Zig object; null means
-    /// the default (strip unless Debug). `-Dstrip=false` keeps them for
+    /// the default (strip unless debug). `-Dstrip=false` keeps them for
     /// `perf report`/`perf annotate` without changing the generated code.
     strip: ?bool,
     /// Full link-time optimisation for libmoar and the moar_zig object, so
     /// the LTO link binds the hash engine's exports locally and can inline
     /// the small ones (iteration); the lookup exports are still called.
-    /// On by default except in Debug, so the LTO path (protected exports,
+    /// On by default except in debug, so the LTO path (protected exports,
     /// bitcode object) is the one every build exercises; `-Dlto=false`
     /// turns it off for a faster link.
     lto: bool,
@@ -74,8 +74,8 @@ pub fn parse(b: *std.Build) Options {
         target = b.resolveTargetQuery(query);
     }
     // Perl's Configure.pl defaults to --optimize (-O3); match that. Pass
-    // -Doptimize=Debug for a -g style build.
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size (default ReleaseFast)") orelse .ReleaseFast;
+    // -Doptimize=debug for a -g style build.
+    const optimize = b.option(std.lang.Optimize, "optimize", "Prioritize performance, safety, or binary size (default fast)") orelse .fast;
 
     const x86_64 = target.result.cpu.arch == .x86_64;
     const jit = b.option(bool, "jit", "Build the x86-64 JIT compiler (default: true on x86_64)") orelse x86_64;
@@ -89,7 +89,7 @@ pub fn parse(b: *std.Build) Options {
         if (!std.mem.endsWith(u8, p, "gen/config.h")) std.process.fatal("-Dconfig-h must end in gen/config.h, got {s}", .{p});
     }
 
-    const strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=Debug); false keeps them for perf");
+    const strip = b.option(bool, "strip", "Strip symbols from libmoar and the Zig object (default: true unless -Doptimize=debug); false keeps them for perf");
     const hash_stats = b.option(bool, "hash-stats", "Diagnostic build with the hash engine's statistics (dump to $MVM_HASH_STATS/<pid>.tsv at exit); keeps debug info, forces -Dstrip=false (default false)") orelse false;
 
     const gc_debug = gcDebugLevel(b.option(u8, "gc-debug", "MVM_GC_DEBUG level 0..3 for the C sources and translate-c; 1 and up compile in the per-collection log ($MVM_GC_LOG) and the RSS pin ($MVM_GC_DEBUG_RSS) (default 0)")) catch
@@ -112,7 +112,7 @@ pub fn parse(b: *std.Build) Options {
         .gc_debug = gc_debug,
         .nursery_size = nursery_size,
         .strip = if (hash_stats) false else strip,
-        .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default: true unless -Doptimize=Debug); false links about three times faster") orelse (optimize != .Debug),
+        .lto = b.option(bool, "lto", "Full link-time optimisation for libmoar and the Zig object (default: true unless -Doptimize=debug); false links about three times faster") orelse (optimize != .debug),
         .nqp_prefix = b.option([]const u8, "nqp-prefix", "Prefix of an installed MoarVM and nqp (<P>/bin/nqp-m) for `zig build strategy-test`; when given, `zig build test` runs that step too"),
     };
 }

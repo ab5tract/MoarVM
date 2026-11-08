@@ -9,6 +9,7 @@ const jit = @import("build/zig/jit.zig");
 const moar = @import("build/zig/moar.zig");
 const install = @import("build/zig/install.zig");
 const zigimpl = @import("build/zig/zigimpl.zig");
+const root_files = @import("build/zig/root_files.zig");
 
 pub fn build(b: *std.Build) void {
     const opts = options.parse(b);
@@ -17,14 +18,14 @@ pub fn build(b: *std.Build) void {
     // would silently shadow the config.h this build generates. With
     // -Dconfig-h that file is the intended input, so the check is skipped.
     if (opts.config_h == null) {
-        if (b.build_root.handle.access(b.graph.io, "src/gen/config.h", .{})) |_| {
+        if (root_files.rootExists(b, "src/gen/config.h")) {
             std.process.fatal(
                 "src/gen/config.h exists (written by perl Configure.pl) and would shadow the zig-generated config.h.\n" ++
                     "Remove the Perl-generated files first:  rm -f src/gen/config.h src/gen/config.c src/gen/config.o\n" ++
                     "(perl Configure.pl recreates them when you go back to the Perl build.)",
                 .{},
             );
-        } else |_| {}
+        }
     }
     const facts = platform.facts(&opts.target.result);
     const ver = version.detect(b);
@@ -43,9 +44,9 @@ pub fn build(b: *std.Build) void {
 
     const tp = thirdparty.addAll(b, opts, facts);
 
-    const paths = config.InstallPaths.fromBuild(b);
+    const fill_prefix = config.addFillPrefixTool(b);
     const inputs: config.Inputs = .{ .opts = opts, .facts = facts, .version = ver };
-    const config_c = config.configSource(b, inputs, paths, moar.cflags(b, opts));
+    const config_c = config.configSource(b, inputs, fill_prefix, moar.cflags(b, opts));
 
     const jit_build: ?jit.Jit = if (opts.jit) jit.addAll(b) else null;
     if (jit_build) |j| {
@@ -62,10 +63,10 @@ pub fn build(b: *std.Build) void {
         .jit = jit_build,
         .zig_object = if (zig_impl) |impl| impl.object else null,
     });
-    const exe = moar.addMoar(b, opts, libmoar, lists, config_h, paths);
+    const exe = moar.addMoar(b, opts, libmoar, lists, config_h);
     b.installArtifact(libmoar);
     b.installArtifact(exe);
-    install.addAll(b, libmoar, config_h, config.pkgConfig(b, ver, paths));
+    install.addAll(b, libmoar, config_h, config.pkgConfig(b, ver, fill_prefix));
 
     // `zig build test`: moar --version plus the nqp stage0 smoke test.
     // MoarVM has no C test suite of its own; NQP's tests cover it.
@@ -74,12 +75,12 @@ pub fn build(b: *std.Build) void {
     // layout has libmoar.so where the RUNPATH (<prefix>/lib, $ORIGIN/../lib)
     // expects it. The cached binary would silently load a system libmoar.so.
     // The library is hashed as well so a libmoar-only change re-runs the tests.
-    const installed_moar: std.Build.LazyPath = .{ .cwd_relative = b.getInstallPath(.bin, "moar") };
-    const installed_libmoar: std.Build.LazyPath = .{ .cwd_relative = b.getInstallPath(.lib, if (opts.static) "libmoar.a" else "libmoar.so") };
+    const installed_moar = b.graph.path(.install_bin, "moar");
+    const installed_libmoar = b.graph.path(.install_lib, if (opts.static) "libmoar.a" else "libmoar.so");
 
     const version_run = std.Build.Step.Run.create(b, "run installed moar --version");
     version_run.step.dependOn(b.getInstallStep());
-    version_run.addFileArg(installed_moar);
+    version_run.addFileArg2(installed_moar, .{});
     version_run.addFileInput(installed_libmoar);
     version_run.addArg("--version");
     version_run.expectStdOutEqual(b.fmt("This is MoarVM version {s}{s}\n", .{ ver.full, if (opts.jit) " built with JIT support" else "" }));
@@ -87,10 +88,10 @@ pub fn build(b: *std.Build) void {
 
     const stage0 = b.option([]const u8, "nqp-stage0", "Directory with nqp's stage0 .moarvm files for `zig build test` (default ../src/vm/moar/stage0)") orelse
         "../src/vm/moar/stage0";
-    if (b.build_root.handle.access(b.graph.io, stage0, .{})) |_| {
+    if (root_files.rootExists(b, stage0)) {
         const smoke = std.Build.Step.Run.create(b, "run installed moar on nqp stage0");
         smoke.step.dependOn(b.getInstallStep());
-        smoke.addFileArg(installed_moar);
+        smoke.addFileArg2(installed_moar, .{});
         smoke.addFileInput(installed_libmoar);
         smoke.addArg(b.fmt("--libpath={s}", .{stage0}));
         smoke.addArg(b.pathJoin(&.{ stage0, "nqp.moarvm" }));
@@ -102,7 +103,7 @@ pub fn build(b: *std.Build) void {
         if (jit_build != null) {
             const hot = std.Build.Step.Run.create(b, "run installed moar with forced JIT");
             hot.step.dependOn(b.getInstallStep());
-            hot.addFileArg(installed_moar);
+            hot.addFileArg2(installed_moar, .{});
             hot.addFileInput(installed_libmoar);
             hot.addArg(b.fmt("--libpath={s}", .{stage0}));
             hot.addArg(b.pathJoin(&.{ stage0, "nqp.moarvm" }));
@@ -114,7 +115,7 @@ pub fn build(b: *std.Build) void {
             hot.setCwd(b.path("."));
             test_step.dependOn(&hot.step);
         }
-    } else |_| {}
+    }
 
     // Read by core/hash/stats.zig in every root that reaches it.
     const stats_opts = b.addOptions();
@@ -169,9 +170,9 @@ pub fn build(b: *std.Build) void {
         const nqp_m = b.pathJoin(&.{ prefix, "bin", "nqp-m" });
         const lib_dir = b.pathJoin(&.{ prefix, "lib" });
         const run = std.Build.Step.Run.create(b, "run strategy.nqp on the installed nqp");
-        run.addFileArg(.{ .cwd_relative = nqp_m });
-        run.addFileArg(b.path("tools/bench/t/strategy.nqp"));
-        run.addFileInput(.{ .cwd_relative = b.pathJoin(&.{ lib_dir, if (opts.static) "libmoar.a" else "libmoar.so" }) });
+        run.addFileArg2(b.graph.cwdRelativePath(nqp_m), .{});
+        run.addFileArg2(b.path("tools/bench/t/strategy.nqp"), .{});
+        run.addFileInput(b.graph.cwdRelativePath(b.pathJoin(&.{ lib_dir, if (opts.static) "libmoar.a" else "libmoar.so" })));
         run.setEnvironmentVariable("LD_LIBRARY_PATH", lib_dir);
         run.setCwd(b.path("."));
         run.expectExitCode(0);
@@ -190,7 +191,7 @@ pub fn build(b: *std.Build) void {
         const bench_impl = zig_impl orelse zigimpl.add(b, opts, .{ .generated = config_h });
         const bench = zigimpl.addHashBench(b, opts, bench_impl, libmoar, config_h, moar.cflags(b, opts), bench_options, stats_options);
         const run = b.addRunArtifact(bench);
-        if (b.args) |args| run.addArgs(args);
+        run.addPassthruArgs();
         const bench_step = b.step("hash-bench", "Run the string hash table microbenchmark against this build's engine (args after --: --sizes=, --runs=, --max-size=)");
         bench_step.dependOn(&run.step);
         // `zig build hash-bench-exe --prefix <P>` leaves <P>/bin/hash-bench
@@ -202,7 +203,7 @@ pub fn build(b: *std.Build) void {
         // four unicode tables (tools/bench/uni-bench.nqp is its nqp twin).
         const uni_bench = zigimpl.addUniBench(b, opts, bench_impl, libmoar, config_h, moar.cflags(b, opts), bench_options, stats_options);
         const uni_run = b.addRunArtifact(uni_bench);
-        if (b.args) |args| uni_run.addArgs(args);
+        uni_run.addPassthruArgs();
         const uni_step = b.step("uni-bench", "Run the unicode lookup table microbenchmark against this build's engine (args after --: --runs=, --ops=, --sample=)");
         uni_step.dependOn(&uni_run.step);
         const uni_exe_step = b.step("uni-bench-exe", "Install the unicode microbenchmark executable as <prefix>/bin/uni-bench");

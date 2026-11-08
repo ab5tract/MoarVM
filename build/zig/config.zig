@@ -4,6 +4,8 @@ const std = @import("std");
 const Options = @import("options.zig").Options;
 const Facts = @import("platform.zig").Facts;
 const Version = @import("version.zig").Version;
+const root_files = @import("root_files.zig");
+const fill_prefix = @import("fill_prefix.zig");
 
 pub const Inputs = struct {
     opts: Options,
@@ -112,29 +114,45 @@ fn appendCEscaped(list: *std.ArrayList(u8), allocator: std.mem.Allocator, s: []c
     };
 }
 
-/// Where things end up at `zig build install`. Uses the logical prefix
-/// (`--prefix`), not the DESTDIR-adjusted path, because these strings are
-/// baked into the binary.
+/// Where things end up at `zig build install`. The install prefix is known
+/// only when the build runs (Zig 0.17), so configure renders these with the
+/// `@MOAR_PREFIX@` token and fillPrefix substitutes the logical prefix
+/// (`--prefix`, made absolute; not the DESTDIR-adjusted path, because these
+/// strings are baked into the binary).
 pub const InstallPaths = struct {
     prefix: []const u8,
     bindir: []const u8,
     libdir: []const u8,
     mastdir: []const u8,
 
-    pub fn fromBuild(b: *std.Build) InstallPaths {
-        const prefix = b.install_prefix;
-        if (!std.fs.path.isAbsolute(prefix)) std.process.fatal(
-            "--prefix must be an absolute path (got '{s}'): it is baked into the binary's RUNPATH and into nqp::backendconfig",
-            .{prefix},
-        );
-        return .{
-            .prefix = prefix,
-            .bindir = b.pathJoin(&.{ prefix, "bin" }),
-            .libdir = b.pathJoin(&.{ prefix, "lib" }),
-            .mastdir = b.pathJoin(&.{ prefix, "share", "nqp", "lib", "MAST" }),
-        };
-    }
+    pub const placeholder: InstallPaths = .{
+        .prefix = fill_prefix.token,
+        .bindir = fill_prefix.token ++ "/bin",
+        .libdir = fill_prefix.token ++ "/lib",
+        .mastdir = fill_prefix.token ++ "/share/nqp/lib/MAST",
+    };
 };
+
+/// The build-host executable that fills the prefix token in.
+pub fn addFillPrefixTool(b: *std.Build) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = "fill_prefix",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/zig/fill_prefix.zig"),
+            .target = b.graph.host,
+            .optimize = .debug,
+        }),
+    });
+}
+
+/// `text` with the prefix token replaced by the deployed install prefix, as
+/// the file `basename`.
+fn fillPrefix(b: *std.Build, tool: *std.Build.Step.Compile, text: []const u8, basename: []const u8) std.Build.LazyPath {
+    const run = b.addRunArtifact(tool);
+    run.addDirectoryArg2(b.graph.path(.deployed_prefix, ""), .{ .make_absolute = true });
+    run.addFileArg2(b.addWriteFiles().add(b.fmt("{s}.in", .{basename}), text), .{});
+    return run.addOutputFileArg2(basename, .{});
+}
 
 fn boolStr(v: bool) []const u8 {
     return if (v) "1" else "0";
@@ -147,7 +165,7 @@ fn boolStr(v: bool) []const u8 {
 /// MoarVM's own Makefile (mingw_unicode, mainlibs variants, pkgconfig, ...)
 /// are deliberately absent; `ldswitch` does not exist in the Perl build.
 pub fn backendEntries(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []const []const u8) []const Entry {
-    const opt_flags: []const u8 = if (in.opts.optimize == .Debug) "" else "-O3 -DNDEBUG";
+    const opt_flags: []const u8 = if (in.opts.optimize == .debug) "" else "-O3 -DNDEBUG";
     const ldlibs: []const u8 = if (in.opts.zstd) "-lm -lpthread -lrt -ldl -lzstd" else "-lm -lpthread -lrt -ldl";
     const cflags_str = std.mem.join(b.allocator, " ", cflags) catch @panic("OOM");
     const config_str = b.fmt("zig build -Djit={} -Dstatic={} -Dmimalloc={} -Dzstd={} -Doptimize={s}", .{
@@ -228,12 +246,13 @@ pub fn backendEntries(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []
     return b.allocator.dupe(Entry, &entries) catch @panic("OOM");
 }
 
-/// config.c rendered from build/config.c.in at configure time.
-pub fn configSource(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []const []const u8) std.Build.LazyPath {
-    const template = b.build_root.handle.readFileAlloc(b.graph.io, "build/config.c.in", b.allocator, .unlimited) catch |err|
-        std.process.fatal("cannot read build/config.c.in: {t}", .{err});
-    const text = renderBackendConfig(b.allocator, template, backendEntries(b, in, paths, cflags)) catch @panic("OOM");
-    return b.addWriteFiles().add("config.c", text);
+/// config.c rendered from build/config.c.in at configure time, with the
+/// install prefix filled in when the build runs.
+pub fn configSource(b: *std.Build, in: Inputs, tool: *std.Build.Step.Compile, cflags: []const []const u8) std.Build.LazyPath {
+    const template = root_files.readRootFile(b, "build/config.c.in") orelse
+        std.process.fatal("cannot read build/config.c.in: FileNotFound", .{});
+    const text = renderBackendConfig(b.allocator, template, backendEntries(b, in, .placeholder, cflags)) catch @panic("OOM");
+    return fillPrefix(b, tool, text, "config.c");
 }
 
 test "renderBackendConfig: emits escaped add_entry lines in place of the marker" {
@@ -253,7 +272,8 @@ test "renderBackendConfig: emits escaped add_entry lines in place of the marker"
 }
 
 /// pkgconfig/moar.pc, mirroring build/mk-moar-pc.in for a non-/usr prefix.
-pub fn pkgConfig(b: *std.Build, ver: Version, paths: InstallPaths) std.Build.LazyPath {
+pub fn pkgConfig(b: *std.Build, ver: Version, tool: *std.Build.Step.Compile) std.Build.LazyPath {
+    const paths: InstallPaths = .placeholder;
     const text = b.fmt(
         \\# pkg-config information for MoarVM {[version]s}
         \\#
@@ -278,5 +298,5 @@ pub fn pkgConfig(b: *std.Build, ver: Version, paths: InstallPaths) std.Build.Laz
         \\Cflags:         -I{[prefix]s}/include
         \\
     , .{ .version = ver.full, .prefix = paths.prefix, .bindir = paths.bindir, .libdir = paths.libdir, .mastdir = paths.mastdir });
-    return b.addWriteFiles().add("moar.pc", text);
+    return fillPrefix(b, tool, text, "moar.pc");
 }

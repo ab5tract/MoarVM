@@ -7,6 +7,7 @@
 //! `<zig file>: <c file> [<c file> ...]` and declares that the Zig file
 //! replaces those C files when the Zig implementations are built.
 const std = @import("std");
+const root_files = @import("root_files.zig");
 
 pub const ZigEntry = struct {
     zig: []const u8,
@@ -159,8 +160,8 @@ pub fn applyZig(allocator: std.mem.Allocator, lists: Lists) Error!Lists {
 
 /// Reads and parses `sub_path` relative to the build root at configure time.
 pub fn load(b: *std.Build, sub_path: []const u8) Lists {
-    const text = b.build_root.handle.readFileAlloc(b.graph.io, sub_path, b.allocator, .unlimited) catch |err|
-        std.process.fatal("cannot read {s}: {t}", .{ sub_path, err });
+    const text = root_files.readRootFile(b, sub_path) orelse
+        std.process.fatal("cannot read {s}: FileNotFound", .{sub_path});
     return parse(b.allocator, text) catch |err|
         std.process.fatal("cannot parse {s}: {t}", .{ sub_path, err });
 }

@@ -36,8 +36,8 @@ pub const Libs = struct {
 };
 
 /// A C module with the settings every MoarVM C compilation shares.
-/// `sanitize_c = .off`: zig traps undefined behaviour in C for Debug and
-/// ReleaseSafe builds; gcc never did that for MoarVM and the code is not
+/// `sanitize_c = .off`: zig traps undefined behaviour in C for debug and
+/// safe builds; gcc never did that for MoarVM and the code is not
 /// clean under it.
 pub fn newCModule(b: *std.Build, opts: Options) *std.Build.Module {
     return b.createModule(.{
@@ -47,8 +47,8 @@ pub fn newCModule(b: *std.Build, opts: Options) *std.Build.Module {
         .pic = true,
         .sanitize_c = .off,
         // Perl's --optimize build carries no debug info and omits frame pointers.
-        .strip = opts.strip orelse (opts.optimize != .Debug),
-        .omit_frame_pointer = opts.optimize != .Debug,
+        .strip = opts.strip orelse (opts.optimize != .debug),
+        .omit_frame_pointer = opts.optimize != .debug,
     });
 }
 
@@ -144,7 +144,7 @@ fn addCmp(b: *std.Build, opts: Options) *std.Build.Step.Compile {
 /// All `*.c` files directly inside `dir_rel` (relative to the build root), sorted.
 pub fn globC(b: *std.Build, dir_rel: []const u8) []const []const u8 {
     const io = b.graph.io;
-    var dir = b.build_root.handle.openDir(io, dir_rel, .{ .iterate = true }) catch |err|
+    var dir = b.root.openDir(io, dir_rel, .{ .iterate = true }) catch |err|
         std.process.fatal("cannot open {s}: {t}", .{ dir_rel, err });
     defer dir.close(io);
 
@@ -153,7 +153,7 @@ pub fn globC(b: *std.Build, dir_rel: []const u8) []const []const u8 {
     while (it.next(io) catch |err| std.process.fatal("cannot list {s}: {t}", .{ dir_rel, err })) |entry| {
         if (entry.kind != .file) continue;
         if (!std.mem.endsWith(u8, entry.name, ".c")) continue;
-        files.append(b.allocator, b.dupe(entry.name)) catch @panic("OOM");
+        files.append(b.allocator, b.graph.dupeString(entry.name)) catch @panic("OOM");
     }
     std.mem.sort([]const u8, files.items, {}, lessThan);
     return files.items;

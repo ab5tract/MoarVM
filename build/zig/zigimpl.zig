@@ -6,6 +6,7 @@ const std = @import("std");
 const Options = @import("options.zig").Options;
 const moar = @import("moar.zig");
 const sources = @import("sources.zig");
+const root_files = @import("root_files.zig");
 
 pub const Impl = struct {
     translate: *std.Build.Step.TranslateC,
@@ -55,12 +56,12 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
         .root_module = b.createModule(.{
             .root_source_file = b.path("build/zig/fixup_translated.zig"),
             .target = b.graph.host,
-            .optimize = .Debug,
+            .optimize = .debug,
         }),
     });
     const run = b.addRunArtifact(fixup);
-    run.addFileArg(translate.getOutput());
-    const fixed = run.addOutputFileArg("moar_c.zig");
+    run.addFileArg2(translate.getOutput(), .{});
+    const fixed = run.addOutputFileArg2("moar_c.zig", .{});
 
     const c_mod = b.createModule(.{
         .root_source_file = fixed,
@@ -87,8 +88,8 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
         .link_libc = true,
         .pic = true,
         // Match thirdparty.newCModule for the optimize mode.
-        .strip = opts.strip orelse (opts.optimize != .Debug),
-        .omit_frame_pointer = opts.optimize != .Debug,
+        .strip = opts.strip orelse (opts.optimize != .debug),
+        .omit_frame_pointer = opts.optimize != .debug,
         .imports = &.{
             .{ .name = "moar", .module = moar_mod },
             .{ .name = "zig_options", .module = zig_opts.createModule() },
@@ -111,8 +112,8 @@ pub fn addObjectsStep(b: *std.Build, impl: Impl) *std.Build.Step {
 /// Every [zig] file must be imported by src/zig/root.zig, or its exports
 /// are never emitted and the link fails with undefined symbols later.
 pub fn checkRootImports(b: *std.Build, lists: sources.Lists) void {
-    const root = b.build_root.handle.readFileAlloc(b.graph.io, "src/zig/root.zig", b.allocator, .unlimited) catch |err|
-        std.process.fatal("cannot read src/zig/root.zig: {t}", .{err});
+    const root = root_files.readRootFile(b, "src/zig/root.zig") orelse
+        std.process.fatal("cannot read src/zig/root.zig: FileNotFound", .{});
     for (lists.zig) |entry| {
         const prefix = "src/zig/";
         if (!std.mem.startsWith(u8, entry.zig, prefix))

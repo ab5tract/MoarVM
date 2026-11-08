@@ -17,7 +17,7 @@ pub fn addDynasm(b: *std.Build) Dynasm {
     const host = b.graph.host;
     const mod = b.createModule(.{
         .target = host,
-        .optimize = .ReleaseFast,
+        .optimize = .fast,
         .link_libc = true,
         .sanitize_c = .off,
     });
@@ -29,7 +29,7 @@ pub fn addDynasm(b: *std.Build) Dynasm {
     run.setCwd(b.path("."));
     run.addArg("3rdparty/dynasm/dynasm.lua");
     run.addArgs(&.{ "-D", "POSIX=1", "-o" });
-    const emit_c = run.addOutputFileArg("emit.c");
+    const emit_c = run.addOutputFileArg2("emit.c", .{});
     run.addArg("src/jit/x64/emit.dasc");
     // Inputs dynasm reads by relative path; registered so the cache sees them.
     for ([_][]const u8{
@@ -66,7 +66,7 @@ fn hostTool(b: *std.Build, name: []const u8, root: []const u8) *std.Build.Step.C
     const mod = b.createModule(.{
         .root_source_file = b.path(root),
         .target = b.graph.host,
-        .optimize = .ReleaseSafe,
+        .optimize = .safe,
     });
     return b.addExecutable(.{ .name = name, .root_module = mod });
 }
@@ -84,21 +84,21 @@ pub fn addGenerated(b: *std.Build, tools: Tools) Generated {
     const ec = b.addRunArtifact(tools.expr_compiler);
     ec.setCwd(b.path("."));
     ec.addArg("--oplist");
-    ec.addFileArg(b.path("src/core/oplist"));
+    ec.addFileArg2(b.path("src/core/oplist"), .{});
     ec.addArg("--expr-ops");
-    ec.addFileArg(b.path("src/jit/expr_ops.h"));
+    ec.addFileArg2(b.path("src/jit/expr_ops.h"), .{});
     ec.addArg("-o");
-    const core_templates_h = ec.addOutputFileArg("core_templates.h");
-    ec.addFileArg(b.path("src/jit/core_templates.expr"));
+    const core_templates_h = ec.addOutputFileArg2("core_templates.h", .{});
+    ec.addFileArg2(b.path("src/jit/core_templates.expr"), .{});
     ec.addFileInput(b.path("src/jit/macro.expr"));
 
     const tt = b.addRunArtifact(tools.tiler);
     tt.setCwd(b.path("."));
     tt.addArg("--expr-ops");
-    tt.addFileArg(b.path("src/jit/expr_ops.h"));
+    tt.addFileArg2(b.path("src/jit/expr_ops.h"), .{});
     tt.addArg("-o");
-    const tile_pattern_h = tt.addOutputFileArg("tile_pattern.h");
-    tt.addFileArg(b.path("src/jit/x64/tile_pattern.tile"));
+    const tile_pattern_h = tt.addOutputFileArg2("tile_pattern.h", .{});
+    tt.addFileArg2(b.path("src/jit/x64/tile_pattern.tile"), .{});
 
     const wf = b.addWriteFiles();
     _ = wf.addCopyFile(core_templates_h, "jit/core_templates.h");
@@ -117,9 +117,9 @@ pub fn addAll(b: *std.Build) Jit {
 pub fn addCheckStep(b: *std.Build, j: Jit) *std.Build.Step {
     const run = b.addSystemCommand(&.{ "sh", "tools/check-jit-tools.sh" });
     run.setCwd(b.path("."));
-    run.addFileArg(j.gen.core_templates_h);
-    run.addFileArg(j.gen.tile_pattern_h);
-    run.addFileArg(j.dynasm.emit_c);
+    run.addFileArg2(j.gen.core_templates_h, .{});
+    run.addFileArg2(j.gen.tile_pattern_h, .{});
+    run.addFileArg2(j.dynasm.emit_c, .{});
     run.has_side_effects = true;
     const step = b.step("check-jit-tools", "Compare the zig JIT generators with the Perl originals (needs perl)");
     step.dependOn(&run.step);

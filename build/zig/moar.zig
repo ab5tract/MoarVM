@@ -18,8 +18,8 @@ pub fn cflags(b: *std.Build, opts: Options) []const []const u8 {
     flags.append(b.allocator, b.fmt("-DMVM_HEAPSNAPSHOT_FORMAT={d}", .{heapSnapshotFormat(opts)})) catch @panic("OOM");
     flags.append(b.allocator, b.fmt("-DMVM_GC_DEBUG={d}", .{opts.gc_debug})) catch @panic("OOM");
     flags.append(b.allocator, b.fmt("-DMVM_NURSERY_SIZE={d}", .{opts.nursery_size})) catch @panic("OOM");
-    if (opts.optimize != .Debug) {
-        // zig's ReleaseFast compiles C at -O2; Perl's --optimize uses -O3.
+    if (opts.optimize != .debug) {
+        // zig's fast mode compiles C at -O2; Perl's --optimize uses -O3.
         // clang honours the last -O flag.
         flags.appendSlice(b.allocator, &.{ "-DNDEBUG", "-O3" }) catch @panic("OOM");
     }
@@ -86,7 +86,7 @@ pub fn defines(b: *std.Build, opts: Options) []const Define {
         .{ .name = "MVM_NURSERY_SIZE", .value = b.fmt("{d}", .{opts.nursery_size}) },
         .{ .name = "MVM_BUILD_SHARED", .value = null },
     }) catch @panic("OOM");
-    if (opts.optimize != .Debug) out.append(b.allocator, .{ .name = "NDEBUG", .value = null }) catch @panic("OOM");
+    if (opts.optimize != .debug) out.append(b.allocator, .{ .name = "NDEBUG", .value = null }) catch @panic("OOM");
     return out.items;
 }
 
@@ -165,15 +165,12 @@ fn resolveCoreSources(b: *std.Build, files: []const []const u8) []const []const 
     return out.items;
 }
 
-const config = @import("config.zig");
-
 pub fn addMoar(
     b: *std.Build,
     opts: Options,
     libmoar: *std.Build.Step.Compile,
     lists: sources.Lists,
     config_h: *std.Build.Step.ConfigHeader,
-    paths: config.InstallPaths,
 ) *std.Build.Step.Compile {
     const mod = thirdparty.newCModule(b, opts);
     const exe = b.addExecutable(.{ .name = "moar", .root_module = mod });
@@ -194,7 +191,7 @@ pub fn addMoar(
         // DESTDIR install loads its own sibling library, then fall back to
         // the install prefix (like the Perl build's -Wl,-rpath,$(LIBDIR)).
         mod.addRPathSpecial("$ORIGIN/../lib");
-        mod.addRPath(.{ .cwd_relative = paths.libdir });
+        mod.addRPath(b.graph.path(.deployed_lib, ""));
     }
     return exe;
 }
