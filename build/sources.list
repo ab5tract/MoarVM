@@ -215,3 +215,7 @@ src/zig/gc/allocation.zig: src/gc/allocation.c
 src/zig/gc/gen2.zig: src/gc/gen2.c
 src/zig/gc/roots.zig: src/gc/roots.c
 src/zig/gc/collect.zig: src/gc/collect.c
+src/zig/gc/wb.zig: src/gc/wb.c
+src/zig/gc/objectid.zig: src/gc/objectid.c
+src/zig/gc/finalize.zig: src/gc/finalize.c
+src/zig/gc/debug.zig: src/gc/debug.c

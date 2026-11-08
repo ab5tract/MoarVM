@@ -8,4 +8,5 @@ test {
     _ = @import("test/gen2_test.zig");
     _ = @import("test/roots_test.zig");
     _ = @import("test/collect_test.zig");
+    _ = @import("test/small_test.zig");
 }

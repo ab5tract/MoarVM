@@ -14,4 +14,8 @@ comptime {
     _ = @import("gc/gen2.zig");
     _ = @import("gc/roots.zig");
     _ = @import("gc/collect.zig");
+    _ = @import("gc/wb.zig");
+    _ = @import("gc/objectid.zig");
+    _ = @import("gc/finalize.zig");
+    _ = @import("gc/debug.zig");
 }
