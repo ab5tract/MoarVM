@@ -1416,7 +1416,7 @@ options.
 =item --zig <path>
 
 Build the Zig implementations listed in the C<[zig]> section of
-F<build/sources.list> with the given zig binary (0.16.0), in place of the C
+F<build/sources.list> with the given zig binary (0.17.1), in place of the C
 files they replace. The object is produced by C<zig build zig-objects> from
 F<build.zig>. Independent of C<--cc=zig>, which only selects zig as the C
 compiler.

@@ -1,6 +1,6 @@
 # Building MoarVM with zig
 
-An alternative to `perl Configure.pl && make` that needs only zig (0.16.0):
+An alternative to `perl Configure.pl && make` that needs only zig (0.17.1):
 
     zig build --prefix /abs/path/to/prefix install
     zig build unit-test       # unit tests of the build helpers (sources.list parser, version, config rendering) and of the JIT generators
