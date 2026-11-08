@@ -157,7 +157,7 @@ pub fn addInstanceRootsToWorklist(tc: Tc, worklist: Worklist, snapshot: Snapshot
 }
 
 /// Adds anything that is a root thanks to being referenced by a thread,
-/// context, but that isn't permanent. (roots.c:153-240)
+/// context, but that isn't permanent. (roots.c:153-242)
 pub fn addTcRootsToWorklist(tc: Tc, worklist: Worklist, snapshot: Snapshot) callconv(.c) void {
     // The call stack.
     c.MVM_callstack_mark_current_thread(tc, worklist, snapshot);
@@ -239,14 +239,12 @@ pub fn addTcRootsToWorklist(tc: Tc, worklist: Worklist, snapshot: Snapshot) call
             const flag: c_int = tc.*.mark_args.*.callsite.*.arg_flags[@intCast(from)];
             if ((flag & c.MVM_CALLSITE_ARG_TYPE_MASK) == c.MVM_CALLSITE_ARG_OBJ or
                 (flag & c.MVM_CALLSITE_ARG_TYPE_MASK) == c.MVM_CALLSITE_ARG_STR)
-                // As in the C, the worklist is used directly here, even on the
-                // heap snapshot path (roots.c:237).
-                worklistAdd(tc, worklist, &tc.*.mark_args.*.source[tc.*.mark_args.*.map[@intCast(from)]].o);
+                addCollectable(tc, worklist, snapshot, &tc.*.mark_args.*.source[tc.*.mark_args.*.map[@intCast(from)]].o, "Dispatch resumption initial argument");
         }
     }
 }
 
-/// Pushes a temporary root onto the thread-local roots list. (roots.c:243-254)
+/// Pushes a temporary root onto the thread-local roots list. (roots.c:245-256)
 pub fn tempPushSlow(tc: Tc, obj_ref: [*c][*c]Collectable) callconv(.c) void {
     // Allocate extra temporary root space if needed.
     if (tc.*.num_temproots == tc.*.alloc_temproots) {
@@ -262,7 +260,7 @@ pub fn tempPushSlow(tc: Tc, obj_ref: [*c][*c]Collectable) callconv(.c) void {
 /// Marks the temporary root stack at its current height as the limit for
 /// removing all roots. This is done so that in nested interpreter runs
 /// (at present, just nativecall callbacks) we don't clear things that
-/// are pushed by the native call itself. (roots.c:260-264)
+/// are pushed by the native call itself. (roots.c:262-266)
 pub fn tempMark(tc: Tc) callconv(.c) c.MVMuint32 {
     // MVMint32 current = tc->mark_temproots; returned as MVMuint32.
     const current: c.MVMint32 = @bitCast(tc.*.mark_temproots);
@@ -271,20 +269,20 @@ pub fn tempMark(tc: Tc) callconv(.c) c.MVMuint32 {
 }
 
 /// Resets the temporary root stack mark to the provided height.
-/// (roots.c:267-269)
+/// (roots.c:269-271)
 pub fn tempMarkReset(tc: Tc, mark: c.MVMuint32) callconv(.c) void {
     tc.*.mark_temproots = mark;
 }
 
 /// Pops all temporary roots off the thread-local roots list.
-/// (roots.c:272-274)
+/// (roots.c:274-276)
 pub fn tempPopAll(tc: Tc) callconv(.c) void {
     tc.*.num_temproots = tc.*.mark_temproots;
 }
 
 /// We may MVMROOT things that are actually frames on a thread local call
 /// stack as they may be GC-able; such roots must not be added to the
-/// worklist. (roots.c:281-284)
+/// worklist. (roots.c:283-286)
 fn isStackFrame(tc: Tc, col: [*c][*c]Collectable) c.MVMuint32 {
     _ = tc;
     const maybe_frame = col.*;
@@ -292,7 +290,7 @@ fn isStackFrame(tc: Tc, col: [*c][*c]Collectable) c.MVMuint32 {
 }
 
 /// Adds the set of thread-local temporary roots to a GC worklist.
-/// (roots.c:285-300)
+/// (roots.c:287-302)
 pub fn addTempsToWorklist(tc: Tc, worklist: Worklist, snapshot: Snapshot) callconv(.c) void {
     var i: c.MVMuint32 = 0;
     const num_roots: c.MVMuint32 = tc.*.num_temproots;
@@ -309,7 +307,7 @@ pub fn addTempsToWorklist(tc: Tc, worklist: Worklist, snapshot: Snapshot) callco
 }
 
 /// Pushes a collectable that is in generation 2, but now references a nursery
-/// collectable, into the gen2 root set. (roots.c:304-323)
+/// collectable, into the gen2 root set. (roots.c:306-325)
 pub fn gen2Add(tc: Tc, col: [*c]Collectable) callconv(.c) void {
     // Ensure the collectable is not null.
     if (col == null)
@@ -333,7 +331,7 @@ pub fn gen2Add(tc: Tc, col: [*c]Collectable) callconv(.c) void {
 /// Adds the set of thread-local inter-generational roots to a GC worklist. As
 /// a side-effect, removes gen2 roots that no longer point to any nursery
 /// items (usually because all the referenced objects also got promoted).
-/// (roots.c:328-370)
+/// (roots.c:330-372)
 pub fn addGen2sToWorklist(tc: Tc, worklist: Worklist) callconv(.c) void {
     const gen2roots = tc.*.gen2roots;
     const num_roots: c.MVMuint32 = tc.*.num_gen2roots;
@@ -379,7 +377,7 @@ pub fn addGen2sToWorklist(tc: Tc, worklist: Worklist) callconv(.c) void {
     tc.*.num_gen2roots = insert_pos;
 }
 
-/// Adds inter-generational roots to a heap snapshot. (roots.c:373-379)
+/// Adds inter-generational roots to a heap snapshot. (roots.c:375-381)
 pub fn addGen2sToSnapshot(tc: Tc, snapshot: Snapshot) callconv(.c) void {
     const gen2roots = tc.*.gen2roots;
     const num_roots: c.MVMuint32 = tc.*.num_gen2roots;
@@ -389,7 +387,7 @@ pub fn addGen2sToSnapshot(tc: Tc, snapshot: Snapshot) callconv(.c) void {
 }
 
 /// Visits all of the roots in the gen2 list and removes those that have been
-/// collected. Applied after a full collection. (roots.c:383-404)
+/// collected. Applied after a full collection. (roots.c:385-406)
 pub fn gen2Cleanup(tc: Tc) callconv(.c) void {
     const gen2roots = tc.*.gen2roots;
     const num_roots: c.MVMuint32 = tc.*.num_gen2roots;
@@ -415,7 +413,7 @@ pub fn gen2Cleanup(tc: Tc) callconv(.c) void {
 }
 
 /// Walks frames and compilation units. Adds the roots it finds into the
-/// GC worklist. (roots.c:409-431)
+/// GC worklist. (roots.c:411-433)
 pub fn addFrameRootsToWorklist(tc: Tc, worklist: Worklist, cur_frame: Frame) callconv(.c) void {
     // Add caller to worklist if it's heap-allocated.
     if (cur_frame.*.caller != null and !onCallstack(tc, cur_frame.*.caller))
@@ -441,7 +439,7 @@ pub fn addFrameRootsToWorklist(tc: Tc, worklist: Worklist, cur_frame: Frame) cal
 }
 
 /// Takes a frame, scans its registers and adds them to the roots.
-/// (roots.c:434-458)
+/// (roots.c:436-460)
 pub fn addFrameRegistersToWorklist(tc: Tc, worklist: Worklist, frame: Frame) callconv(.c) void {
     var i: c.MVMuint16 = undefined;
     var count: c.MVMuint16 = undefined;
@@ -472,7 +470,7 @@ pub fn addFrameRegistersToWorklist(tc: Tc, worklist: Worklist, frame: Frame) cal
 }
 
 /// Takes a frame, scans its lexicals and adds them to the roots.
-/// (roots.c:461-477)
+/// (roots.c:463-479)
 fn scanLexicals(tc: Tc, worklist: Worklist, frame: Frame) void {
     if (frame.*.env != null) {
         var i: c.MVMuint16 = undefined;

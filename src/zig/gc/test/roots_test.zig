@@ -68,7 +68,7 @@ test "gen2_add sets IN_GEN2_ROOT_LIST and gen2_cleanup drops entries whose refer
     const tc: *c.MVMThreadContext = instance.*.main_thread;
 
     // A gen2 holder referencing a nursery object through MVM_ASSIGN_REF:
-    // the write barrier calls MVM_gc_root_gen2_add (roots.c:304-323).
+    // the write barrier calls MVM_gc_root_gen2_add (roots.c:306-325).
     c.MVM_gc_allocate_gen2_default_set(tc);
     var holder: ?*c.MVMException = @ptrCast(@alignCast(c.MVM_repr_alloc_init(tc, instance.*.boot_types.BOOTException)));
     c.MVM_gc_allocate_gen2_default_clear(tc);
@@ -87,7 +87,7 @@ test "gen2_add sets IN_GEN2_ROOT_LIST and gen2_cleanup drops entries whose refer
     try std.testing.expect(tc.gen2roots[n0] == hc);
 
     // First collection: add_gen2s_to_worklist marks the holder, the payload
-    // is added, so the holder stays listed (roots.c:354-358); the payload,
+    // is added, so the holder stays listed (roots.c:356-360); the payload,
     // referenced from gen2, is promoted.
     c.MVM_gc_enter_from_allocator(tc);
     try std.testing.expect(h.body.payload != value);
@@ -97,7 +97,7 @@ test "gen2_add sets IN_GEN2_ROOT_LIST and gen2_cleanup drops entries whose refer
     try std.testing.expect(tc.gen2roots[n0] == hc);
 
     // Second collection: the holder references only gen2 now, nothing is
-    // added, so it is slid out and its flag cleared (roots.c:363-369).
+    // added, so it is slid out and its flag cleared (roots.c:365-371).
     c.MVM_gc_enter_from_allocator(tc);
     try std.testing.expect(h.common.header.flags2 & c.MVM_CF_IN_GEN2_ROOT_LIST == 0);
     try std.testing.expectEqual(n0, tc.num_gen2roots);
@@ -116,7 +116,7 @@ test "gen2_add sets IN_GEN2_ROOT_LIST and gen2_cleanup drops entries whose refer
     }
 
     // gen2_cleanup keeps exactly the GEN2_LIVE entries, in order
-    // (roots.c:383-404). The first entry is dead, so the leading-live scan
+    // (roots.c:385-406). The first entry is dead, so the leading-live scan
     // stops at once.
     for (&fake, 0..) |*f, i| {
         if (i % 3 == 1) f.flags2 |= c.MVM_CF_GEN2_LIVE;
@@ -197,6 +197,37 @@ test "instance roots mark both VM event subscription types" {
     }
     try std.testing.expectEqual(@as(u32, 1), seen_gc_event);
     try std.testing.expectEqual(@as(u32, 1), seen_spesh_overview);
+}
+
+test "tc roots add dispatch resumption init args of object and string kind" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc = instance.*.main_thread;
+    const wl = c.MVM_gc_worklist_create(tc, 1);
+    defer c.MVM_gc_worklist_destroy(tc, wl);
+    roots.addTcRootsToWorklist(tc, wl, null);
+    const without = wl.*.items;
+    wl.*.items = 0;
+
+    // As resume_init_capture sets it (src/disp/program.c). roots.c:233-241
+    // adds the object and string arguments through add_collectable, the
+    // last roots of the tc walk.
+    var flags = [_]c.MVMCallsiteEntry{ c.MVM_CALLSITE_ARG_OBJ, c.MVM_CALLSITE_ARG_INT, c.MVM_CALLSITE_ARG_STR };
+    var cs = std.mem.zeroes(c.MVMCallsite);
+    cs.arg_flags = &flags;
+    cs.flag_count = flags.len;
+    var source: [3]c.MVMRegister = undefined;
+    source[0] = .{ .s = instance.*.str_consts.empty };
+    source[1] = .{ .i64 = 0x12345678 };
+    source[2] = .{ .o = instance.*.VMNull };
+    var map = [_]c.MVMuint16{ 2, 1, 0 };
+    var args = c.MVMArgs{ .callsite = &cs, .source = &source, .map = &map };
+    tc.*.mark_args = &args;
+    defer tc.*.mark_args = null;
+    roots.addTcRootsToWorklist(tc, wl, null);
+    try std.testing.expectEqual(without + 2, wl.*.items);
+    try std.testing.expectEqual(@intFromPtr(&source[2].o), @intFromPtr(wl.*.list[without]));
+    try std.testing.expectEqual(@intFromPtr(&source[0].o), @intFromPtr(wl.*.list[without + 1]));
 }
 
 test "frame registers add only object and string registers" {
