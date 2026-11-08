@@ -820,7 +820,7 @@ test "deletes, tombstones, reuse when full, and the same-size rehash" {
     var tombstoned: u32 = 0;
     for (0..S.slotCount(h) / group_size) |g| {
         const group = md[g * group_size ..][0..group_size];
-        if (std.mem.indexOfScalar(u8, group, empty) != null) continue;
+        if (std.mem.findScalar(u8, group, empty) != null) continue;
         full_groups += 1;
         tombstoned = @intCast(g);
         for (0..group_size) |j| try testing.expect(del(h, keyOf(S.entryAtIndex(h, @intCast(g * group_size + j)))));

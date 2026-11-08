@@ -75,7 +75,7 @@ fn dumpOf(out: *std.Io.Writer.Allocating) ![]const u8 {
 /// The merged count of `op` at `site`, 0 if the dump has no such line.
 fn countOf(text: []const u8, site: u8, op: []const u8) !u64 {
     var buf: [48]u8 = undefined;
-    const prefix = try std.fmt.bufPrint(&buf, "op\t{d}\t{s}\t", .{ site, op });
+    const prefix = try std.mem.print(&buf, "op\t{d}\t{s}\t", .{ site, op });
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
         if (!std.mem.startsWith(u8, line, prefix)) continue;
@@ -87,8 +87,8 @@ fn countOf(text: []const u8, site: u8, op: []const u8) !u64 {
 
 fn expectLine(text: []const u8, comptime fmt: []const u8, args: anytype) !void {
     var buf: [128]u8 = undefined;
-    const want = try std.fmt.bufPrint(&buf, fmt, args);
-    if (std.mem.indexOf(u8, text, want) == null) {
+    const want = try std.mem.print(&buf, fmt, args);
+    if (std.mem.find(u8, text, want) == null) {
         std.debug.print("missing {s}in:\n{s}\n", .{ want, text });
         return error.TestExpectedEqual;
     }
@@ -144,7 +144,7 @@ fn siteOfTable(ht: anytype) u8 {
 /// The offset recorded for `site` in the dump (the `site` line).
 fn offsetOf(text: []const u8, site: u8) !usize {
     var buf: [24]u8 = undefined;
-    const prefix = try std.fmt.bufPrint(&buf, "site\t{d}\t", .{site});
+    const prefix = try std.mem.print(&buf, "site\t{d}\t", .{site});
     var lines = std.mem.splitScalar(u8, text, '\n');
     while (lines.next()) |line| {
         if (std.mem.startsWith(u8, line, prefix)) return try std.fmt.parseInt(usize, line[prefix.len..], 16);
@@ -190,7 +190,7 @@ test "fetches are binned by the table's size" {
     // 10 entries: limit 16 (index 1).
     try expectLine(text, "fetch\t{d}\thit\t1\t3\t", .{small});
     // Nothing else for the sites, and the bins add up to the op rows.
-    try testing.expect(std.mem.indexOf(u8, text, try std.fmt.bufPrint(&buf2, "fetch\t{d}\tmiss\t1\t", .{small})) == null);
+    try testing.expect(std.mem.find(u8, text, try std.mem.print(&buf2, "fetch\t{d}\tmiss\t1\t", .{small})) == null);
     try testing.expectEqual(try countOf(text, big, "fetch_hit"), 10);
     try testing.expectEqual(try countOf(text, big, "fetch_miss"), 10);
 }
@@ -289,7 +289,7 @@ test "two threads merge" {
     const text = try dumpOf(&out);
     try expectLine(text, "op\t{d}\tinsert\t1000\t", .{site});
     var prefix: [32]u8 = undefined;
-    const p = try std.fmt.bufPrint(&prefix, "op\t{d}\tinsert\t", .{site});
+    const p = try std.mem.print(&prefix, "op\t{d}\tinsert\t", .{site});
     try testing.expectEqual(@as(usize, 1), std.mem.count(u8, text, p));
     try expectLine(text, "op\t{d}\tdemolish\t1\t", .{site});
 }

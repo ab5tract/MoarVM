@@ -31,7 +31,7 @@ pub fn makeNamed(allocator: std.mem.Allocator, tc: *moar.ThreadContext, prefix: 
 
     var buf: [32]u8 = undefined;
     for (keys, 0..) |*key, i| {
-        const name = try std.fmt.bufPrintZ(&buf, "{s}{d}", .{ prefix, i });
+        const name = try std.mem.printSentinel(&buf, "{s}{d}", .{ prefix, i }, 0);
         const s = c.MVM_string_ascii_decode_nt(tc, tc.instance.*.VMString, name.ptr);
         c.MVM_repr_push_o(tc, holder, @ptrCast(s));
         key.* = s;

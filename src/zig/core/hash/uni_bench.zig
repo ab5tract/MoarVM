@@ -113,7 +113,7 @@ pub fn parseKeys(arena: std.mem.Allocator, text: []const u8) !KeyFile {
         const kind = f.next().?;
         const name = f.next() orelse return error.MalformedRow;
         if (name.len == 0) return error.MalformedRow;
-        const z = try arena.dupeZ(u8, name);
+        const z = try arena.dupeSentinel(u8, name, 0);
         if (std.mem.eql(u8, kind, "seq")) {
             if (f.next() != null) return error.MalformedRow;
             try seqs.append(arena, z);
@@ -124,7 +124,7 @@ pub fn parseKeys(arena: std.mem.Allocator, text: []const u8) !KeyFile {
         if (std.mem.eql(u8, kind, "pval")) {
             // pval<TAB><propcode><TAB><valuename>: `name` holds the code text.
             const code = std.fmt.parseInt(i32, name, 10) catch return error.MalformedRow;
-            try pvals.append(arena, .{ .name = try arena.dupeZ(u8, value_text), .value = code });
+            try pvals.append(arena, .{ .name = try arena.dupeSentinel(u8, value_text, 0), .value = code });
             continue;
         }
         const value = std.fmt.parseInt(i32, value_text, 10) catch return error.MalformedRow;
@@ -141,7 +141,7 @@ pub fn parseKeys(arena: std.mem.Allocator, text: []const u8) !KeyFile {
 /// (CJK UNIFIED IDEOGRAPH-4E00 and the like), resolved by prefix, not by an
 /// entry of the table.
 pub fn isAlgorithmic(name: []const u8) bool {
-    const dash = std.mem.lastIndexOfScalar(u8, name, '-') orelse return false;
+    const dash = std.mem.findScalarLast(u8, name, '-') orelse return false;
     const tail = name[dash + 1 ..];
     if (tail.len < 4 or tail.len > 6) return false;
     for (tail) |ch| {
@@ -222,7 +222,7 @@ fn repeatTable(arena: std.mem.Allocator, t: Table, n: usize) ![]const Table {
 /// Copies the names of `named` with `suffix` appended.
 fn suffixed(arena: std.mem.Allocator, named: []const Named, suffix: []const u8) ![]const [:0]const u8 {
     const out = try arena.alloc([:0]const u8, named.len);
-    for (named, out) |n, *o| o.* = try std.fmt.allocPrintSentinel(arena, "{s}{s}", .{ n.name, suffix }, 0);
+    for (named, out) |n, *o| o.* = try arena.printSentinel("{s}{s}", .{ n.name, suffix }, 0);
     return out;
 }
 
@@ -235,7 +235,7 @@ fn harvestNames(arena: std.mem.Allocator, tc: Tc, sample: u32) ![]const [:0]cons
         defer c.MVM_free(cname);
         const name = std.mem.span(cname);
         if (name.len == 0 or name[0] == '<' or isAlgorithmic(name)) continue;
-        try names.append(arena, try arena.dupeZ(u8, name));
+        try names.append(arena, try arena.dupeSentinel(u8, name, 0));
     }
     shuffle([:0]const u8, names.items, lcg_seed);
     return names.items[0..@min(sample, names.items.len)];
@@ -307,7 +307,7 @@ fn buildCell(
         return .{ .name = name, .tables = try repeatTable(arena, t[2], names.len), .keys = names, .hit = true };
     } else if (eq(u8, name, "cpbyname_miss")) {
         const ks = try arena.alloc([:0]const u8, names.len);
-        for (names, ks) |n, *k| k.* = try std.fmt.allocPrintSentinel(arena, "{s} ZZZ", .{n}, 0);
+        for (names, ks) |n, *k| k.* = try arena.printSentinel("{s} ZZZ", .{n}, 0);
         return .{ .name = name, .tables = try repeatTable(arena, t[2], ks.len), .keys = ks, .hit = false };
     } else if (eq(u8, name, "cpbyname_miss_prefix")) {
         // Distinct keys the lookup resolves by prefix: the compatibility
@@ -315,9 +315,9 @@ fn buildCell(
         const ks = try arena.alloc([:0]const u8, @min(sample, prefix_key_limit));
         for (ks, 0..) |*k, i| {
             k.* = if (i < 512)
-                try std.fmt.allocPrintSentinel(arena, "CJK COMPATIBILITY IDEOGRAPH-{X}", .{0xF900 + i}, 0)
+                try arena.printSentinel("CJK COMPATIBILITY IDEOGRAPH-{X}", .{0xF900 + i}, 0)
             else
-                try std.fmt.allocPrintSentinel(arena, "CJK UNIFIED IDEOGRAPH-{X}", .{0x4E00 + i - 512}, 0);
+                try arena.printSentinel("CJK UNIFIED IDEOGRAPH-{X}", .{0x4E00 + i - 512}, 0);
         }
         return .{ .name = name, .tables = try repeatTable(arena, t[2], ks.len), .keys = ks, .hit = false };
     } else if (eq(u8, name, "propcode_hit") or eq(u8, name, "propcode_alias")) {
@@ -339,7 +339,7 @@ fn buildCell(
         const ks = try arena.alloc([:0]const u8, kf.pvals.len);
         const tabs = try arena.alloc(Table, kf.pvals.len);
         for (kf.pvals, ks, tabs) |p, *k, *tb| {
-            k.* = try std.fmt.allocPrintSentinel(arena, "{d}-{s}{s}", .{ p.value, p.name, if (hit) "" else "_X" }, 0);
+            k.* = try arena.printSentinel("{d}-{s}{s}", .{ p.value, p.name, if (hit) "" else "_X" }, 0);
             tb.* = @ptrCast(instance.*.unicode_property_values_hashes + @as(usize, @intCast(p.value)));
         }
         return .{ .name = name, .tables = tabs, .keys = ks, .hit = hit };

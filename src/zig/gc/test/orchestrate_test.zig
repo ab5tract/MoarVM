@@ -234,12 +234,12 @@ test "a blocked thread's collection is stolen by the coordinator" {
         const n = c.fread(&buf, 1, buf.len, log);
         try std.testing.expect(n > 0 and n < buf.len);
         var want_buf: [64]u8 = undefined;
-        const want = try std.fmt.bufPrint(&want_buf, "seq={d} tid={d} full=", .{ s0 + 1, child_tc.*.thread_id });
+        const want = try std.mem.print(&want_buf, "seq={d} tid={d} full=", .{ s0 + 1, child_tc.*.thread_id });
         var found = false;
         var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
         while (lines.next()) |line| {
             if (std.mem.startsWith(u8, line, want)) {
-                try std.testing.expect(std.mem.indexOf(u8, line, " coord=0 ") != null);
+                try std.testing.expect(std.mem.find(u8, line, " coord=0 ") != null);
                 found = true;
             }
         }

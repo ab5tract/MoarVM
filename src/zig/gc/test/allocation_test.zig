@@ -76,7 +76,7 @@ test "request above MVM_NURSERY_SIZE panics with the C message" {
     defer std.testing.allocator.free(r.stdout);
     defer std.testing.allocator.free(r.stderr);
     try std.testing.expectEqual(std.process.Child.Term{ .exited = c.MVM_exitcode_gcalloc }, r.term);
-    try std.testing.expect(std.mem.indexOf(u8, r.stderr, "MoarVM panic: Attempt to allocate more than the maximum nursery size\n") != null);
+    try std.testing.expect(std.mem.find(u8, r.stderr, "MoarVM panic: Attempt to allocate more than the maximum nursery size\n") != null);
 }
 
 test "MVMThreadContext layout as the C compiler sees it" {

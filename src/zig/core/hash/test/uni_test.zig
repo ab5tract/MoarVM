@@ -17,7 +17,7 @@ var names: [n][12]u8 = undefined;
 fn makeNames() ![n][*c]const u8 {
     var ks: [n][*c]const u8 = undefined;
     for (&names, 0..) |*buf, i| {
-        const s = try std.fmt.bufPrintZ(buf, "prop{d}", .{i});
+        const s = try std.mem.printSentinel(buf, "prop{d}", .{i}, 0);
         ks[i] = s.ptr;
     }
     return ks;
@@ -54,7 +54,7 @@ test "insert 2000 generated C-string keys (\"prop<n>\"), fetch each returns the 
     // The same key from another buffer is the same entry (strcmp, not
     // pointer equality); a miss is null.
     var other: [12]u8 = undefined;
-    const prop7 = try std.fmt.bufPrintZ(&other, "prop{d}", .{7});
+    const prop7 = try std.mem.printSentinel(&other, "prop{d}", .{7}, 0);
     try testing.expectEqual(uni.fetch(tc, &ht, ks[7]), uni.fetch(tc, &ht, prop7.ptr));
     try testing.expectEqual(@as(?*c.MVMUniHashEntry, null), uni.fetch(tc, &ht, "prop2000"));
     try testing.expectEqual(@as(?*c.MVMUniHashEntry, null), uni.fetch(tc, &ht, "nope"));
@@ -95,7 +95,7 @@ test "hashCode is the C's FNV-1a times the Fibonacci constant" {
 fn bigNames(alloc: std.mem.Allocator, count: usize, prefix: []const u8) ![][*c]const u8 {
     const ks = try alloc.alloc([*c]const u8, count);
     for (ks, 0..) |*k, i| {
-        const s = try std.fmt.allocPrintSentinel(alloc, "{s}{d}", .{ prefix, i }, 0);
+        const s = try alloc.printSentinel("{s}{d}", .{ prefix, i }, 0);
         k.* = s.ptr;
     }
     return ks;

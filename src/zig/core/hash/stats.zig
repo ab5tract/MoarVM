@@ -356,16 +356,16 @@ fn exitHandler() callconv(.c) void {
     const dir = std.c.getenv("MVM_HASH_STATS") orelse return;
     writeFile(std.mem.span(dir)) catch |e| {
         var buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&buf, "hash-stats: cannot write the dump to MVM_HASH_STATS={s}: {s}\n", .{ std.mem.span(dir), @errorName(e) }) catch return;
+        const msg = std.mem.print(&buf, "hash-stats: cannot write the dump to MVM_HASH_STATS={s}: {s}\n", .{ std.mem.span(dir), @errorName(e) }) catch return;
         _ = std.c.write(2, msg.ptr, msg.len);
     };
 }
 
 fn writeFile(dir: []const u8) !void {
     var path_buf: [4096:0]u8 = undefined;
-    _ = try std.fmt.bufPrintZ(&path_buf, "{s}/{d}.tsv", .{ dir, std.c.getpid() });
+    _ = try std.mem.printSentinel(&path_buf, "{s}/{d}.tsv", .{ dir, std.c.getpid() }, 0);
     var dir_buf: [4096:0]u8 = undefined;
-    const dz = try std.fmt.bufPrintZ(&dir_buf, "{s}", .{dir});
+    const dz = try std.mem.printSentinel(&dir_buf, "{s}", .{dir}, 0);
     _ = std.c.mkdir(dz.ptr, 0o755);
     const fd = std.c.open(&path_buf, .{ .ACCMODE = .WRONLY, .CREAT = true, .TRUNC = true }, @as(std.c.mode_t, 0o644));
     if (fd < 0) return error.OpenFailed;
@@ -425,6 +425,6 @@ test "an enabled build counts an op and dumps it" {
     defer out.deinit();
     try dump(&out.writer);
     var want: [64]u8 = undefined;
-    const prefix = try std.fmt.bufPrint(&want, "op\t{d}\tinsert\t", .{site});
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), prefix) != null);
+    const prefix = try std.mem.print(&want, "op\t{d}\tinsert\t", .{site});
+    try std.testing.expect(std.mem.find(u8, out.written(), prefix) != null);
 }
