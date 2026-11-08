@@ -147,6 +147,8 @@ pub fn globC(b: *std.Build, dir_rel: []const u8) []const []const u8 {
     var dir = b.root.openDir(io, dir_rel, .{ .iterate = true }) catch |err|
         std.process.fatal("cannot open {s}: {t}", .{ dir_rel, err });
     defer dir.close(io);
+    // Zig 0.17 re-runs configure only when a registered input changes.
+    b.dependOnDirectoryContents(b.path(dir_rel));
 
     var files: std.ArrayList([]const u8) = .empty;
     var it = dir.iterate();

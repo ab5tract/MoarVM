@@ -45,6 +45,7 @@ pub fn detect(b: *std.Build) Version {
     }
 
     if (root_files.rootExists(b, ".git")) {
+        dependOnGitDescribeInputs(b);
         const argv = [_][]const u8{
             "git", "-C", b.root.toString(b.allocator) catch @panic("OOM"), "describe", "--tags", "--match=20*",
         };
@@ -58,6 +59,29 @@ pub fn detect(b: *std.Build) Version {
     }
 
     return parse(full);
+}
+
+/// Registers what `git describe --tags` depends on as configure inputs
+/// (Zig 0.17 caches the configure phase): HEAD, the branch ref it names,
+/// packed-refs and the loose tags. When .git is not a directory (a
+/// worktree or submodule checkout whose .git file points elsewhere) the
+/// refs live outside the build root, so the configure cache is poisoned
+/// instead and configure re-runs on every build.
+fn dependOnGitDescribeInputs(b: *std.Build) void {
+    const io = b.graph.io;
+    var git_dir = b.root.openDir(io, ".git", .{}) catch {
+        b.graph.poisonCache();
+        return;
+    };
+    git_dir.close(io);
+    if (root_files.readRootFile(b, ".git/HEAD")) |head| {
+        const ref_prefix = "ref: ";
+        const line = std.mem.trim(u8, head, " \t\r\n");
+        if (std.mem.startsWith(u8, line, ref_prefix))
+            root_files.dependOnRootFile(b, b.fmt(".git/{s}", .{line[ref_prefix.len..]}));
+    }
+    root_files.dependOnRootFile(b, ".git/packed-refs");
+    root_files.dependOnRootDir(b, ".git/refs/tags");
 }
 
 test "parse: git describe output" {
