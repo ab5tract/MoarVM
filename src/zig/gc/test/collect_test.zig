@@ -117,7 +117,7 @@ fn freedOnFullRun() !void {
     // A nursery run does not sweep gen2.
     c.MVM_gc_enter_from_allocator(tc);
     try std.testing.expect(dead.header.flags2 & c.MVM_CF_DEBUG_IN_GEN2_FREE_LIST == 0);
-    // Force the next run full (orchestrate.c:422-443): promoted bytes at the
+    // Force the next run full (orchestrate.c:428-449): promoted bytes at the
     // minimum, and a resident set so small that any growth is over 20 %.
     @atomicStore(c.AO_t, &instance.*.gc_promoted_bytes_since_last_full, c.MVM_GC_GEN2_THRESHOLD_MINIMUM, .seq_cst);
     instance.*.gc_debug_rss_override = 1;
