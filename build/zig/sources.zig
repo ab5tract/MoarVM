@@ -64,17 +64,17 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!Lists {
         if (section == .zig) {
             try zig_entries.append(allocator, try parseZigLine(allocator, line));
         } else {
-            try buckets[@intFromEnum(section)].append(allocator, line);
+            try buckets[@backingInt(section)].append(allocator, line);
         }
     }
 
     const lists: Lists = .{
-        .core = try buckets[@intFromEnum(Section.core)].toOwnedSlice(allocator),
-        .platform_posix = try buckets[@intFromEnum(Section.platform_posix)].toOwnedSlice(allocator),
-        .jit = try buckets[@intFromEnum(Section.jit)].toOwnedSlice(allocator),
-        .jit_x64 = try buckets[@intFromEnum(Section.jit_x64)].toOwnedSlice(allocator),
-        .jit_stub = try buckets[@intFromEnum(Section.jit_stub)].toOwnedSlice(allocator),
-        .main = try buckets[@intFromEnum(Section.main)].toOwnedSlice(allocator),
+        .core = try buckets[@backingInt(Section.core)].toOwnedSlice(allocator),
+        .platform_posix = try buckets[@backingInt(Section.platform_posix)].toOwnedSlice(allocator),
+        .jit = try buckets[@backingInt(Section.jit)].toOwnedSlice(allocator),
+        .jit_x64 = try buckets[@backingInt(Section.jit_x64)].toOwnedSlice(allocator),
+        .jit_stub = try buckets[@backingInt(Section.jit_stub)].toOwnedSlice(allocator),
+        .main = try buckets[@backingInt(Section.main)].toOwnedSlice(allocator),
         .zig = try zig_entries.toOwnedSlice(allocator),
     };
     try validateZig(lists);
