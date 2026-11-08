@@ -107,8 +107,12 @@ inline fn debugspam(tc: Tc) bool {
 /// moar.h does not, so the translation has no declaration of it.
 extern fn MVM_malloc_trim() c_int;
 
+/// src/platform/time.h, which orchestrate.c includes directly and moar.h
+/// does not, so the translation has no declaration of it either.
+extern fn MVM_platform_nanosleep(nanos: c.MVMuint64) void;
+
 /// If we have the job of doing GC for a thread, we add it to our work
-/// list. (orchestrate.c:4-20)
+/// list. (orchestrate.c:5-21)
 fn addWork(tc: Tc, stolen: Tc) void {
     var i: c.MVMuint32 = 0;
     while (i < tc.*.gc_work_count) : (i += 1)
@@ -128,19 +132,19 @@ fn addWork(tc: Tc, stolen: Tc) void {
 /// Goes through all threads but the current one and notifies them that a
 /// GC run is starting. Those that are blocked are considered excluded from
 /// the run, and are not counted. Returns the count of threads that should be
-/// added to the finished countdown. (orchestrate.c:22-70)
+/// added to the finished countdown. (orchestrate.c:23-71)
 fn signalOneThread(tc: Tc, to_signal: Tc) c.MVMuint32 {
     // Loop here since we may not succeed first time (e.g. the status of the
     // thread may change between the two ways we try to twiddle it).
     var had_suspend_request: c_uint = 0;
     while (true) {
-        // MVM_load(&to_signal->gc_status) (orchestrate.c:31).
+        // MVM_load(&to_signal->gc_status) (orchestrate.c:32).
         const current: Status = atomic.load(&to_signal.*.gc_status);
         switch (current) { // AO_READ(current)
             NONE => {
                 // Try to set it from running to interrupted - the common case.
                 // MVM_cas(&to_signal->gc_status, MVMGCStatus_NONE,
-                //     MVMGCStatus_INTERRUPT) (orchestrate.c:35).
+                //     MVMGCStatus_INTERRUPT) (orchestrate.c:36).
                 if (atomic.cas(&to_signal.*.gc_status, NONE, INTERRUPT) == NONE) {
                     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Signalled thread %d to interrupt\n", .{tid(to_signal)});
                     return 1;
@@ -151,14 +155,14 @@ fn signalOneThread(tc: Tc, to_signal: Tc) c.MVMuint32 {
                 return 0;
             },
             UNABLE | SUSPEND_REQUEST, UNABLE | SUSPENDED, UNABLE => {
-                // The two suspend cases (orchestrate.c:45-47) set
+                // The two suspend cases (orchestrate.c:46-48) set
                 // had_suspend_request and fall through to the UNABLE case
-                // (:49), which keeps the value from the previous iteration.
+                // (:50), which keeps the value from the previous iteration.
                 if (current != UNABLE)
                     had_suspend_request = @intCast(current & SUSPEND_MASK);
                 // Otherwise, it's blocked; try to set it to work Stolen.
                 // MVM_cas(&to_signal->gc_status, MVMGCStatus_UNABLE | had_suspend_request,
-                //     MVMGCStatus_STOLEN | had_suspend_request) (orchestrate.c:51).
+                //     MVMGCStatus_STOLEN | had_suspend_request) (orchestrate.c:52).
                 if (atomic.cas(&to_signal.*.gc_status, UNABLE | had_suspend_request, STOLEN | had_suspend_request) == (UNABLE | had_suspend_request)) {
                     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : A blocked thread %d spotted; work stolen\n", .{tid(to_signal)});
                     addWork(tc, to_signal);
@@ -172,8 +176,8 @@ fn signalOneThread(tc: Tc, to_signal: Tc) c.MVMuint32 {
                 return 0;
             },
             else => {
-                // MVM_load(&to_signal->gc_status) (orchestrate.c:66). MVM_panic
-                // does not return, so the C's `return 0` after it (:67) is
+                // MVM_load(&to_signal->gc_status) (orchestrate.c:67). MVM_panic
+                // does not return, so the C's `return 0` after it (:68) is
                 // unreachable and has no counterpart here.
                 c.MVM_panic(c.MVM_exitcode_gcorch, "invalid status %" ++ c.MVM_PRSz ++ " in GC orchestrate\n", atomic.load(&to_signal.*.gc_status));
             },
@@ -181,12 +185,12 @@ fn signalOneThread(tc: Tc, to_signal: Tc) c.MVMuint32 {
     }
 }
 
-/// (orchestrate.c:71-102)
+/// (orchestrate.c:72-103)
 fn signalAll(tc: Tc, threads: Thread) c.MVMuint32 {
     var t: Thread = threads;
     var count: c.MVMuint32 = 0;
     while (t != null) {
-        // MVM_load(&t->body.stage) (orchestrate.c:75).
+        // MVM_load(&t->body.stage) (orchestrate.c:76).
         switch (atomic.load(&t.*.body.stage)) {
             c.MVM_thread_stage_starting, c.MVM_thread_stage_waiting, c.MVM_thread_stage_started => {
                 // Don't signal ourself.
@@ -207,7 +211,7 @@ fn signalAll(tc: Tc, threads: Thread) c.MVMuint32 {
                 // will be cleaned up (removed from the lists) shortly
             },
             else => {
-                // MVM_load(&t->body.stage) (orchestrate.c:97).
+                // MVM_load(&t->body.stage) (orchestrate.c:98).
                 c.MVM_panic(c.MVM_exitcode_gcorch, "Corrupted MVMThread or running threads list: invalid thread stage %" ++ c.MVM_PRSz, atomic.load(&t.*.body.stage));
             },
         }
@@ -217,10 +221,10 @@ fn signalAll(tc: Tc, threads: Thread) c.MVMuint32 {
 }
 
 /// Does work in a thread's in-tray, if any. Returns a non-zero value if work
-/// was found and done, and zero otherwise. (orchestrate.c:104-115)
+/// was found and done, and zero otherwise. (orchestrate.c:105-116)
 fn processInTray(tc: Tc, gen: c.MVMuint8) c_int {
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Considering extra work\n", .{});
-    // MVM_load(&tc->gc_in_tray) (orchestrate.c:108).
+    // MVM_load(&tc->gc_in_tray) (orchestrate.c:109).
     if (atomic.load(&tc.*.gc_in_tray) != null) {
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Was given extra work by another thread; doing it\n", .{});
         c.MVM_gc_collect(tc, c.MVMGCWhatToDo_InTray, gen);
@@ -230,13 +234,13 @@ fn processInTray(tc: Tc, gen: c.MVMuint8) c_int {
 }
 
 /// Called by a thread when it thinks it is done with GC. It may get some more
-/// work yet, though. (orchestrate.c:117-131)
+/// work yet, though. (orchestrate.c:118-132)
 fn clearIntrays(tc: Tc, gen: c.MVMuint8) void {
     var did_work: c.MVMuint32 = 1;
     while (did_work != 0) {
         var cur_thread: Thread = undefined;
         did_work = 0;
-        // (MVMThread *)MVM_load(&tc->instance->threads) (orchestrate.c:124).
+        // (MVMThread *)MVM_load(&tc->instance->threads) (orchestrate.c:125).
         cur_thread = atomic.load(&tc.*.instance.*.threads);
         while (cur_thread != null) {
             if (cur_thread.*.body.tc != null)
@@ -246,7 +250,7 @@ fn clearIntrays(tc: Tc, gen: c.MVMuint8) void {
     }
 }
 
-/// (orchestrate.c:132-332)
+/// (orchestrate.c:133-333)
 fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
     var i: c.MVMuint32 = undefined;
     var did_work: c.MVMuint32 = undefined;
@@ -263,17 +267,17 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
 
     // Decrement gc_finish to say we're done, and wait for termination.
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Voting to finish\n", .{});
-    // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:147).
+    // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:148).
     c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-    // MVM_decr(&tc->instance->gc_finish) (orchestrate.c:148).
+    // MVM_decr(&tc->instance->gc_finish) (orchestrate.c:149).
     _ = atomic.decr(&tc.*.instance.*.gc_finish);
-    // uv_cond_broadcast(&tc->instance->cond_gc_finish) (orchestrate.c:149).
+    // uv_cond_broadcast(&tc->instance->cond_gc_finish) (orchestrate.c:150).
     c.uv_cond_broadcast(&tc.*.instance.*.cond_gc_finish);
-    // MVM_load(&tc->instance->gc_finish) (orchestrate.c:150).
+    // MVM_load(&tc->instance->gc_finish) (orchestrate.c:151).
     while (atomic.load(&tc.*.instance.*.gc_finish) != 0)
-        // uv_cond_wait(&tc->instance->cond_gc_finish, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:151).
+        // uv_cond_wait(&tc->instance->cond_gc_finish, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:152).
         c.uv_cond_wait(&tc.*.instance.*.cond_gc_finish, &tc.*.instance.*.mutex_gc_orchestrate);
-    // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:152).
+    // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:153).
     c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Termination agreed\n", .{});
 
@@ -294,7 +298,7 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
         clearIntrays(tc, gen);
 
         if (gen == c.MVMGCGenerations_Both) {
-            // (MVMThread *)MVM_load(&tc->instance->threads) (orchestrate.c:174).
+            // (MVMThread *)MVM_load(&tc->instance->threads) (orchestrate.c:175).
             var cur_thread: Thread = atomic.load(&tc.*.instance.*.threads);
             if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Co-ordinator handling inter-gen root cleanup\n", .{});
             while (cur_thread != null) {
@@ -311,23 +315,23 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Co-ordinator handling allocator safepoint frees\n", .{});
         c.MVM_alloc_safepoint(tc);
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Co-ordinator signalling in-trays clear\n", .{});
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:194).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:195).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // MVM_store(&tc->instance->gc_intrays_clearing, 0) (orchestrate.c:195).
+        // MVM_store(&tc->instance->gc_intrays_clearing, 0) (orchestrate.c:196).
         atomic.store(&tc.*.instance.*.gc_intrays_clearing, 0);
-        // uv_cond_broadcast(&tc->instance->cond_gc_intrays_clearing) (orchestrate.c:196).
+        // uv_cond_broadcast(&tc->instance->cond_gc_intrays_clearing) (orchestrate.c:197).
         c.uv_cond_broadcast(&tc.*.instance.*.cond_gc_intrays_clearing);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:197).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:198).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
     } else {
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Waiting for in-tray clearing completion\n", .{});
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:202).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:203).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // MVM_load(&tc->instance->gc_intrays_clearing) (orchestrate.c:203).
+        // MVM_load(&tc->instance->gc_intrays_clearing) (orchestrate.c:204).
         while (atomic.load(&tc.*.instance.*.gc_intrays_clearing) != 0)
-            // uv_cond_wait(&tc->instance->cond_gc_intrays_clearing, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:204).
+            // uv_cond_wait(&tc->instance->cond_gc_intrays_clearing, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:205).
             c.uv_cond_wait(&tc.*.instance.*.cond_gc_intrays_clearing, &tc.*.instance.*.mutex_gc_orchestrate);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:205).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:206).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Got in-tray clearing complete notice\n", .{});
     }
@@ -338,7 +342,7 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
     while (i < tc.*.gc_work_count) : (i += 1) {
         const other: Tc = tc.*.gc_work[i].tc;
         const thread_obj: Thread = other.*.thread_obj;
-        // MVM_load(&thread_obj->body.stage) (orchestrate.c:215).
+        // MVM_load(&thread_obj->body.stage) (orchestrate.c:216).
         const destroying: c_int = @intFromBool(atomic.load(&thread_obj.*.body.stage) == c.MVM_thread_stage_clearing_nursery);
 
         // Free gen2 unmarked if full collection. A thread being destroyed is
@@ -355,20 +359,20 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
             if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : transferring gen2 of thread %d\n", .{tid(other)});
             c.MVM_gc_gen2_transfer(other, tc);
             if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : destroying thread %d\n", .{tid(other)});
-            // #if MVM_GC_DEBUG (orchestrate.c:235-238)
+            // #if MVM_GC_DEBUG (orchestrate.c:236-239)
             if (comptime c.MVM_GC_DEBUG != 0) {
                 // Its log line now: it is gone by the end of finish_gc.
                 c.MVM_gc_debug_log_collection(tc, other, @intFromBool(gen == c.MVMGCGenerations_Both));
             }
-            // tc->gc_work[i].tc = thread_obj->body.tc = NULL; (orchestrate.c:239)
+            // tc->gc_work[i].tc = thread_obj->body.tc = NULL; (orchestrate.c:240)
             thread_obj.*.body.tc = null;
             tc.*.gc_work[i].tc = null;
             c.MVM_tc_destroy(other);
-            // MVM_store(&thread_obj->body.stage, MVM_thread_stage_destroyed) (orchestrate.c:241).
+            // MVM_store(&thread_obj->body.stage, MVM_thread_stage_destroyed) (orchestrate.c:242).
             atomic.store(&thread_obj.*.body.stage, c.MVM_thread_stage_destroyed);
         } else {
             // Contribute this thread's promoted bytes.
-            // MVM_add(&tc->instance->gc_promoted_bytes_since_last_full, other->gc_promoted_bytes) (orchestrate.c:245).
+            // MVM_add(&tc->instance->gc_promoted_bytes_since_last_full, other->gc_promoted_bytes) (orchestrate.c:246).
             _ = atomic.add(&tc.*.instance.*.gc_promoted_bytes_since_last_full, other.*.gc_promoted_bytes);
 
             // Collect nursery.
@@ -376,16 +380,16 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
             c.MVM_gc_collect_free_nursery_uncopied(tc, other, tc.*.gc_work[i].limit);
 
             // Handle exited threads.
-            // MVM_load(&thread_obj->body.stage) (orchestrate.c:254).
+            // MVM_load(&thread_obj->body.stage) (orchestrate.c:255).
             if (atomic.load(&thread_obj.*.body.stage) == c.MVM_thread_stage_exited) {
                 // Don't bother freeing gen2; we'll do it next time
-                // MVM_store(&thread_obj->body.stage, MVM_thread_stage_clearing_nursery) (orchestrate.c:256).
+                // MVM_store(&thread_obj->body.stage, MVM_thread_stage_clearing_nursery) (orchestrate.c:257).
                 atomic.store(&thread_obj.*.body.stage, c.MVM_thread_stage_clearing_nursery);
-                // (int)MVM_load(&thread_obj->body.stage) (orchestrate.c:259).
+                // (int)MVM_load(&thread_obj->body.stage) (orchestrate.c:260).
                 if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : set thread %d clearing nursery stage to %d\n", .{ tid(other), @as(c_int, @bitCast(@as(c_uint, @truncate(atomic.load(&thread_obj.*.body.stage))))) });
             }
 
-            // #if MVM_GC_DEBUG >= 3 (orchestrate.c:262-264)
+            // #if MVM_GC_DEBUG >= 3 (orchestrate.c:263-265)
             if (comptime c.MVM_GC_DEBUG >= 3) {
                 @memset(@as([*]u8, @ptrCast(other.*.nursery_fromspace))[0..other.*.nursery_fromspace_size], 0xef);
             }
@@ -394,17 +398,17 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
             var suspend_bits: c_uint = 0;
             var status_bits: c_uint = 0;
             while (true) {
-                // MVM_load(&other->gc_status) (orchestrate.c:270).
+                // MVM_load(&other->gc_status) (orchestrate.c:271).
                 const current: Status = atomic.load(&other.*.gc_status);
                 status_bits = @intCast(current & STATUS_MASK); // AO_READ(current) & MVMGCSTATUS_MASK
                 suspend_bits = @intCast(current & SUSPEND_MASK); // AO_READ(current) & MVMSUSPENDSTATUS_MASK
                 if (status_bits == STOLEN) {
-                    // MVM_cas(&other->gc_status, MVMGCStatus_STOLEN | suspend_bits, MVMGCStatus_UNABLE | suspend_bits) (orchestrate.c:274).
+                    // MVM_cas(&other->gc_status, MVMGCStatus_STOLEN | suspend_bits, MVMGCStatus_UNABLE | suspend_bits) (orchestrate.c:275).
                     if (atomic.cas(&other.*.gc_status, STOLEN | suspend_bits, UNABLE | suspend_bits) == (STOLEN | suspend_bits)) {
                         break;
                     }
                 } else if (status_bits == INTERRUPT) {
-                    // MVM_cas(&other->gc_status, MVMGCStatus_INTERRUPT | suspend_bits, MVMGCStatus_NONE | suspend_bits) (orchestrate.c:280).
+                    // MVM_cas(&other->gc_status, MVMGCStatus_INTERRUPT | suspend_bits, MVMGCStatus_NONE | suspend_bits) (orchestrate.c:281).
                     if (atomic.cas(&other.*.gc_status, INTERRUPT | suspend_bits, NONE | suspend_bits) == (INTERRUPT | suspend_bits)) {
                         break;
                     }
@@ -417,7 +421,7 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
         }
     }
 
-    // #if MVM_GC_DEBUG (orchestrate.c:295-303)
+    // #if MVM_GC_DEBUG (orchestrate.c:296-304)
     if (comptime c.MVM_GC_DEBUG != 0) {
         // One per-collection log line per thread this one collected (the
         // coordinator's work list, or a non-coordinator's own entry), before
@@ -430,69 +434,69 @@ fn finishGc(tc: Tc, gen: c.MVMuint8, is_coordinator: c.MVMuint8) void {
     }
 
     if (is_coordinator != 0) {
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:306).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:307).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // MVM_store(&tc->instance->gc_completed, 1) (orchestrate.c:307).
+        // MVM_store(&tc->instance->gc_completed, 1) (orchestrate.c:308).
         atomic.store(&tc.*.instance.*.gc_completed, 1);
-        // uv_cond_broadcast(&tc->instance->cond_gc_completed) (orchestrate.c:308).
+        // uv_cond_broadcast(&tc->instance->cond_gc_completed) (orchestrate.c:309).
         c.uv_cond_broadcast(&tc.*.instance.*.cond_gc_completed);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:309).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:310).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
     } else {
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:312).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:313).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // !MVM_load(&tc->instance->gc_completed) (orchestrate.c:313).
+        // !MVM_load(&tc->instance->gc_completed) (orchestrate.c:314).
         while (atomic.load(&tc.*.instance.*.gc_completed) == 0)
-            // uv_cond_wait(&tc->instance->cond_gc_completed, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:314).
+            // uv_cond_wait(&tc->instance->cond_gc_completed, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:315).
             c.uv_cond_wait(&tc.*.instance.*.cond_gc_completed, &tc.*.instance.*.mutex_gc_orchestrate);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:315).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:316).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
     }
 
     // Signal acknowledgement of completing the cleanup,
     // except for STables, and if we're the final to do
     // so, free the STables, which have been linked.
-    // MVM_decr(&tc->instance->gc_ack) == 2 (orchestrate.c:321): the value before the decrement.
+    // MVM_decr(&tc->instance->gc_ack) == 2 (orchestrate.c:322): the value before the decrement.
     if (atomic.decr(&tc.*.instance.*.gc_ack) == 2) {
         // Set it to zero (we're guaranteed the only ones trying to write to
         // it here). Actual STable free in MVM_gc_enter_from_allocator.
-        // MVM_store(&tc->instance->gc_ack, 0) (orchestrate.c:324).
+        // MVM_store(&tc->instance->gc_ack, 0) (orchestrate.c:325).
         atomic.store(&tc.*.instance.*.gc_ack, 0);
 
         // Also clear in GC flag.
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:327).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:328).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
         tc.*.instance.*.in_gc = 0;
-        // uv_cond_broadcast(&tc->instance->cond_blocked_can_continue) (orchestrate.c:329).
+        // uv_cond_broadcast(&tc->instance->cond_blocked_can_continue) (orchestrate.c:330).
         c.uv_cond_broadcast(&tc.*.instance.*.cond_blocked_can_continue);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:330).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:331).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
     }
 }
 
 /// Called by a thread to indicate it is about to enter a blocking operation.
 /// This tells any thread that is coordinating a GC run that this thread will
-/// be unable to participate. (orchestrate.c:334-357)
+/// be unable to participate. (orchestrate.c:335-358)
 pub fn markThreadBlocked(tc: Tc) callconv(.c) void {
     // This may need more than one attempt.
     while (true) {
         // Try to set it from running to unable - the common case.
-        // MVM_cas(&tc->gc_status, MVMGCStatus_NONE, MVMGCStatus_UNABLE) (orchestrate.c:341).
+        // MVM_cas(&tc->gc_status, MVMGCStatus_NONE, MVMGCStatus_UNABLE) (orchestrate.c:342).
         if (atomic.cas(&tc.*.gc_status, NONE, UNABLE) == NONE)
             return;
 
         // MVM_cas(&tc->gc_status, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST,
-        //     MVMGCStatus_UNABLE | MVMSuspendState_SUSPENDED) (orchestrate.c:345).
+        //     MVMGCStatus_UNABLE | MVMSuspendState_SUSPENDED) (orchestrate.c:346).
         if (atomic.cas(&tc.*.gc_status, INTERRUPT | SUSPEND_REQUEST, UNABLE | SUSPENDED) == (INTERRUPT | SUSPEND_REQUEST))
             return;
 
         // The only way this can fail is if another thread just decided we're to
         // participate in a GC run.
-        // MVM_load(&tc->gc_status) (orchestrate.c:351).
+        // MVM_load(&tc->gc_status) (orchestrate.c:352).
         if (atomic.load(&tc.*.gc_status) == INTERRUPT)
             enterFromInterrupt(tc)
         else
-            // MVM_load(&tc->gc_status) (orchestrate.c:355).
+            // MVM_load(&tc->gc_status) (orchestrate.c:356).
             c.MVM_panic(c.MVM_exitcode_gcorch, "Invalid GC status observed \"%lu\" while blocking thread; aborting", @as(c_ulong, atomic.load(&tc.*.gc_status)));
     }
 }
@@ -500,31 +504,31 @@ pub fn markThreadBlocked(tc: Tc) callconv(.c) void {
 /// Called by a thread to indicate it has completed a block operation and is
 /// thus able to particpate in a GC run again. Note that this case needs some
 /// special handling if it comes out of this mode when a GC run is taking place.
-/// (orchestrate.c:359-405)
+/// (orchestrate.c:360-406)
 pub fn markThreadUnblocked(tc: Tc) callconv(.c) void {
     // Try to set it from unable to running.
-    // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_NONE) != MVMGCStatus_UNABLE (orchestrate.c:364).
+    // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_NONE) != MVMGCStatus_UNABLE (orchestrate.c:365).
     while (atomic.cas(&tc.*.gc_status, UNABLE, NONE) != UNABLE) {
         // We can't, presumably because a GC run is going on. We should wait
         // for that to finish before we go on; try using a condvar for it.
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:368).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:369).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
         if (tc.*.instance.*.in_gc != 0) {
-            // uv_cond_wait(&tc->instance->cond_blocked_can_continue, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:370).
+            // uv_cond_wait(&tc->instance->cond_blocked_can_continue, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:371).
             c.uv_cond_wait(&tc.*.instance.*.cond_blocked_can_continue, &tc.*.instance.*.mutex_gc_orchestrate);
-            // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:372).
+            // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:373).
             c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
         } else {
-            // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:375).
+            // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:376).
             c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
-            // MVM_load(&tc->gc_status) (orchestrate.c:376).
+            // MVM_load(&tc->gc_status) (orchestrate.c:377).
             if ((atomic.load(&tc.*.gc_status) & SUSPEND_MASK) == SUSPEND_REQUEST) {
                 while (true) {
                     // Let's try to unblock into INTERRUPT mode and keep the
                     // suspend request, then immediately enter_from_interrupt,
                     // so we actually wait to be woken up.
                     // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST,
-                    //     MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:381).
+                    //     MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:382).
                     if (atomic.cas(&tc.*.gc_status, UNABLE | SUSPEND_REQUEST, INTERRUPT | SUSPEND_REQUEST) == (UNABLE | SUSPEND_REQUEST)) {
                         enterFromInterrupt(tc);
                         break;
@@ -532,12 +536,12 @@ pub fn markThreadUnblocked(tc: Tc) callconv(.c) void {
                     // If we're being resumed while trying to unblock into
                     // suspend request, we'd block forever. Therefor we have
                     // to check if we've been un-requested.
-                    // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_NONE) (orchestrate.c:390).
+                    // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_NONE) (orchestrate.c:391).
                     if (atomic.cas(&tc.*.gc_status, UNABLE, NONE) == UNABLE) {
                         return;
                     }
                 }
-                // MVM_load(&tc->gc_status) (orchestrate.c:396).
+                // MVM_load(&tc->gc_status) (orchestrate.c:397).
             } else if (atomic.load(&tc.*.gc_status) == NONE) {
                 if (debugspam(tc))
                     _ = c.fprintf(c.stderr, "marking thread %d unblocked, but its status is already NONE.\n", tid(tc));
@@ -557,22 +561,22 @@ pub fn markThreadUnblocked(tc: Tc) callconv(.c) void {
 /// blocked between checking this and calling unblock, it's safe anyway since
 /// these cases are handled in MVM_gc_mark_thread_unblocked. Note that this
 /// relies on a thread itself only ever calling block/unblock.
-/// (orchestrate.c:407-419)
+/// (orchestrate.c:408-420)
 pub fn isThreadBlocked(tc: Tc) callconv(.c) c.MVMint32 {
-    // MVM_load(&(tc->gc_status)) (orchestrate.c:416).
+    // MVM_load(&(tc->gc_status)) (orchestrate.c:417).
     const gc_status: Status = atomic.load(&tc.*.gc_status) & STATUS_MASK;
     return @intFromBool(gc_status == UNABLE or
         gc_status == STOLEN);
 }
 
-/// (orchestrate.c:421-446) `pub` only for the tests; not exported.
+/// (orchestrate.c:422-447) `pub` only for the tests; not exported.
 pub fn isFullCollection(tc: Tc) c.MVMint32 {
     var percent_growth: c.MVMuint64 = undefined;
     var promoted: c.MVMuint64 = undefined;
     var rss: usize = undefined;
 
     // If it's below the absolute minimum, quickly return.
-    // (MVMuint64)MVM_load(&tc->instance->gc_promoted_bytes_since_last_full) (orchestrate.c:426).
+    // (MVMuint64)MVM_load(&tc->instance->gc_promoted_bytes_since_last_full) (orchestrate.c:427).
     promoted = @as(c.MVMuint64, atomic.load(&tc.*.instance.*.gc_promoted_bytes_since_last_full));
     if (promoted < c.MVM_GC_GEN2_THRESHOLD_MINIMUM)
         return 0;
@@ -583,8 +587,8 @@ pub fn isFullCollection(tc: Tc) c.MVMint32 {
         return 1;
 
     // Otherwise, consider percentage of resident set size.
-    // #if MVM_GC_DEBUG (orchestrate.c:436-440): the override, when set, is the
-    // resident set; otherwise (and always at 0) it is read from libuv (:441-442).
+    // #if MVM_GC_DEBUG (orchestrate.c:437-441): the override, when set, is the
+    // resident set; otherwise (and always at 0) it is read from libuv (:442-443).
     if (comptime c.MVM_GC_DEBUG != 0) {
         if (tc.*.instance.*.gc_debug_rss_override != 0)
             rss = tc.*.instance.*.gc_debug_rss_override
@@ -599,7 +603,7 @@ pub fn isFullCollection(tc: Tc) c.MVMint32 {
     return @intFromBool(percent_growth >= c.MVM_GC_GEN2_THRESHOLD_PERCENT);
 }
 
-/// (orchestrate.c:448-534)
+/// (orchestrate.c:449-535)
 fn runGc(tc: Tc, what_to_do: c.MVMuint8) void {
     var gen: c.MVMuint8 = undefined;
     var i: c.MVMuint32 = undefined;
@@ -615,7 +619,7 @@ fn runGc(tc: Tc, what_to_do: c.MVMuint8) void {
 
     is_coordinator = @intFromBool(what_to_do == c.MVMGCWhatToDo_All);
 
-    // #if MVM_GC_DEBUG (orchestrate.c:462-465)
+    // #if MVM_GC_DEBUG (orchestrate.c:463-466)
     if (comptime c.MVM_GC_DEBUG != 0) {
         if (tc.*.in_spesh != 0)
             c.MVM_panic(1, "Must not GC when in the specializer/JIT\n");
@@ -666,19 +670,19 @@ fn runGc(tc: Tc, what_to_do: c.MVMuint8) void {
 
         data = arrobj.*.body.slots.u64;
 
-        // MVM_load(&tc->instance->gc_seq_number) (orchestrate.c:511).
+        // MVM_load(&tc->instance->gc_seq_number) (orchestrate.c:512).
         data[0] = atomic.load(&tc.*.instance.*.gc_seq_number);
         data[1] = start_time / 1000;
         data[2] = (start_time -% tc.*.instance.*.subscriptions.vm_startup_hrtime) / 1000;
         data[3] = (end_time -% start_time) / 1000;
         data[4] = @intFromBool(gen == c.MVMGCGenerations_Both);
         data[5] = tc.*.gc_promoted_bytes;
-        // MVM_load(&tc->instance->gc_promoted_bytes_since_last_full) (orchestrate.c:517).
+        // MVM_load(&tc->instance->gc_promoted_bytes_since_last_full) (orchestrate.c:518).
         data[6] = atomic.load(&tc.*.instance.*.gc_promoted_bytes_since_last_full);
         data[7] = tc.*.thread_id;
         data[8] = 0;
 
-        // uv_mutex_lock(&tc->instance->mutex_threads) (orchestrate.c:521).
+        // uv_mutex_lock(&tc->instance->mutex_threads) (orchestrate.c:522).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_threads);
         cur_thread = tc.*.instance.*.threads;
         while (cur_thread != null) {
@@ -686,7 +690,7 @@ fn runGc(tc: Tc, what_to_do: c.MVMuint8) void {
                 data[8] +%= cur_thread.*.body.tc.*.num_gen2roots;
             cur_thread = cur_thread.*.body.next;
         }
-        // uv_mutex_unlock(&tc->instance->mutex_threads) (orchestrate.c:528).
+        // uv_mutex_unlock(&tc->instance->mutex_threads) (orchestrate.c:529).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_threads);
 
         c.MVM_repr_push_o(tc, tc.*.instance.*.subscriptions.subscription_queue, instance);
@@ -698,14 +702,14 @@ fn runGc(tc: Tc, what_to_do: c.MVMuint8) void {
 /// This is called when the allocator finds it has run out of memory and wants
 /// to trigger a GC run. In this case, it's possible (probable, really) that it
 /// will need to do that triggering, notifying other running threads that the
-/// time has come to GC. (orchestrate.c:536-660)
+/// time has come to GC. (orchestrate.c:537-661)
 pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Entered from allocate\n", .{});
 
     c.MVM_telemetry_timestamp(tc, "gc_enter_from_allocator");
 
     // Try to start the GC run.
-    // MVM_trycas(&tc->instance->gc_start, 0, 1) (orchestrate.c:546).
+    // MVM_trycas(&tc->instance->gc_start, 0, 1) (orchestrate.c:547).
     const gc_start: *c.AO_t = &tc.*.instance.*.gc_start;
     if (moar.trycas(gc_start, @as(c.AO_t, 0), @as(c.AO_t, 1))) {
         var num_threads: c.MVMuint32 = 0;
@@ -715,7 +719,7 @@ pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
         tc.*.instance.*.thread_to_blame_for_gc = tc;
 
         // Need to wait for other threads to reset their gc_status.
-        // MVM_load(&tc->instance->gc_ack) (orchestrate.c:554).
+        // MVM_load(&tc->instance->gc_ack) (orchestrate.c:555).
         while (atomic.load(&tc.*.instance.*.gc_ack) != 0) {
             if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : waiting for other thread's gc_ack\n", .{});
             _ = c.MVM_platform_thread_yield();
@@ -724,9 +728,9 @@ pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
         // We are the winner of the GC starting race. This gives us some
         // extra responsibilities as well as doing the usual things.
         // First, increment GC sequence number.
-        // MVM_incr(&tc->instance->gc_seq_number) (orchestrate.c:563).
+        // MVM_incr(&tc->instance->gc_seq_number) (orchestrate.c:564).
         _ = atomic.incr(&tc.*.instance.*.gc_seq_number);
-        // (int)MVM_load(&tc->instance->gc_seq_number) (orchestrate.c:566).
+        // (int)MVM_load(&tc->instance->gc_seq_number) (orchestrate.c:567).
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : GC thread elected coordinator: starting gc seq %d\n", .{@as(c_int, @bitCast(@as(c_uint, @truncate(atomic.load(&tc.*.instance.*.gc_seq_number)))))});
 
         // Decide if it will be a full collection.
@@ -743,30 +747,30 @@ pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
 
         // Flag that we didn't agree on this run that all the in-trays are
         // cleared (a responsibility of the co-ordinator.
-        // MVM_store(&tc->instance->gc_intrays_clearing, 1) (orchestrate.c:582).
+        // MVM_store(&tc->instance->gc_intrays_clearing, 1) (orchestrate.c:583).
         atomic.store(&tc.*.instance.*.gc_intrays_clearing, 1);
-        // MVM_store(&tc->instance->gc_completed, 0) (orchestrate.c:583).
+        // MVM_store(&tc->instance->gc_completed, 0) (orchestrate.c:584).
         atomic.store(&tc.*.instance.*.gc_completed, 0);
 
         // We'll take care of our own work.
         addWork(tc, tc);
 
         // Find other threads, and signal or steal. Also set in GC flag.
-        // uv_mutex_lock(&tc->instance->mutex_threads) (orchestrate.c:589).
+        // uv_mutex_lock(&tc->instance->mutex_threads) (orchestrate.c:590).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_threads);
         tc.*.instance.*.in_gc = 1;
         num_threads = signalAll(tc, tc.*.instance.*.threads);
-        // uv_mutex_unlock(&tc->instance->mutex_threads) (orchestrate.c:592).
+        // uv_mutex_unlock(&tc->instance->mutex_threads) (orchestrate.c:593).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_threads);
 
         // Bump the thread count and signal any threads waiting for that.
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:595).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:596).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // MVM_add(&tc->instance->gc_start, num_threads) (orchestrate.c:596).
+        // MVM_add(&tc->instance->gc_start, num_threads) (orchestrate.c:597).
         _ = atomic.add(&tc.*.instance.*.gc_start, num_threads);
-        // uv_cond_broadcast(&tc->instance->cond_gc_start) (orchestrate.c:597).
+        // uv_cond_broadcast(&tc->instance->cond_gc_start) (orchestrate.c:598).
         c.uv_cond_broadcast(&tc.*.instance.*.cond_gc_start);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:598).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:599).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
 
         // If there's an event loop thread, wake it up to participate.
@@ -774,33 +778,33 @@ pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
             _ = c.uv_async_send(tc.*.instance.*.event_loop_wakeup);
 
         // Wait for other threads to be ready.
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:605).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:606).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // MVM_load(&tc->instance->gc_start) > 1 (orchestrate.c:606).
+        // MVM_load(&tc->instance->gc_start) > 1 (orchestrate.c:607).
         while (atomic.load(&tc.*.instance.*.gc_start) > 1)
-            // uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:607).
+            // uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:608).
             c.uv_cond_wait(&tc.*.instance.*.cond_gc_start, &tc.*.instance.*.mutex_gc_orchestrate);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:608).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:609).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
 
         // Sanity check finish votes.
-        // MVM_load(&tc->instance->gc_finish) (orchestrate.c:611, and :613 in the message).
+        // MVM_load(&tc->instance->gc_finish) (orchestrate.c:612, and :614 in the message).
         if (atomic.load(&tc.*.instance.*.gc_finish) != 0)
             c.MVM_panic(c.MVM_exitcode_gcorch, "Finish votes was %" ++ c.MVM_PRSz ++ "\n", atomic.load(&tc.*.instance.*.gc_finish));
 
         // gc_ack gets an extra so the final acknowledger
         // can also free the STables.
-        // MVM_store(&tc->instance->gc_finish, num_threads + 1) (orchestrate.c:617).
+        // MVM_store(&tc->instance->gc_finish, num_threads + 1) (orchestrate.c:618).
         atomic.store(&tc.*.instance.*.gc_finish, num_threads + 1);
-        // MVM_store(&tc->instance->gc_ack, num_threads + 2) (orchestrate.c:618).
+        // MVM_store(&tc->instance->gc_ack, num_threads + 2) (orchestrate.c:619).
         atomic.store(&tc.*.instance.*.gc_ack, num_threads + 2);
-        // (int)MVM_load(&tc->instance->gc_finish) (orchestrate.c:620).
+        // (int)MVM_load(&tc->instance->gc_finish) (orchestrate.c:621).
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : finish votes is %d\n", .{@as(c_int, @bitCast(@as(c_uint, @truncate(atomic.load(&tc.*.instance.*.gc_finish)))))});
 
         // Now we're ready to start, zero promoted since last full collection
         // counter if this is a full collect.
         if (tc.*.instance.*.gc_full_collect != 0)
-            // MVM_store(&tc->instance->gc_promoted_bytes_since_last_full, 0) (orchestrate.c:625).
+            // MVM_store(&tc->instance->gc_promoted_bytes_since_last_full, 0) (orchestrate.c:626).
             atomic.store(&tc.*.instance.*.gc_promoted_bytes_since_last_full, 0);
 
         // This is a safe point for us to free any STables that have been marked
@@ -812,15 +816,15 @@ pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
 
         // Signal to the rest to start
         if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : coordinator signalling start\n", .{});
-        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:636).
+        // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:637).
         c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-        // MVM_decr(&tc->instance->gc_start) != 1 (orchestrate.c:637): the value before the
-        // decrement; MVM_load(&tc->instance->gc_start) (:638) in the message.
+        // MVM_decr(&tc->instance->gc_start) != 1 (orchestrate.c:638): the value before the
+        // decrement; MVM_load(&tc->instance->gc_start) (:639) in the message.
         if (atomic.decr(&tc.*.instance.*.gc_start) != 1)
             c.MVM_panic(c.MVM_exitcode_gcorch, "Start votes was %" ++ c.MVM_PRSz ++ "\n", atomic.load(&tc.*.instance.*.gc_start));
-        // uv_cond_broadcast(&tc->instance->cond_gc_start) (orchestrate.c:639).
+        // uv_cond_broadcast(&tc->instance->cond_gc_start) (orchestrate.c:640).
         c.uv_cond_broadcast(&tc.*.instance.*.cond_gc_start);
-        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:640).
+        // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:641).
         c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
 
         // Start collecting.
@@ -850,7 +854,7 @@ pub fn enterFromAllocator(tc: Tc) callconv(.c) void {
 /// * The debug remote is asking this thread to suspend execution.
 ///
 /// Those cases can be distinguished by the gc state masked with
-/// MVMSUSPENDSTATUS_MASK. (orchestrate.c:662-711)
+/// MVMSUSPENDSTATUS_MASK. (orchestrate.c:663-712)
 fn reactToDebugserverRequest(tc: Tc) c_int {
     if (debugspam(tc))
         _ = c.fprintf(c.stderr, "thread %p has received a request.\n", vp(tc));
@@ -866,7 +870,7 @@ fn reactToDebugserverRequest(tc: Tc) c_int {
         // can work, for example to run the instruction level barrier.
 
         // MVM_trycas(&tc->gc_status, MVMGCStatus_UNABLE | MVMSuspendState_SUSPENDED, MVMGCStatus_NONE)
-        // (orchestrate.c:687): only its success is used, so `moar.trycas`.
+        // (orchestrate.c:688): only its success is used, so `moar.trycas`.
         const gc_status: *c.AO_t = &tc.*.gc_status;
         if (!moar.trycas(gc_status, UNABLE | SUSPENDED, NONE)) {
             c.MVM_panic(c.MVM_exitcode_gcorch, "could not unblock/unsuspend thread");
@@ -883,7 +887,7 @@ fn reactToDebugserverRequest(tc: Tc) c_int {
 
     // MVM_cas(&tc->instance->debugserver->request_data.status,
     //     MVM_DebugRequestStatus_sender_is_waiting,
-    //     MVM_DebugRequestStatus_receiver_acknowledged) (orchestrate.c:701).
+    //     MVM_DebugRequestStatus_receiver_acknowledged) (orchestrate.c:702).
     if (atomic.cas(&debugserver(tc).request_data.status, c.MVM_DebugRequestStatus_sender_is_waiting, c.MVM_DebugRequestStatus_receiver_acknowledged) != c.MVM_DebugRequestStatus_sender_is_waiting) {
         if (debugspam(tc))
             _ = c.fprintf(c.stderr, "could not acknowledge request?!?\n");
@@ -893,23 +897,36 @@ fn reactToDebugserverRequest(tc: Tc) c_int {
     return 1;
 }
 
-/// (orchestrate.c:712-785)
+/// (orchestrate.c:713-798)
 pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Entered from interrupt\n", .{});
 
-    // MVM_load(&tc->gc_status) (orchestrate.c:716).
+    // MVM_load(&tc->gc_status) (orchestrate.c:717).
     if ((atomic.load(&tc.*.gc_status) & SUSPEND_MASK) == SUSPEND_REQUEST) {
+        if (tc.*.instance.*.debugserver == null) {
+            // Without a debugserver there is no condvar to wait on and
+            // nobody to send a resume: the only issuer of a suspend request
+            // then is MVM_gc_global_destruction, which is tearing the
+            // process down. Park the thread, blocked, until the suspend
+            // bits clear (in practice, until the process exits).
+            markThreadBlocked(tc);
+            // MVM_load(&tc->gc_status) (orchestrate.c:725).
+            while ((atomic.load(&tc.*.gc_status) & SUSPEND_MASK) != SUSPEND_NONE)
+                MVM_platform_nanosleep(1000000);
+            markThreadUnblocked(tc);
+            return;
+        }
         if (debugspam(tc))
             _ = c.fprintf(c.stderr, "thread %d reacting to suspend request\n", tid(tc));
         markThreadBlocked(tc);
         while (true) {
-            // uv_mutex_lock(&tc->instance->debugserver->mutex_cond) (orchestrate.c:721).
+            // uv_mutex_lock(&tc->instance->debugserver->mutex_cond) (orchestrate.c:734).
             c.uv_mutex_lock(&debugserver(tc).mutex_cond);
-            // uv_cond_wait(&tc->instance->debugserver->tell_threads, &tc->instance->debugserver->mutex_cond) (orchestrate.c:722).
+            // uv_cond_wait(&tc->instance->debugserver->tell_threads, &tc->instance->debugserver->mutex_cond) (orchestrate.c:735).
             c.uv_cond_wait(&debugserver(tc).tell_threads, &debugserver(tc).mutex_cond);
-            // uv_mutex_unlock(&tc->instance->debugserver->mutex_cond) (orchestrate.c:723).
+            // uv_mutex_unlock(&tc->instance->debugserver->mutex_cond) (orchestrate.c:736).
             c.uv_mutex_unlock(&debugserver(tc).mutex_cond);
-            // MVM_load(&tc->gc_status) (orchestrate.c:724).
+            // MVM_load(&tc->gc_status) (orchestrate.c:737).
             if ((atomic.load(&tc.*.gc_status) & SUSPEND_MASK) == SUSPEND_NONE) {
                 if (debugspam(tc))
                     _ = c.fprintf(c.stderr, "thread %d got un-suspended\n", tid(tc));
@@ -926,7 +943,7 @@ pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
         }
         markThreadUnblocked(tc);
         return;
-        // MVM_load(&tc->gc_status) (orchestrate.c:740).
+        // MVM_load(&tc->gc_status) (orchestrate.c:753).
     } else if (atomic.load(&tc.*.gc_status) == (UNABLE | SUSPENDED)) {
         // The thread that the tc belongs to is already waiting in that loop
         // up there. If we reach this piece of code the active thread must be
@@ -944,17 +961,17 @@ pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
     // greater (0 should never happen; 1 means the coordinator is still counting
     // up how many threads will join in, so we should wait until it decides to
     // decrement.)
-    // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:757).
+    // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:770).
     c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-    // MVM_load(&tc->instance->gc_start) < 2 (orchestrate.c:758).
+    // MVM_load(&tc->instance->gc_start) < 2 (orchestrate.c:771).
     while (atomic.load(&tc.*.instance.*.gc_start) < 2)
-        // uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:759).
+        // uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:772).
         c.uv_cond_wait(&tc.*.instance.*.cond_gc_start, &tc.*.instance.*.mutex_gc_orchestrate);
-    // MVM_decr(&tc->instance->gc_start) (orchestrate.c:760).
+    // MVM_decr(&tc->instance->gc_start) (orchestrate.c:773).
     _ = atomic.decr(&tc.*.instance.*.gc_start);
-    // uv_cond_broadcast(&tc->instance->cond_gc_start) (orchestrate.c:761).
+    // uv_cond_broadcast(&tc->instance->cond_gc_start) (orchestrate.c:774).
     c.uv_cond_broadcast(&tc.*.instance.*.cond_gc_start);
-    // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:762).
+    // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:775).
     c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
 
     // If profiling, record that GC is starting.
@@ -966,13 +983,13 @@ pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
 
     // Wait for all threads to indicate readiness to collect.
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Waiting for other threads\n", .{});
-    // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:773).
+    // uv_mutex_lock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:786).
     c.uv_mutex_lock(&tc.*.instance.*.mutex_gc_orchestrate);
-    // MVM_load(&tc->instance->gc_start) (orchestrate.c:774).
+    // MVM_load(&tc->instance->gc_start) (orchestrate.c:787).
     while (atomic.load(&tc.*.instance.*.gc_start) != 0)
-        // uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:775).
+        // uv_cond_wait(&tc->instance->cond_gc_start, &tc->instance->mutex_gc_orchestrate) (orchestrate.c:788).
         c.uv_cond_wait(&tc.*.instance.*.cond_gc_start, &tc.*.instance.*.mutex_gc_orchestrate);
-    // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:776).
+    // uv_mutex_unlock(&tc->instance->mutex_gc_orchestrate) (orchestrate.c:789).
     c.uv_mutex_unlock(&tc.*.instance.*.mutex_gc_orchestrate);
 
     if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_ORCHESTRATE)) gcdebugLog(tc, "Thread %d run %d : Entering run_gc\n", .{});
@@ -984,7 +1001,7 @@ pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
         c.MVM_profiler_log_gc_end(tc);
 }
 
-/// Run the global destruction phase. (orchestrate.c:787-842)
+/// Run the global destruction phase. (orchestrate.c:800-855)
 pub fn globalDestruction(tc: Tc) callconv(.c) void {
     var nursery_tmp: [*c]u8 = undefined;
 
@@ -992,7 +1009,7 @@ pub fn globalDestruction(tc: Tc) callconv(.c) void {
     var cur_thread: Thread = null;
 
     // Ask all threads to suspend on the next chance they get
-    // uv_mutex_lock(&vm->mutex_threads) (orchestrate.c:795).
+    // uv_mutex_lock(&vm->mutex_threads) (orchestrate.c:808).
     c.uv_mutex_lock(&vm.*.mutex_threads);
 
     cur_thread = vm.*.threads;
@@ -1001,7 +1018,7 @@ pub fn globalDestruction(tc: Tc) callconv(.c) void {
             while (true) {
                 // Is the thread currently doing completely ordinary code execution?
                 // MVM_cas(&tc->gc_status, MVMGCStatus_NONE, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST)
-                // (orchestrate.c:802): on the caller's own tc, ported as written
+                // (orchestrate.c:815): on the caller's own tc, ported as written
                 // (the plan's "C observations for a later campaign" list).
                 if (atomic.cas(&tc.*.gc_status, NONE, INTERRUPT | SUSPEND_REQUEST) == NONE) {
                     break;
@@ -1010,14 +1027,14 @@ pub fn globalDestruction(tc: Tc) callconv(.c) void {
                 // some long-running piece of C code, waiting for I/O, etc.?
                 // If so, just store the suspend request bit so when it unblocks itself
                 // it'll suspend execution.
-                // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:810).
+                // MVM_cas(&tc->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:823).
                 if (atomic.cas(&tc.*.gc_status, UNABLE, UNABLE | SUSPEND_REQUEST) == UNABLE) {
                     break;
                 }
                 // Was the thread faster than us? For example by running into
                 // a breakpoint, completing a step, or encountering an
                 // unhandled exception? If so, we're done here.
-                // MVM_load(&tc->gc_status) (orchestrate.c:817).
+                // MVM_load(&tc->gc_status) (orchestrate.c:830).
                 if ((atomic.load(&tc.*.gc_status) & SUSPEND_MASK) == SUSPEND_REQUEST) {
                     break;
                 }
@@ -1027,7 +1044,7 @@ pub fn globalDestruction(tc: Tc) callconv(.c) void {
         cur_thread = cur_thread.*.body.next;
     }
 
-    // uv_mutex_unlock(&vm->mutex_threads) (orchestrate.c:826).
+    // uv_mutex_unlock(&vm->mutex_threads) (orchestrate.c:839).
     c.uv_mutex_unlock(&vm.*.mutex_threads);
 
     // Allow other threads to do a little more work before we continue here
