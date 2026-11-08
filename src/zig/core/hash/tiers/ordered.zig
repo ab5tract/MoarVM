@@ -589,7 +589,7 @@ test "delete current while iterating visits every live entry exactly once" {
     const h = try testInit(500);
     defer testFree(h);
     for (1..501) |k| try put(h, k);
-    var seen = [_]u32{0} ** 501;
+    var seen = @as([501]u32, @splat(0));
     // MVMIter's protocol: hold the next position, delete the current entry.
     var pos = S.first(h);
     var visits: u32 = 0;

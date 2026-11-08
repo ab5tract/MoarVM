@@ -103,7 +103,7 @@ fn bigNames(alloc: std.mem.Allocator, count: usize, prefix: []const u8) ![][*c]c
 
 test "widen spreads the tag bits over the property names" {
     const keys = @embedFile("uni_bench_keys");
-    var counts = [_]u32{0} ** 128;
+    var counts = @as([128]u32, @splat(0));
     var total: u32 = 0;
     var lines = std.mem.splitScalar(u8, keys, '\n');
     while (lines.next()) |line| {

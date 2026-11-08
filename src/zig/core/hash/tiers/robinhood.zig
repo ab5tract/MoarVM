@@ -884,7 +884,7 @@ test "delete-current while holding next visits every remaining entry once" {
     const h = try testInit(300);
     defer testFree(h);
     for (1..301) |k| try put(h, k);
-    var seen = [_]u32{0} ** 301;
+    var seen = @as([301]u32, @splat(0));
     var pos = S.first(h);
     var i: u32 = 0;
     while (pos != 0) : (i += 1) {

@@ -365,7 +365,7 @@ test "delete swaps the last entry into the hole and iteration visits every entry
     try testing.expect(del(h, 3));
     try testing.expect(!del(h, 3));
     try testing.expectEqual(@as(?[*]u8, null), get(h, 3));
-    var seen = [_]u32{0} ** 11;
+    var seen = @as([11]u32, @splat(0));
     var n: u32 = 0;
     var pos = S.first(h);
     while (pos != 0) : (pos = S.next(h, pos)) {
@@ -412,7 +412,7 @@ test "deleting the current entry while holding next keeps the walk correct" {
     const h = try testInit(16);
     defer testFree(h);
     for (1..13) |k| try put(h, k);
-    var seen = [_]u32{0} ** 13;
+    var seen = @as([13]u32, @splat(0));
     var pos = S.first(h);
     var i: u32 = 0;
     while (pos != 0) : (i += 1) {

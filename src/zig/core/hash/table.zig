@@ -144,7 +144,7 @@ pub fn Table(comptime Spec: type) type {
         /// The word whose bytes are `tier`, `set` and `stale` at their
         /// offsets (and 0 in `entry_size`).
         fn statusBits(comptime tier_byte: u8, comptime set_byte: u8, comptime stale_byte: u8) Status {
-            var bytes = [_]u8{0} ** @sizeOf(Status);
+            var bytes = @as([@sizeOf(Status)]u8, @splat(0));
             bytes[@offsetOf(Header, "tier")] = tier_byte;
             bytes[@offsetOf(Header, "set")] = set_byte;
             bytes[@offsetOf(Header, "stale")] = stale_byte;

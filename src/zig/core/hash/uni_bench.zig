@@ -393,7 +393,7 @@ test "shuffle is a deterministic permutation" {
     shuffle(u32, &a, lcg_seed);
     shuffle(u32, &b, lcg_seed);
     try std.testing.expectEqualSlices(u32, &a, &b);
-    var seen = [_]bool{false} ** 8;
+    var seen = @as([8]bool, @splat(false));
     for (a) |v| seen[v] = true;
     for (seen) |s| try std.testing.expect(s);
     try std.testing.expect(!std.mem.eql(u32, &a, &[_]u32{ 0, 1, 2, 3, 4, 5, 6, 7 }));

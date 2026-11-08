@@ -729,7 +729,7 @@ test "iteration walks slots downward and survives delete-current while holding n
     const h = try testInit(300);
     defer testFree(h);
     for (1..301) |k| try put(h, k);
-    var seen = [_]u32{0} ** 301;
+    var seen = @as([301]u32, @splat(0));
     try testing.expectEqual(S.slotCount(h) + 1, S.start(h));
     try testing.expectEqual(S.first(h), S.next(h, S.start(h)));
     var pos = S.first(h);
