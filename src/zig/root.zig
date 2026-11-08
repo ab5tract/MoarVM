@@ -13,4 +13,5 @@ comptime {
     _ = @import("gc/allocation.zig");
     _ = @import("gc/gen2.zig");
     _ = @import("gc/roots.zig");
+    _ = @import("gc/collect.zig");
 }

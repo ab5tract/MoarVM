@@ -7,4 +7,5 @@ test {
     _ = @import("test/allocation_test.zig");
     _ = @import("test/gen2_test.zig");
     _ = @import("test/roots_test.zig");
+    _ = @import("test/collect_test.zig");
 }

@@ -63,6 +63,15 @@ test "works on a pointer slot" {
     const vslot: *volatile [*c]u32 = &cptr;
     try std.testing.expect(atomic.cas(vslot, &y, null) == &y);
     try std.testing.expect(atomic.load(vslot) == null);
+    // Through a C pointer, as `&tc.*.instance.*.threads` is.
+    const cslot: [*c][*c]u32 = &cptr;
+    atomic.store(cslot, &x);
+    try std.testing.expect(atomic.cas(cslot, &x, &y) == &x);
+    try std.testing.expect(atomic.load(cslot) == &y);
+    var n: usize = 1;
+    const cn: [*c]usize = &n;
+    try std.testing.expectEqual(@as(usize, 1), atomic.incr(cn));
+    try std.testing.expectEqual(@as(usize, 2), atomic.load(cn));
 }
 
 test "fence" {

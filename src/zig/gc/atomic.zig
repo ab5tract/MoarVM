@@ -7,7 +7,7 @@
 //! defines. Every operation here is `.seq_cst`, the ordering of the C11
 //! generic functions the macros call, and works on `*usize` (the C's
 //! `AO_t`), `*u32`, `*u64` and on a pointer slot (`*?*T`, `**T`, `*[*c]T`),
-//! volatile or not. Pointer slots are operated on as the word they are, as
+//! volatile or not, and on the same slots through a C pointer. Pointer slots are operated on as the word they are, as
 //! the C casts them to `volatile AO_t *`. Pure Zig: no `moar` import, so the
 //! host unit tests build it alone.
 const std = @import("std");
@@ -25,10 +25,12 @@ fn isPtrSlot(comptime S: type) bool {
 }
 
 /// The slot type behind `P`, checked: `P` must be a single-item pointer to
-/// an unsigned word (u32, u64, usize) or to a pointer.
+/// an unsigned word (u32, u64, usize) or to a pointer. A C pointer is taken
+/// too, since the address of a field reached through a translated `[*c]`
+/// (`&tc.*.instance.*.threads`) is one.
 fn Slot(comptime P: type) type {
     const info = @typeInfo(P);
-    if (info != .pointer or info.pointer.size != .one)
+    if (info != .pointer or (info.pointer.size != .one and info.pointer.size != .c))
         @compileError("atomic: expected a pointer to a slot, got " ++ @typeName(P));
     const S = info.pointer.child;
     if (!isIntSlot(S) and !isPtrSlot(S))
