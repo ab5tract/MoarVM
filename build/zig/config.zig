@@ -158,6 +158,20 @@ fn boolStr(v: bool) []const u8 {
     return if (v) "1" else "0";
 }
 
+/// The 0.16 spelling of the optimize mode for the baked `config` entry, so
+/// 0.16 and 0.17 builds compare byte-identical (backendconfig strings are
+/// baked into libmoar, and their length changes startup allocation). 0.17
+/// still accepts these names on the command line; switch to the canonical
+/// names (@tagName) at 0.18.
+fn legacyOptimizeName(o: std.lang.Optimize) []const u8 {
+    return switch (o) {
+        .debug => "Debug",
+        .safe => "ReleaseSafe",
+        .fast => "ReleaseFast",
+        .small => "ReleaseSmall",
+    };
+}
+
 /// The nqp::backendconfig hash. Keys follow the Perl build's src/gen/config.c;
 /// values describe the zig toolchain. Covered: every key that nqp-configure
 /// (NQP/Config/NQP.pm), Rakudo (NQP/Config/Rakudo.pm) and the rakudo/nqp
@@ -169,7 +183,7 @@ pub fn backendEntries(b: *std.Build, in: Inputs, paths: InstallPaths, cflags: []
     const ldlibs: []const u8 = if (in.opts.zstd) "-lm -lpthread -lrt -ldl -lzstd" else "-lm -lpthread -lrt -ldl";
     const cflags_str = std.mem.join(b.allocator, " ", cflags) catch @panic("OOM");
     const config_str = b.fmt("zig build -Djit={} -Dstatic={} -Dmimalloc={} -Dzstd={} -Doptimize={s}", .{
-        in.opts.jit, in.opts.static, in.opts.mimalloc, in.opts.zstd, @tagName(in.opts.optimize),
+        in.opts.jit, in.opts.static, in.opts.mimalloc, in.opts.zstd, legacyOptimizeName(in.opts.optimize),
     });
     const ldrpath = b.fmt("-Wl,-rpath,\"{s}\"", .{paths.libdir});
     const ldflags = if (opt_flags.len == 0) ldrpath else b.fmt("{s} {s}", .{ opt_flags, ldrpath });
