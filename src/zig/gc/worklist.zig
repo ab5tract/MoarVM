@@ -15,7 +15,7 @@ const Item = [*c][*c]c.MVMCollectable;
 
 // The C layout the macros of worklist.h index into.
 comptime {
-    if (builtin.cpu.arch == .x86_64) std.debug.assert(@sizeOf(c.MVMGCWorklist) == 24);
+    if (builtin.target.cpu.arch == .x86_64) std.debug.assert(@sizeOf(c.MVMGCWorklist) == 24);
     std.debug.assert(@offsetOf(c.MVMGCWorklist, "items") == 8);
     std.debug.assert(@offsetOf(c.MVMGCWorklist, "alloc") == 12);
     std.debug.assert(@offsetOf(c.MVMGCWorklist, "include_gen2") == 16);

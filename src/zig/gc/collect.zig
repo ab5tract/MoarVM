@@ -37,7 +37,7 @@ const worklistAdd = moar.worklistAdd;
 /// C `assert`: checked only when the C is built without NDEBUG, which the
 /// build ties to a Debug optimize mode.
 inline fn cAssert(ok: bool) void {
-    if (comptime builtin.mode == .debug) std.debug.assert(ok);
+    if (comptime builtin.optimize == .debug) std.debug.assert(ok);
 }
 
 /// `#ifdef MVM_USE_OVERFLOW_SERIALIZATION_INDEX` (src/moar.h:136).

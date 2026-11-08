@@ -21,11 +21,11 @@ fn sleepLoop(timeout: *c.struct_timespec) void {
 
 export fn MVM_platform_sleep(second: f64) void {
     var timeout: c.struct_timespec = undefined;
-    timeout.tv_sec = @intFromFloat(second);
+    timeout.tv_sec = @trunc(second);
     // C: (long)((second - timeout.tv_sec) * E9F); the float literal is
     // promoted to double, so the whole expression is double precision.
     const whole: f64 = @floatFromInt(timeout.tv_sec);
-    timeout.tv_nsec = @intFromFloat((second - whole) * 1_000_000_000.0);
+    timeout.tv_nsec = @trunc((second - whole) * 1_000_000_000.0);
     sleepLoop(&timeout);
 }
 

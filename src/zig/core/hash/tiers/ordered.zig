@@ -331,7 +331,7 @@ fn ImplType(comptime Spec: type) type {
         /// (the policy layer's migration; `grow`'s rebuild): no key compare.
         /// The caller has made the load check.
         pub fn insertKnownAbsent(header: *Header, ctx: Ctx, key: Key, h: u64, entry_bytes: [*]const u8) void {
-            if (std.lang.Optimize.runtimeSafety(@import("builtin").mode)) std.debug.assert(fetch(header, ctx, key, h) == null);
+            if (std.lang.Optimize.runtimeSafety(@import("builtin").optimize)) std.debug.assert(fetch(header, ctx, key, h) == null);
             std.debug.assert(!isFull(header));
             copyEntry(append(header, emptySlot(header, h)), entry_bytes, entrySize(header));
         }

@@ -16,7 +16,7 @@ const Object = [*c]c.MVMObject;
 /// C `assert`: checked only when the C is built without NDEBUG, which the
 /// build ties to a Debug optimize mode.
 inline fn cAssert(ok: bool) void {
-    if (comptime builtin.mode == .debug) std.debug.assert(ok);
+    if (comptime builtin.optimize == .debug) std.debug.assert(ok);
 }
 
 /// Gets a stable identifier for an object, which will not change even if

@@ -139,7 +139,7 @@ fn clockNs() u64 {
 
 pub inline fn now() u64 {
     if (!enabled) return 0;
-    if (comptime builtin.cpu.arch == .x86_64) {
+    if (comptime builtin.target.cpu.arch == .x86_64) {
         var lo: u32 = undefined;
         var hi: u32 = undefined;
         asm volatile ("rdtsc"
@@ -260,7 +260,7 @@ pub fn dump(w: *std.Io.Writer) !void {
     if (enabled) {
         const dns = clockNs() -% started_ns;
         const dt = dump_tsc -% started_tsc;
-        hz = if (builtin.cpu.arch != .x86_64) std.time.ns_per_s else if (dns == 0) 0 else @intCast(@as(u128, dt) * std.time.ns_per_s / dns);
+        hz = if (builtin.target.cpu.arch != .x86_64) std.time.ns_per_s else if (dns == 0) 0 else @intCast(@as(u128, dt) * std.time.ns_per_s / dns);
     }
     try w.print("# tsc_hz: {d}\n", .{hz});
     try w.print("# total_cycles: {d}\n", .{if (enabled) dump_tsc -% started_tsc else 0});

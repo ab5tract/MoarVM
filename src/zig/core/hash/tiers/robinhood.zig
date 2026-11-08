@@ -416,7 +416,7 @@ fn ImplType(comptime salt_mode: Salt, comptime Spec: type) type {
         pub fn insertKnownAbsent(header: *Header, ctx: Ctx, key: Key, h: u64, entry_bytes: [*]const u8) void {
             const c = ctrl(header);
             std.debug.assert(header.cur_items < c.max_items);
-            if (std.lang.Optimize.runtimeSafety(@import("builtin").mode)) std.debug.assert(fetch(header, ctx, key, h) == null);
+            if (std.lang.Optimize.runtimeSafety(@import("builtin").optimize)) std.debug.assert(fetch(header, ctx, key, h) == null);
             var ls = loopState(header, h);
             while (true) : (ls.advance()) {
                 const md = ls.metadata[0];

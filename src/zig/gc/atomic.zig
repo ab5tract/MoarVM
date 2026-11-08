@@ -112,7 +112,7 @@ var fence_word: usize = 0;
 /// across it. Elsewhere a seq_cst read-modify-write of a private word,
 /// which the hardware orders as a full barrier on the remaining targets.
 pub inline fn fence() void {
-    switch (builtin.cpu.arch) {
+    switch (builtin.target.cpu.arch) {
         .x86, .x86_64 => asm volatile ("mfence" ::: .{ .memory = true }),
         .aarch64, .aarch64_be => asm volatile ("dmb ish" ::: .{ .memory = true }),
         .riscv32, .riscv64 => asm volatile ("fence rw,rw" ::: .{ .memory = true }),
