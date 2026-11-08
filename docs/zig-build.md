@@ -392,7 +392,7 @@ C collector is compiled instead.
 | `wb.c` | `wb.zig` | the write barrier's slow path |
 | `objectid.c` | `objectid.zig` | object ids |
 | `finalize.c` | `finalize.zig` | finalizer queues and the finalize handler |
-| `debug.c` | `debug.zig` | the region finder and the per-collection log writer; compiled only at `-Dgc-debug` 1 and up |
+| `debug.c` | `debug.zig` | the region finder and the per-collection log writer; always built, but its exports exist only at `-Dgc-debug` 1 and up (a `comptime` gate, like the C `#if`) |
 | `orchestrate.c` | `orchestrate.zig` | the stop-the-world protocol, coordinator election, work stealing, the full-collection decision, global destruction |
 
 The inline fast paths in the headers (`MVM_gc_allocate`, the
@@ -463,9 +463,13 @@ The machinery is in `tools/bench/gc/` (its `README.md`; every script takes
   identical. Tier 1 leaves the RSS read real and drops the `full=` and
   `gen2_freed=` fields before comparing; tier 2 pins it at 100 MiB and
   compares every field. It compares every thread's lines, in order; this
-  workload has only `tid=1`. `prove tools/bench/t/gc-oracle.t` tests the
-  script, and skips without a word when `/tmp/claude-1000/gc-c-oracle` is
-  missing.
+  workload has only `tid=1`. The rakudo it runs defaults to the in-tree
+  `rakudo-m`; `--rakudo=` or `$RAKUDO` overrides it. Exit codes: 0 the logs
+  are identical, 1 base and head differ, 2 a side is not repeatable, 3 a log
+  is malformed or empty, 4 a run failed or the prefix paths differ in
+  length, 64 usage. `prove tools/bench/t/gc-oracle.t` tests the script and
+  reports the file as skipped when `/tmp/claude-1000/gc-c-oracle` is
+  missing, so run it with that prefix present when the result matters.
 - Stress: both collectors at `-Dgc-debug=1 -Dnursery-size=524288`; nqp's
   and rakudo's `make test` and `crc-getter.raku --volume=100000` under each
   must give the same results.
@@ -482,6 +486,28 @@ allocated at startup and shifts every later collection (a longer head
 prefix showed 56 more promoted bytes at `seq=2`). The campaign used
 `/tmp/claude-1000/gc-c-oracle` and `/tmp/claude-1000/gc-z-oracle`, and the
 same pattern for `-stress` and `-base`.
+
+Recipes the campaign used, for a maintainer repeating the comparison:
+
+- Prefixes: check out the C side (139d404ed, or whatever commit the
+  comparison is against) and `zig build install --prefix <P> [-Dgc-debug=1]
+  [-Dnursery-size=524288]`, then the same from the Zig side with a prefix
+  of equal length. Each prefix needs an nqp and rakudo installed against it
+  (`perl Configure.pl --prefix=<P>` in nqp and rakudo, then `make install`),
+  or one pair built against a path of that length and reached through
+  `LD_LIBRARY_PATH`, which is what the scripts do. NativeCall tests need
+  `RAKULIB` to include rakudo's `lib`.
+- Spectest A/B: in rakudo, with `LD_LIBRARY_PATH=<P>/lib`, remove `.precomp`
+  and run `TEST_JOBS=24 python3 <MoarVM>/tools/bench/timev.py <out>.time make -o
+  spectest_update spectest`, alternating prefixes, three runs each, medians
+  compared; the rule is wall within base's spread or within 1 percent, RSS
+  within spread, and no new failures. Do not shim the harness.
+- The machine has no swap: cap anything that may grow with
+  `systemd-run --user --scope -q -p MemoryMax=24G <cmd>` or `ulimit -v`.
+- A consumer compiled against the installed headers must use the same
+  `MVM_GC_DEBUG` value as the libmoar it loads, since the debug level
+  changes `MVMThreadContext` and `MVMInstance`.
+- `zig build test -Dzig-impl=false` is the all-C control; it must stay green.
 
 ### Zig 0.16 notes from the port
 
