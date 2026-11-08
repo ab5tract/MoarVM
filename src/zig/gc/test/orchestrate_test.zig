@@ -260,10 +260,23 @@ test "a blocked thread's collection is stolen by the coordinator" {
     try std.testing.expect(thread.*.body.tc == null);
 }
 
-fn resumeParked(tc: Tc) void {
+/// Waits up to 5 s for `tc` to reach `status`; false on a timeout, so a
+/// regression fails the test instead of hanging it.
+fn awaitStatus(tc: Tc, status: c.AO_t) bool {
+    const deadline = c.uv_hrtime() + 5_000_000_000;
+    while (gcStatus(tc) != status) {
+        if (c.uv_hrtime() > deadline) return false;
+        std.Thread.yield() catch {};
+    }
+    return true;
+}
+
+fn resumeParked(tc: Tc, seen: *bool) void {
     // Wait until the thread has parked (INTERRUPT | SUSPEND_REQUEST ->
     // UNABLE | SUSPENDED, orchestrate.c:352), then clear the suspend bits.
-    while (gcStatus(tc) != (c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED)) std.Thread.yield() catch {};
+    // On a timeout the bits are cleared anyway, which releases a thread
+    // stuck in the park loop, and the test fails on `seen`.
+    seen.* = awaitStatus(tc, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED);
     @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_UNABLE, .seq_cst);
 }
 
@@ -275,16 +288,28 @@ test "a suspend request without a debugserver parks until the bits clear" {
     // As global destruction asks a running thread.
     @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST, .seq_cst);
     const s0 = seq(instance);
-    const t = try std.Thread.spawn(.{}, resumeParked, .{tc});
+    var seen = false;
+    const t = try std.Thread.spawn(.{}, resumeParked, .{ tc, &seen });
     // orchestrate.c:724-735: blocked, sleep until no suspend bit, unblocked,
     // return without joining a GC run.
     orchestrate.enterFromInterrupt(tc);
     t.join();
+    try std.testing.expect(seen);
     try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
     try std.testing.expectEqual(s0, seq(instance));
 }
 
-test "global_destruction asks the other running and blocked threads to suspend" {
+fn parkWhenAsked(tc: Tc, seen: *bool) void {
+    // Stands in for a running thread reaching its next safepoint: once
+    // global destruction has asked (NONE -> INTERRUPT | SUSPEND_REQUEST),
+    // park as enter_from_interrupt does (INTERRUPT | SUSPEND_REQUEST ->
+    // UNABLE | SUSPENDED, orchestrate.c:352). Never asked within 5 s: give
+    // up, and the test fails on `seen`.
+    seen.* = awaitStatus(tc, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST);
+    if (seen.*) @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED, .seq_cst);
+}
+
+test "global_destruction waits for the other threads to honour the suspend request" {
     // The instance is not destroyed afterwards: MVM_vm_destroy_instance
     // runs global destruction itself, and a second pass would free the
     // heap twice. The steps destroy_instance takes before it are taken
@@ -298,34 +323,44 @@ test "global_destruction asks the other running and blocked threads to suspend" 
     c.MVM_io_eventloop_destroy(tc);
     orchestrate.enterFromAllocator(tc);
     c.MVM_profile_instrumented_free_data(tc);
-    // Four other registered threads for the loop over the threads
-    // (orchestrate.c:819-855): one running, one blocked, one in the middle
-    // of a GC run, and one already cleaned up (no tc left).
+    // Four other registered threads for the passes over the threads list
+    // (orchestrate.c:846-878): one running that parks once asked (from a
+    // helper thread), one blocked with the request already set, one
+    // parked, and one already cleaned up (no tc left). None stays
+    // pending, so the wait ends long before its 2000 x 1 ms bound.
     var threads: [4][*c]c.MVMThread = @splat(null);
     for (&threads) |*t| c.MVM_gc_root_temp_push(tc, @ptrCast(t));
     var others: [4]Tc = undefined;
     for (&threads, &others) |*t, *o| o.* = registerThread(tc, t);
     c.MVM_gc_root_temp_pop_n(tc, threads.len);
     const running = others[0];
-    const blocked = others[1];
-    const busy = others[2];
-    @atomicStore(c.AO_t, &blocked.*.gc_status, c.MVMGCStatus_UNABLE, .seq_cst);
-    @atomicStore(c.AO_t, &busy.*.gc_status, c.MVMGCStatus_INTERRUPT, .seq_cst);
+    const requested = others[1];
+    const parked = others[2];
+    @atomicStore(c.AO_t, &requested.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST, .seq_cst);
+    @atomicStore(c.AO_t, &parked.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED, .seq_cst);
     threads[3].*.body.tc = null;
     try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
     try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(running));
+    var asked = false;
+    const helper = try std.Thread.spawn(.{}, parkWhenAsked, .{ running, &asked });
     const fromspace = tc.*.nursery_fromspace;
     const tospace = tc.*.nursery_tospace;
+    const start = c.uv_hrtime();
     orchestrate.globalDestruction(tc);
-    // The caller was blocked around the loop and is running again
-    // (orchestrate.c:816, :858); the running thread is interrupted with a
-    // suspend request (:833), the blocked one keeps UNABLE and gets the
-    // suspend bit (:841), and the one in a GC run is left alone (:826-829).
+    const elapsed = c.uv_hrtime() - start;
+    helper.join();
+    try std.testing.expect(asked);
+    // The NONE thread was asked (orchestrate.c:855); the helper only parks
+    // it after seeing INTERRUPT | SUSPEND_REQUEST, so reaching UNABLE |
+    // SUSPENDED proves the request arrived. The settled ones are untouched
+    // (:867-870), the caller is running again (:830, :885), and the loop
+    // returned well inside the bound.
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED), gcStatus(running));
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(requested));
+    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED), gcStatus(parked));
     try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(running));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(blocked));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_INTERRUPT), gcStatus(busy));
-    // The faked nursery run swapped the semi-spaces (orchestrate.c:865-867).
+    try std.testing.expect(elapsed < 1_000_000_000);
+    // The faked nursery run swapped the semi-spaces (orchestrate.c:889-891).
     try std.testing.expectEqual(tospace, tc.*.nursery_fromspace);
     try std.testing.expectEqual(fromspace, tc.*.nursery_tospace);
     try std.testing.expect(instance.*.stables_to_free == null);

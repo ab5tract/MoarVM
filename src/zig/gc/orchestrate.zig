@@ -1007,66 +1007,94 @@ pub fn enterFromInterrupt(tc: Tc) callconv(.c) void {
         c.MVM_profiler_log_gc_end(tc);
 }
 
-/// Run the global destruction phase. (orchestrate.c:806-874)
+/// Run the global destruction phase. (orchestrate.c:806-898)
 pub fn globalDestruction(tc: Tc) callconv(.c) void {
     var nursery_tmp: [*c]u8 = undefined;
 
     const vm: [*c]c.MVMInstance = tc.*.instance;
-    var cur_thread: Thread = null;
+    var attempts: c.MVMuint32 = undefined;
 
-    // Ask all threads to suspend on the next chance they get. Like the
-    // debugserver, mark ourselves blocked while holding mutex_threads, so a
-    // GC run started by another thread meanwhile does not wait for us.
+    // Ask all other threads to suspend, and wait until they have: each one
+    // is either parked (it never allocates again) or blocked in C with the
+    // request set (it parks when it unblocks, before touching anything
+    // GC-managed), and no GC run is in flight. Then no new run can start:
+    // we are the only thread left that could start one. Like the
+    // debugserver, mark ourselves blocked meanwhile, so a GC run another
+    // thread starts does not wait for us; we are in C code and never reach
+    // a safepoint.
+    //
+    // mutex_threads is held only for one pass over the threads list, never
+    // while waiting: a thread that has already won the gc_start election
+    // needs it for signal_all, and would otherwise never get to finish its
+    // run and park.
+    //
+    // The wait is bounded (about 2 seconds): a thread that never reaches a
+    // safepoint, such as one spinning in native code, is given up on, and
+    // we go on as before this wait existed, on a best-effort basis.
     markThreadBlocked(tc);
-    // uv_mutex_lock(&vm->mutex_threads) (orchestrate.c:817).
-    c.uv_mutex_lock(&vm.*.mutex_threads);
+    attempts = 0;
+    while (attempts < 2000) : (attempts += 1) {
+        var pending: c.MVMuint32 = 0;
+        var in_gc: c.MVMuint32 = undefined;
+        var cur_thread: Thread = undefined;
 
-    cur_thread = vm.*.threads;
-    while (cur_thread != null) {
-        const other: Tc = cur_thread.*.body.tc;
-        // A thread that has been cleaned up already has no tc left. Only ask
-        // threads that are running or blocked; one that is in the middle of a
-        // GC run (or already has a suspend bit) is left alone.
-        var ask = false;
-        if (other != null and other != tc) {
-            // MVM_load(&other->gc_status) (orchestrate.c:827).
-            const current: Status = atomic.load(&other.*.gc_status);
-            ask = current == NONE or current == UNABLE;
-        }
-        if (ask) {
-            while (true) {
-                // Is the thread currently doing completely ordinary code execution?
-                // MVM_cas(&other->gc_status, MVMGCStatus_NONE, MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:833).
-                if (atomic.cas(&other.*.gc_status, NONE, INTERRUPT | SUSPEND_REQUEST) == NONE) {
-                    break;
-                }
-                // Is the thread in question currently blocked, i.e. spending time in
-                // some long-running piece of C code, waiting for I/O, etc.?
-                // If so, just store the suspend request bit so when it unblocks itself
-                // it'll suspend execution.
-                // MVM_cas(&other->gc_status, MVMGCStatus_UNABLE, MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:841).
-                if (atomic.cas(&other.*.gc_status, UNABLE, UNABLE | SUSPEND_REQUEST) == UNABLE) {
-                    break;
-                }
-                // Was the thread faster than us? For example by running into
-                // a breakpoint, completing a step, or encountering an
-                // unhandled exception? If so, we're done here.
-                // MVM_load(&other->gc_status) (orchestrate.c:848).
-                if ((atomic.load(&other.*.gc_status) & SUSPEND_MASK) == SUSPEND_REQUEST) {
-                    break;
-                }
-                _ = c.MVM_platform_thread_yield();
+        // uv_mutex_lock(&vm->mutex_threads) (orchestrate.c:836).
+        c.uv_mutex_lock(&vm.*.mutex_threads);
+
+        // A GC run sets in_gc while holding mutex_threads and clears it
+        // only after it has destroyed any exiting threads' tcs, so with
+        // in_gc clear under mutex_threads no tc can go away during the
+        // pass. While a run is in flight, just wait for it.
+        // uv_mutex_lock(&vm->mutex_gc_orchestrate) (orchestrate.c:842).
+        c.uv_mutex_lock(&vm.*.mutex_gc_orchestrate);
+        in_gc = vm.*.in_gc;
+        // uv_mutex_unlock(&vm->mutex_gc_orchestrate) (orchestrate.c:844).
+        c.uv_mutex_unlock(&vm.*.mutex_gc_orchestrate);
+
+        cur_thread = if (in_gc != 0) null else vm.*.threads;
+        while (cur_thread != null) : (cur_thread = cur_thread.*.body.next) {
+            const other: Tc = cur_thread.*.body.tc;
+            // A thread that has been cleaned up already has no tc left.
+            if (other == null or other == tc)
+                continue;
+            // MVM_load(&other->gc_status) (orchestrate.c:851).
+            switch (atomic.load(&other.*.gc_status)) {
+                NONE => {
+                    // Running ordinary code: ask it to suspend at its next
+                    // safepoint. Pending until it has parked.
+                    // MVM_cas(&other->gc_status, MVMGCStatus_NONE,
+                    //     MVMGCStatus_INTERRUPT | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:855).
+                    _ = atomic.cas(&other.*.gc_status, NONE, INTERRUPT | SUSPEND_REQUEST);
+                    pending +%= 1;
+                },
+                UNABLE => {
+                    // Blocked in C: store the request so it parks when it
+                    // unblocks. If the status changed under us, look again
+                    // on the next pass.
+                    // MVM_cas(&other->gc_status, MVMGCStatus_UNABLE,
+                    //     MVMGCStatus_UNABLE | MVMSuspendState_SUSPEND_REQUEST) (orchestrate.c:863).
+                    if (atomic.cas(&other.*.gc_status, UNABLE, UNABLE | SUSPEND_REQUEST) != UNABLE)
+                        pending +%= 1;
+                },
+                UNABLE | SUSPEND_REQUEST, UNABLE | SUSPENDED => {
+                    // Blocked with the request set, or parked.
+                },
+                else => {
+                    // Asked but not yet at a safepoint
+                    // (INTERRUPT | SUSPEND_REQUEST), or in the middle of a
+                    // GC run (INTERRUPT, STOLEN, STOLEN | any suspend bit).
+                    pending +%= 1;
+                },
             }
         }
-        cur_thread = cur_thread.*.body.next;
+        // uv_mutex_unlock(&vm->mutex_threads) (orchestrate.c:879).
+        c.uv_mutex_unlock(&vm.*.mutex_threads);
+
+        if (pending == 0 and in_gc == 0)
+            break;
+        MVM_platform_nanosleep(1000000);
     }
-
-    // uv_mutex_unlock(&vm->mutex_threads) (orchestrate.c:857).
-    c.uv_mutex_unlock(&vm.*.mutex_threads);
     markThreadUnblocked(tc);
-
-    // Allow other threads to do a little more work before we continue here
-    _ = c.MVM_platform_thread_yield();
 
     // Fake a nursery collection run by swapping the semi-
     // space nurseries.
