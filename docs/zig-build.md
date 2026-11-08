@@ -27,6 +27,8 @@ Options (`zig build --help` lists them):
 | `-Dlto=` | `true` unless `-Doptimize=Debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
 | `-Dhash-stats=` | `false` | diagnostic build with the hash engine's statistics compiled in (see "Statistics"); keeps debug info and forces `-Dstrip=false` |
 | `-Duni-swiss=` | `false` | compile the Unicode hash tables' Swiss set (strategy 1 of `MVM_uni_hash_build_strategy`) into libmoar; no internal site uses it, so the shipped build leaves it out and strategy 1 throws; the uni benchmark needs it, unit tests always have it |
+| `-Dgc-debug=` | `0` | `MVM_GC_DEBUG` 0..3 for the C sources and translate-c; 1 and up compile in the GC debug checks, the per-collection log (`$MVM_GC_LOG`) and the RSS pin (`$MVM_GC_DEBUG_RSS`) (see "Garbage collector") |
+| `-Dnursery-size=` | `16777216` | `MVM_NURSERY_SIZE`, the maximum nursery size in bytes; small values stress the collector |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
@@ -367,6 +369,135 @@ as `function@file:line`, site 255 as `other`; `grow` and `migrate` cycles
 are inside `insert`'s and stay out of the shares. Files of processes that
 built no table are counted apart. The table is meant for this branch and
 needs updating when the C sources move.
+
+## Garbage collector
+
+Every C file of `src/gc/` has a Zig port under `src/zig/gc/`, one `[zig]`
+line each, behind the same C symbols. The ports are faithful: the same
+nursery and promotion rule, gen2 size classes and page layout, root sets
+and their walk order, write barrier, stop-the-world orchestration with work
+stealing, finalization and object ids, and the same atomic operations at the
+same sites (`traces/llm/specs/2026-11-04-zig-gc-port-design.md`; the
+evidence is in the plan's "Acceptance",
+`traces/llm/plans/2026-11-04-zig-gc-port.md`). With `-Dzig-impl=false` the
+C collector is compiled instead.
+
+| C file | Zig file | What it holds |
+|---|---|---|
+| `worklist.c` | `worklist.zig` | the mark worklist: create, the slow-path grow, presize, destroy |
+| `allocation.c` | `allocation.zig` | nursery bump allocation and the object, type object, STable and frame allocators |
+| `gen2.c` | `gen2.zig` | the gen2 size-class allocator: bins, pages, free lists, overflows, transfer between threads |
+| `roots.c` | `roots.zig` | permanent, instance, thread, temporary, gen2 and frame roots, and their heap snapshot variant |
+| `collect.c` | `collect.zig` | the copying collector, the work passing between threads, freeing of the nursery, gen2 and STables |
+| `wb.c` | `wb.zig` | the write barrier's slow path |
+| `objectid.c` | `objectid.zig` | object ids |
+| `finalize.c` | `finalize.zig` | finalizer queues and the finalize handler |
+| `debug.c` | `debug.zig` | the region finder and the per-collection log writer; compiled only at `-Dgc-debug` 1 and up |
+| `orchestrate.c` | `orchestrate.zig` | the stop-the-world protocol, coordinator election, work stealing, the full-collection decision, global destruction |
+
+The inline fast paths in the headers (`MVM_gc_allocate`, the
+`MVM_gc_worklist_add` macros, `MVM_gc_write_barrier` and `MVM_ASSIGN_REF`,
+the temp-root push and pop) stay C inlines; the Zig ports call the slow
+paths they call. Shared helpers: `src/zig/moar.zig` has `assignRef` (the
+`MVM_ASSIGN_REF` macro with its `MVM_GC_DEBUG` checks, through
+`assertNotFromspace`), `worklistAdd` (the `MVM_gc_worklist_add` statement
+macro, which translate-c cannot express, with its debug checks) and
+`trycas`; `src/zig/gc/atomic.zig` has `load`, `store`, `add`, `incr`,
+`decr`, `cas` and `fence`, all sequentially consistent like the C11
+operations behind `MVM_load` and friends (translate-c cannot use those),
+each call site commented with the C macro and line it replaces. `add`,
+`incr` and `decr` take only `usize`-wide slots, as the C's `AO_t`. Unit
+tests: `src/zig/gc/test/`, run by `zig build unit-test` in the
+libmoar-linked `gc-test` binary (they boot a VM), plus `atomic_test.zig`
+on the host. Some tests apply only at one debug level and skip at the other,
+so run `zig build unit-test` with and without `-Dgc-debug=1`.
+
+Two build options feed the C `#define`s, which carry `#ifndef` guards for
+this, and reach the Zig side through translate-c (`c.MVM_GC_DEBUG`,
+`c.MVM_NURSERY_SIZE`), so the two sides cannot disagree:
+
+| Option | Default | Meaning |
+|---|---|---|
+| `-Dgc-debug=` | `0` | `MVM_GC_DEBUG` (`src/gc/debug.h`). 0: no checks, and the release code path. 1: checks on reference assignments and worklist adds (`MVM_ASSERT_NOT_FROMSPACE`, the gen2 free-list check, `MVM_CHECK_CALLER_CHAIN`), plus the per-collection log and the RSS pin below. 2: also checks on every object register access (slow). 3: also a collection on every nursery allocation, and each collected thread's from-space filled with `0xef` once its uncopied objects are freed. In Zig each level is a `comptime` block, so nothing of it is compiled at 0. A debug level changes `MVMThreadContext`'s layout (`in_spesh` and the log counters exist only under it), so compare only builds of the same level |
+| `-Dnursery-size=` | `16777216` | `MVM_NURSERY_SIZE`, the maximum nursery in bytes; small values stress the collector (the stress builds use 524288) |
+
+### Per-collection log
+
+At `-Dgc-debug=1` and up, `MVM_GC_LOG=<file>` opens `<file>` for append at
+instance creation and the collector writes one line per thread per
+collection, flushed:
+
+    seq=N tid=N full=0|1 coord=0|1 from=N next=N promoted=N since_full=N gen2_freed=N stables_freed=N finalizing=N
+
+`seq` is the instance's GC sequence number, `tid` the thread the line is
+for, `full` whether the run collected gen2 too, `coord=1` marks the thread
+that started the run (`thread_to_blame_for_gc`), `from` and `next` the
+nursery sizes of this run and the next, `promoted` the bytes that thread
+promoted to gen2 in the run, `since_full` the instance's promoted bytes
+since the last full run, `gen2_freed` the gen2 bytes freed (the bin slot
+size for a binned object, the object's size for an oversized one),
+`stables_freed` the STables freed and `finalizing` the length of the
+finalization queue. The coordinator writes the lines of every thread it
+collected for; a thread destroyed during a run is logged just before it is
+destroyed. `stables_freed` lands on the coordinator's line of the run that
+frees them. Nothing is logged at global destruction, which frees outside any
+run. The two counters are reset after each line.
+
+`MVM_GC_DEBUG_RSS=<bytes>` pins the resident-set size that the
+full-collection decision reads (`is_full_collection`) to that value, so the
+decision depends only on the promoted bytes and is the same from run to run.
+Both variables exist only at `-Dgc-debug=1` and up.
+
+### Fidelity oracle, stress and A/B
+
+The machinery is in `tools/bench/gc/` (its `README.md`; every script takes
+`--help`). Variants are libmoar builds in their own prefixes, run through
+`LD_LIBRARY_PATH=<prefix>/lib` with one installed nqp and rakudo.
+
+- Oracle: build both collectors at `-Dgc-debug=1` (the campaign's C side is
+  commit 139d404ed, the C collector with the Zig hash engine), then
+  `tools/bench/gc/oracle.sh --base=<C prefix> --head=<Zig prefix> --volume=100000 [--bad-packages] [--tier=1|2] --out=<dir>`.
+  It runs `crc-sequential.raku` three times per side with
+  `MVM_SPESH_DISABLE=1 RAKUDO_NO_PRECOMPILATION=1` and the log on, checks
+  the format, that each side is repeatable, and then that base and head are
+  identical. Tier 1 leaves the RSS read real and drops the `full=` and
+  `gen2_freed=` fields before comparing; tier 2 pins it at 100 MiB and
+  compares every field. It compares every thread's lines, in order; this
+  workload has only `tid=1`. `prove tools/bench/t/gc-oracle.t` tests the
+  script, and skips without a word when `/tmp/claude-1000/gc-c-oracle` is
+  missing.
+- Stress: both collectors at `-Dgc-debug=1 -Dnursery-size=524288`; nqp's
+  and rakudo's `make test` and `crc-getter.raku --volume=100000` under each
+  must give the same results.
+- A/B: default builds,
+  `tools/bench/gc/ab.sh --base=<prefix>/lib --head=<prefix>/lib --rounds=7 --runs=5 --volume=100000 [--bad-packages] --out=<dir>`
+  on the user's `crc-getter.raku`, interleaved, with `summary.md` holding
+  the round medians and the head/base ratios for wall and peak RSS; the
+  rakudo spectest A/B is the main performance gate.
+
+The two prefixes of a pair must have paths of the same length, and both
+scripts refuse a pair that does not (exit 4): the install prefix is baked
+into libmoar's config strings, so its length changes the size of objects
+allocated at startup and shifts every later collection (a longer head
+prefix showed 56 more promoted bytes at `seq=2`). The campaign used
+`/tmp/claude-1000/gc-c-oracle` and `/tmp/claude-1000/gc-z-oracle`, and the
+same pattern for `-stress` and `-base`.
+
+### Zig 0.16 notes from the port
+
+- There is no `@fence`. `atomic.fence()` emits what C compilers emit for
+  `atomic_thread_fence(memory_order_seq_cst)`: `mfence` on x86 (`dmb ish`
+  on ARM64, `fence rw,rw` on RISC-V) with a memory clobber, and a seq_cst
+  read-modify-write of a private word on other targets.
+- An array field reached through a translated `[*c]` pointer must not be
+  indexed as `p.*.arr[i]`: through a `[*c]S`, that indexes whole arrays
+  (elements of type `[N]T`) past the field, and it compiles silently when the
+  element is a scalar or a pointer. Write `p[0].arr[i]`, or go through a
+  `*S` pointer. A pointer field (`tc.*.gc_work[i]`) is not affected.
+- `MVMDebugServerData` has bit-fields, which translate-c leaves opaque;
+  `orchestrate.zig` mirrors it as an `extern struct`, and the layout probe
+  test checks its size and the offsets of the fields the port touches
+  against the C compiler at both debug levels.
 
 ## Not yet supported
 
