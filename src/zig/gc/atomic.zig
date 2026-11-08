@@ -5,9 +5,10 @@
 //! cast), and `MVM_cas`, a `MVM_STATIC_INLINE` over
 //! `atomic_compare_exchange_strong`, as an extern declaration nothing
 //! defines. Every operation here is `.seq_cst`, the ordering of the C11
-//! generic functions the macros call, and works on `*usize` (the C's
-//! `AO_t`), `*u32`, `*u64` and on a pointer slot (`*?*T`, `**T`, `*[*c]T`),
-//! volatile or not, and on the same slots through a C pointer. Pointer slots are operated on as the word they are, as
+//! generic functions the macros call. `load`, `store` and `cas` work on
+//! `*usize` (the C's `AO_t`), `*u32`, `*u64` and on a pointer slot (`*?*T`, `**T`, `*[*c]T`),
+//! volatile or not, and on the same slots through a C pointer; `add`,
+//! `incr` and `decr` only on an `AO_t`-wide integer slot, as the C. Pointer slots are operated on as the word they are, as
 //! the C casts them to `volatile AO_t *`. Pure Zig: no `moar` import, so the
 //! host unit tests build it alone.
 const std = @import("std");
@@ -63,9 +64,13 @@ pub inline fn store(ptr: anytype, v: Slot(@TypeOf(ptr))) void {
     @atomicStore(usize, word(ptr), @intFromPtr(v), .seq_cst);
 }
 
+/// The slot of add/incr/decr: the C `MVM_add`/`MVM_incr`/`MVM_decr`
+/// (moar.h:335-337) always cast to `volatile AO_t *`, so only an `AO_t`-wide
+/// (`usize`, or an unsigned word of pointer width) integer slot is taken.
 fn IntSlot(comptime P: type) type {
     const S = Slot(P);
-    if (!isIntSlot(S)) @compileError("atomic: add/incr/decr need an integer slot, got " ++ @typeName(S));
+    if (!isIntSlot(S) or @bitSizeOf(S) != @bitSizeOf(usize))
+        @compileError("atomic: add/incr/decr need an AO_t-wide (usize) integer slot, got " ++ @typeName(S));
     return S;
 }
 

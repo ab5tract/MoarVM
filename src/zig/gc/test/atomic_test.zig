@@ -20,18 +20,19 @@ test "cas returns the previous value and leaves the slot on mismatch" {
     try std.testing.expectEqual(@as(u64, 1), q);
 }
 
-test "add, incr and decr return the old value" {
+test "add, incr and decr return the old value on an AO_t-wide slot" {
     var w: usize = 10;
     try std.testing.expectEqual(@as(usize, 10), atomic.add(&w, 5));
     try std.testing.expectEqual(@as(usize, 15), atomic.incr(&w));
     try std.testing.expectEqual(@as(usize, 16), atomic.decr(&w));
     try std.testing.expectEqual(@as(usize, 15), w);
-    var h: u32 = 0xffff_ffff;
-    try std.testing.expectEqual(@as(u32, 0xffff_ffff), atomic.incr(&h));
-    try std.testing.expectEqual(@as(u32, 0), h); // wraps, as the C unsigned add
-    var q: u64 = 0;
-    try std.testing.expectEqual(@as(u64, 0), atomic.decr(&q));
-    try std.testing.expectEqual(@as(u64, 0xffff_ffff_ffff_ffff), q);
+    var m: usize = std.math.maxInt(usize);
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), atomic.incr(&m));
+    try std.testing.expectEqual(@as(usize, 0), m); // wraps, as the C unsigned add
+    try std.testing.expectEqual(@as(usize, 0), atomic.decr(&m));
+    try std.testing.expectEqual(@as(usize, std.math.maxInt(usize)), m);
+    // Only AO_t-wide slots: a u32 slot is a compile error (`atomic.incr(&h)`
+    // with `h: u32` does not build), as MVM_incr casts to `volatile AO_t *`.
 }
 
 test "load and store" {
