@@ -14,7 +14,7 @@ Options (`zig build --help` lists them):
 
 | Option | Default | Meaning |
 |---|---|---|
-| `-Doptimize=` | `ReleaseFast` | zig's standard optimisation mode (`Debug` for a -g3 style build) |
+| `-Doptimize=` | `fast` | zig's standard optimisation mode: `debug`, `safe`, `fast` or `small` (`debug` for a -g3 style build) |
 | `-Dtarget=` | generic x86-64 linux | only glibc `x86_64-linux` is supported so far |
 | `-Dcpu=` | `x86_64_v3` on x86_64, else `baseline` | the AVX2 class (Haswell, Zen and later); `-Dcpu=baseline` for a generic x86-64 build (gcc's default), `-Dcpu=native` for the host CPU. The Perl build's `--march` (default `x86-64-v3` with `--cc=zig`) is the same knob |
 | `-Djit=` | `true` on x86_64 | build the x86-64 JIT (DynASM via the zig-built minilua, tables from the Zig generators) |
@@ -97,10 +97,10 @@ All Zig files compile into one object, `moar_zig.o`, whose root is
 `src/zig/root.zig`. They see the C API through `src/zig/moar.zig`, which
 imports the translate-c output of `src/zig/moar_c.h` (a wrapper around
 `src/moar.h` that neutralises C11 `_Atomic`, which Zig cannot express), and
-which defines Zig equivalents of the macros translate-c cannot handle: `stable`, `repr`, `objectBody`, `isConcrete`,
-`assignRef`, `root`/`rootN`. `zig build unit-test` checks the translated
-struct layouts against the C compiler and runs the shim tests against a real
-instance.
+which defines Zig equivalents of the macros translate-c cannot handle:
+`stable`, `repr`, `objectBody`, `isConcrete`, `assignRef`, `root`/`rootN`.
+`zig build unit-test` checks the translated struct layouts against the C
+compiler and runs the shim tests against a real instance.
 
 The translation is done by the `translate_c` package
 (`codeberg.org/ziglang/translate-c`, branch `zig-0.17.x`, pinned in
@@ -109,6 +109,8 @@ network, once: the archive lands in the global cache
 (`ZIG_GLOBAL_CACHE_DIR`, by default `~/.cache/zig`) and is unpacked into
 `zig-pkg/` in the checkout (`--pkg-dir` or `ZIG_LOCAL_PKG_DIR` moves it);
 later builds, including fresh checkouts on the same machine, work offline.
+With no network and no cached package the build stops with a fetch error;
+pre-seed `zig-pkg/` or the global cache from a machine that has it.
 
 The C files stay in the tree and are still compiled with
 `-Dzig-impl=false`. The Perl build gets the same object from
@@ -515,7 +517,11 @@ Recipes the campaign used, for a maintainer repeating the comparison:
   changes `MVMThreadContext` and `MVMInstance`.
 - `zig build test -Dzig-impl=false` is the all-C control; it must stay green.
 
-### Zig 0.16 notes from the port
+### Zig notes from the ports
+
+#### Zig 0.16
+
+These were found while porting on 0.16 and still hold on 0.17.
 
 - There is no `@fence`. `atomic.fence()` emits what C compilers emit for
   `atomic_thread_fence(memory_order_seq_cst)`: `mfence` on x86 (`dmb ish`
@@ -530,6 +536,36 @@ Recipes the campaign used, for a maintainer repeating the comparison:
   `orchestrate.zig` mirrors it as an `extern struct`, and the layout probe
   test checks its size and the offsets of the fields the port touches
   against the C compiler at both debug levels.
+
+#### Zig 0.17
+
+- `std.builtin` became `std.lang`. The optimisation mode is
+  `std.lang.Optimize`, with modes `debug`, `safe`, `fast` and `small`
+  (`-Doptimize=fast`); the legacy `Release*`/`Debug` spellings are
+  deprecated until 0.18. The `config` entry of `nqp::backendconfig` keeps the
+  legacy spelling `-Doptimize=ReleaseFast` on purpose, so that the string's
+  length, and so libmoar's allocation pattern, stays identical to the build
+  on the previous Zig; see `legacyOptimizeName` in `build/zig/config.zig`.
+- The array repeat `[_]T{v} ** n` is gone for runtime values; write
+  `@as([n]T, @splat(v))`.
+- Renames: `@intFromEnum` is `@backingInt`, `@intFromFloat` is `@trunc`,
+  `builtin.cpu` is `builtin.target.cpu`, `std.debug.runtime_safety` is
+  `std.lang.Optimize.runtimeSafety(builtin.optimize)`, `std.fmt.allocPrint`
+  is `Allocator.print`, and the bit-set types moved under `std.bit_set`
+  (e.g. `bit_set.Dynamic`).
+- `b.build_root` is gone: the build reads its own files through `b.root` (a
+  `std.Build.Cache.Path`) with the helpers in `build/zig/root_files.zig`. The
+  configure phase is cached and re-runs only when a registered input changes
+  (`b.dependOnFileContents` and friends), so any new configure-time read must
+  be registered there; the version string's inputs, `build/sources.list`,
+  `build/config.c.in` and `src/zig/root.zig` are.
+- The install prefix is known only at make time (`b.install_prefix` is gone):
+  `config.c` and `moar.pc` are rendered with a `@MOAR_PREFIX@` placeholder
+  and filled by the host tool `build/zig/fill_prefix.zig`. Use an absolute
+  `--prefix` (a relative one gives a relative RUNPATH entry); `DESTDIR`
+  without `--prefix` installs under `/usr`.
+- `std.Build.Step.TranslateC` is deprecated; the translation comes from the
+  `translate_c` package (see "Zig implementations" above).
 
 ## Not yet supported
 
