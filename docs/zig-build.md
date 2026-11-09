@@ -23,8 +23,8 @@ Options (`zig build --help` lists them):
 | `-Dzstd=` | `true` | link the system libzstd for heap snapshot format 3 |
 | `-Dnqp-stage0=` | `../src/vm/moar/stage0` | where `zig build test` finds nqp's stage0 bytecode |
 | `-Dnqp-prefix=` | unset | prefix of an installed MoarVM and nqp (`<P>/bin/nqp-m`) for `zig build strategy-test`; when given, `zig build test` runs that step too |
-| `-Dstrip=` | `true` unless `-Doptimize=Debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
-| `-Dlto=` | `true` unless `-Doptimize=Debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
+| `-Dstrip=` | `true` unless `-Doptimize=debug` | strip symbols from libmoar's C objects and the Zig object; `false` keeps them for `perf report`/`perf annotate` (the generated code is the same) |
+| `-Dlto=` | `true` unless `-Doptimize=debug` | full link-time optimisation of libmoar together with the Zig object (`lto = .full` on both), so the LTO link binds the hash engine's exports locally and inlines the small ones (iteration); the lookup exports are still called directly; `false` links about three times faster (see "Hash engine") |
 | `-Dhash-stats=` | `false` | diagnostic build with the hash engine's statistics compiled in (see "Statistics"); keeps debug info and forces `-Dstrip=false` |
 | `-Duni-swiss=` | `false` | compile the Unicode hash tables' Swiss set (strategy 1 of `MVM_uni_hash_build_strategy`) into libmoar; no internal site uses it, so the shipped build leaves it out and strategy 1 throws; the uni benchmark needs it, unit tests always have it |
 | `-Dgc-debug=` | `0` | `MVM_GC_DEBUG` 0..3 for the C sources and translate-c; 1 and up compile in the GC debug checks, the per-collection log (`$MVM_GC_LOG`) and the RSS pin (`$MVM_GC_DEBUG_RSS`) (see "Garbage collector") |
@@ -34,7 +34,8 @@ Options (`zig build --help` lists them):
 
 Always pass an absolute `--prefix`: it is baked into the binary's RUNPATH,
 into `nqp::backendconfig` and into `share/pkgconfig/moar.pc`. A relative
-`--prefix` is rejected. The RUNPATH is `$ORIGIN/../lib` followed by `<prefix>/lib`.
+`--prefix` (or none) gives a relative RUNPATH entry (see "Zig 0.17" below).
+The RUNPATH is `$ORIGIN/../lib` followed by `<prefix>/lib`.
 
 ## How it maps to the Perl build
 
@@ -561,9 +562,12 @@ These were found while porting on 0.16 and still hold on 0.17.
   `build/config.c.in` and `src/zig/root.zig` are.
 - The install prefix is known only at make time (`b.install_prefix` is gone):
   `config.c` and `moar.pc` are rendered with a `@MOAR_PREFIX@` placeholder
-  and filled by the host tool `build/zig/fill_prefix.zig`. Use an absolute
-  `--prefix` (a relative one gives a relative RUNPATH entry); `DESTDIR`
-  without `--prefix` installs under `/usr`.
+  and filled by the host tool `build/zig/fill_prefix.zig`. Always pass an
+  absolute `--prefix`: without one, 0.17's default prefix `zig-out` is
+  relative to the build root and so is the RUNPATH entry `zig-out/lib`
+  (a relative `--prefix` likewise), while `config.c` still gets the absolute
+  path; the binary still finds its sibling library through `$ORIGIN/../lib`.
+  `DESTDIR` without `--prefix` installs under `/usr`.
 - `std.Build.Step.TranslateC` is deprecated; the translation comes from the
   `translate_c` package (see "Zig implementations" above).
 
