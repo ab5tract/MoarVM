@@ -33,7 +33,7 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8) !Oplist {
     while (lines.next()) |raw| {
         // Perl: chomp; s/#.*$//; next unless length
         var line = std.mem.trimEnd(u8, raw, "\r");
-        if (std.mem.indexOfScalar(u8, line, '#')) |hash| line = line[0..hash];
+        if (std.mem.findScalar(u8, line, '#')) |hash| line = line[0..hash];
         if (line.len == 0) continue;
         var fields = std.mem.tokenizeAny(u8, line, " \t");
         const name = fields.next() orelse continue;
@@ -41,7 +41,7 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8) !Oplist {
         var adverbs: std.ArrayList([]const u8) = .empty;
         var attribute: ?[]const u8 = null;
         while (fields.next()) |meta| {
-            if (meta.len == 2 and std.mem.indexOfScalar(u8, "-+.:*", meta[0]) != null and isWordChar(meta[1])) {
+            if (meta.len == 2 and std.mem.findScalar(u8, "-+.:*", meta[0]) != null and isWordChar(meta[1])) {
                 attribute = meta; // ^[-+.:*]\w$
             } else if (meta.len >= 2 and meta[0] == ':' and allWordChars(meta[1..])) {
                 try adverbs.append(gpa, meta); // ^:\w+$

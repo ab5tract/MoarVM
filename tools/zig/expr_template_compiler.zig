@@ -129,7 +129,7 @@ pub const Report = struct {
 
     fn within(self: Report, gpa: std.mem.Allocator, kind: []const u8, name: []const u8) Report {
         var r = self;
-        r.scope = std.fmt.allocPrint(gpa, "{s} '{s}'", .{ kind, name }) catch "";
+        r.scope = gpa.print("{s} '{s}'", .{ kind, name }) catch "";
         return r;
     }
 };
@@ -197,12 +197,12 @@ fn prefixed(gpa: std.mem.Allocator, s: []const u8) ![]const u8 {
 }
 
 fn fmtInt(gpa: std.mem.Allocator, n: anytype) ![]const u8 {
-    return std.fmt.allocPrint(gpa, "{d}", .{n});
+    return gpa.print("{d}", .{n});
 }
 
 /// `\$(\w+)` anywhere in an atom: returns the name after the `$`, or null.
 fn dollarName(atom: []const u8) ?[]const u8 {
-    const d = std.mem.indexOfScalar(u8, atom, '$') orelse return null;
+    const d = std.mem.findScalar(u8, atom, '$') orelse return null;
     var end = d + 1;
     while (end < atom.len and isWordChar(atom[end])) end += 1;
     if (end == d + 1) return null;
@@ -221,7 +221,7 @@ pub fn moarOperands(gpa: std.mem.Allocator, op: *const oplist.Op) !Env {
     var i: usize = 0;
     while (i < total) : (i += 1) {
         const ty = op.operands[i % n].ty;
-        const key = try std.fmt.allocPrint(gpa, "${d}", .{i});
+        const key = try gpa.print("${d}", .{i});
         try env.put(key, .{ .ty = moar_types.get(ty) orelse "reg" });
     }
     return env;
@@ -231,7 +231,7 @@ pub fn moarOperands(gpa: std.mem.Allocator, op: *const oplist.Op) !Env {
 fn isIncDec(name: []const u8, suffixes: []const u8) bool {
     if (name.len != 5) return false;
     if (!(std.mem.startsWith(u8, name, "inc_") or std.mem.startsWith(u8, name, "dec_"))) return false;
-    return std.mem.indexOfScalar(u8, suffixes, name[4]) != null;
+    return std.mem.findScalar(u8, suffixes, name[4]) != null;
 }
 
 /// Replaces `let:`/`letv:` statements by do/dov, binding each declared name to
@@ -241,7 +241,7 @@ fn isIncDec(name: []const u8, suffixes: []const u8) bool {
 pub fn linkDeclarations(gpa: std.mem.Allocator, expr: *Node, env_in: *const Env, rep: Report) Error!void {
     if (!expr.isList() or expr.items.items.len == 0) return;
     const op = expr.head();
-    if (std.mem.indexOf(u8, op, "let:") != null or std.mem.indexOf(u8, op, "letv:") != null) {
+    if (std.mem.find(u8, op, "let:") != null or std.mem.find(u8, op, "letv:") != null) {
         if (expr.items.items.len < 2 or !expr.items.items[1].isList()) return error.MalformedStatement;
         var env = env_in.clone() catch return error.OutOfMemory;
         const declarations = expr.items.items[1];
@@ -372,7 +372,7 @@ pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env, rep:
         return error.ExpectedOperator;
     }
     const operands = expr.items.items[1..];
-    if (std.mem.indexOf(u8, op, "if") != null) {
+    if (std.mem.find(u8, op, "if") != null) {
         if (operands.len < 3) {
             rep.print("operator '{s}' needs 3 operands, got {d}", .{ op, operands.len });
             return error.TypeMismatch;
@@ -415,7 +415,7 @@ pub fn exprType(gpa: std.mem.Allocator, expr: *const Node, env: *const Env, rep:
 /// contains "reg" or "num".
 pub fn checkType(got: []const u8, want: []const u8, why: []const u8, rep: Report) Error![]const u8 {
     if (eql(got, want)) return got;
-    if (eql(want, "?") and (std.mem.indexOf(u8, got, "reg") != null or std.mem.indexOf(u8, got, "num") != null)) return got;
+    if (eql(want, "?") and (std.mem.find(u8, got, "reg") != null or std.mem.find(u8, got, "num") != null)) return got;
     rep.print("{s}: Got {s} wanted {s}", .{ why, got, want });
     return error.TypeMismatch;
 }

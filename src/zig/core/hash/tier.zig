@@ -10,6 +10,10 @@
 const std = @import("std");
 const stats = @import("stats.zig");
 
+/// Whether this build has runtime safety checks (Debug and ReleaseSafe);
+/// the tiers gate their debug-only asserts on it.
+pub const runtime_safety = std.lang.Optimize.runtimeSafety(@import("builtin").optimize);
+
 /// The mutating operations reported to `logHook`.
 pub const Op = enum { insert, delete };
 

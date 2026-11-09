@@ -339,7 +339,7 @@ fn ImplType(comptime Spec: type) type {
         /// (the policy layer's migration; `grow`'s rehash): no key compare.
         /// The caller has made the load check.
         pub fn insertKnownAbsent(header: *Header, ctx: Ctx, key: Key, h: u64, entry_bytes: [*]const u8) void {
-            if (std.lang.Optimize.runtimeSafety(@import("builtin").optimize)) std.debug.assert(fetch(header, ctx, key, h) == null);
+            if (@import("../tier.zig").runtime_safety) std.debug.assert(fetch(header, ctx, key, h) == null);
             const salted = h ^ ctrl(header).salt;
             const slot = freeSlot(header, salted);
             std.debug.assert(metadata(header)[slot] == deleted or !isFull(header));

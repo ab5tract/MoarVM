@@ -28,7 +28,7 @@ pub fn parse(gpa: std.mem.Allocator, text: []const u8) !ExprOps {
     var seen_define = false;
     while (lines.next()) |line| {
         if (!seen_define) {
-            if (std.mem.indexOf(u8, line, "#define MVM_JIT_EXPR_OPS") != null) seen_define = true;
+            if (std.mem.find(u8, line, "#define MVM_JIT_EXPR_OPS") != null) seen_define = true;
             continue;
         }
         const entry = parseEntry(line) orelse continue;
@@ -45,7 +45,7 @@ const Entry = struct { name: []const u8, num_operands: i32, num_params: i32 };
 /// Finds `(\w+),\s*(-?\d+),\s*(\d+)\)` anywhere in the line.
 fn parseEntry(line: []const u8) ?Entry {
     var start: usize = 0;
-    while (std.mem.indexOfScalarPos(u8, line, start, '(')) |open| {
+    while (std.mem.findScalarPos(u8, line, start, '(')) |open| {
         start = open + 1;
         var i = open + 1;
         const name_start = i;

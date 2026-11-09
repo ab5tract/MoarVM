@@ -14,8 +14,8 @@ pub const FillError = error{ NoToken, UnsafePrefix } || std.mem.Allocator.Error;
 /// C-escaped the prefix, rejecting instead keeps config.c and moar.pc on
 /// one code path that never emits different C.
 pub fn fill(allocator: std.mem.Allocator, text: []const u8, prefix: []const u8) FillError![]u8 {
-    if (std.mem.indexOfAny(u8, prefix, "\"\\\n") != null) return error.UnsafePrefix;
-    if (std.mem.indexOf(u8, text, token) == null) return error.NoToken;
+    if (std.mem.findAny(u8, prefix, "\"\\\n") != null) return error.UnsafePrefix;
+    if (std.mem.find(u8, text, token) == null) return error.NoToken;
     return std.mem.replaceOwned(u8, allocator, text, token, prefix);
 }
 

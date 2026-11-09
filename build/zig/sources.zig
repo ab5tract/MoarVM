@@ -57,7 +57,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!Lists {
         const line = std.mem.trim(u8, raw, " \t\r");
         if (line.len == 0 or line[0] == '#') continue;
         if (line[0] == '[') {
-            const end = std.mem.indexOfScalar(u8, line, ']') orelse return error.UnknownSection;
+            const end = std.mem.findScalar(u8, line, ']') orelse return error.UnknownSection;
             current = section_names.get(line[1..end]) orelse return error.UnknownSection;
             continue;
         }
@@ -83,7 +83,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!Lists {
 }
 
 fn parseZigLine(allocator: std.mem.Allocator, line: []const u8) Error!ZigEntry {
-    const colon = std.mem.indexOfScalar(u8, line, ':') orelse return error.BadZigLine;
+    const colon = std.mem.findScalar(u8, line, ':') orelse return error.BadZigLine;
     const zig_file = std.mem.trim(u8, line[0..colon], " \t");
     if (zig_file.len == 0) return error.BadZigLine;
     var replaces: std.ArrayList([]const u8) = .empty;

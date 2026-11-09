@@ -68,7 +68,7 @@ pub const Parser = struct {
                 continue;
             }
             if (c == '"') {
-                const close = std.mem.indexOfScalarPos(u8, self.src, self.pos + 1, '"') orelse
+                const close = std.mem.findScalarPos(u8, self.src, self.pos + 1, '"') orelse
                     return error.UnterminatedString;
                 try node.items.append(self.gpa, try Node.newAtom(self.gpa, self.src[self.pos .. close + 1]));
                 self.pos = close + 1;

@@ -10,8 +10,6 @@ const root_files = @import("root_files.zig");
 const Translator = @import("translate_c").Translator;
 
 pub const Impl = struct {
-    /// The translate-c output for src/zig/moar_c.h.
-    translated: std.Build.LazyPath,
     /// The translate-c output as a module (import name "c").
     c_mod: *std.Build.Module,
     /// src/zig/moar.zig with "c" imported.
@@ -85,7 +83,7 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
     const object = b.addObject(.{ .name = "moar_zig", .root_module = root_mod });
     if (opts.lto) object.lto = .full;
 
-    return .{ .translated = t.output_file, .c_mod = c_mod, .moar_mod = moar_mod, .object = object };
+    return .{ .c_mod = c_mod, .moar_mod = moar_mod, .object = object };
 }
 
 /// `zig build zig-objects`: install the object to <prefix>/lib/moar_zig.o.
@@ -106,7 +104,7 @@ pub fn checkRootImports(b: *std.Build, lists: sources.Lists) void {
         if (!std.mem.startsWith(u8, entry.zig, prefix))
             std.process.fatal("build/sources.list: [zig] file {s} must live under src/zig/", .{entry.zig});
         const needle = b.fmt("@import(\"{s}\")", .{entry.zig[prefix.len..]});
-        if (std.mem.indexOf(u8, root, needle) == null)
+        if (std.mem.find(u8, root, needle) == null)
             std.process.fatal("src/zig/root.zig does not {s}; add it so the file's exports are emitted", .{needle});
     }
 }
