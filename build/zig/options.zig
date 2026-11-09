@@ -10,6 +10,10 @@ pub const Options = struct {
     /// Compile the Zig implementations listed in build/sources.list's [zig]
     /// section and drop the C files they replace.
     zig_impl: bool,
+    /// Also compile the garbage collector's Zig files from the [zig-gc]
+    /// section and drop src/gc's C files; false is the C-collector control
+    /// (the other Zig implementations stay on). Needs `zig_impl`.
+    zig_gc: bool,
     /// Use an existing <dir>/gen/config.h (the Perl build's) instead of the
     /// generated one. Only the `zig-objects` step is supported in this mode.
     config_h: ?[]const u8,
@@ -51,6 +55,16 @@ pub fn gcDebugLevel(raw: ?u8) error{GcDebugOutOfRange}!u8 {
     const v = raw orelse gc_debug_default;
     if (v > 3) return error.GcDebugOutOfRange;
     return v;
+}
+
+pub const zig_gc_needs_zig_impl_message = "-Dzig-gc needs -Dzig-impl=true (with -Dzig-impl=false the collector is C already)";
+
+/// The -Dzig-gc value: defaults to true with the Zig implementations on;
+/// with them off the collector is C and an explicit -Dzig-gc is an error.
+pub fn zigGc(zig_impl: bool, given: ?bool) error{ZigGcNeedsZigImpl}!bool {
+    if (zig_impl) return given orelse true;
+    if (given != null) return error.ZigGcNeedsZigImpl;
+    return false;
 }
 
 /// The -Dnursery-size value, defaulted.
@@ -98,6 +112,10 @@ pub fn parse(b: *std.Build) Options {
 
     const uni_swiss = b.option(bool, "uni-swiss", "Compile the Swiss set (strategy 1) of the Unicode hash tables into libmoar; no internal site uses it, the uni benchmark and the strategy tests do (default false)") orelse false;
 
+    const zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true;
+    const zig_gc = zigGc(zig_impl, b.option(bool, "zig-gc", "Build the Zig garbage collector from the [zig-gc] section of build/sources.list (default true); false keeps src/gc in C while the other Zig implementations stay Zig: the control of every GC comparison. Needs -Dzig-impl=true")) catch
+        std.process.fatal("{s}", .{zig_gc_needs_zig_impl_message});
+
     return .{
         .target = target,
         .optimize = optimize,
@@ -105,7 +123,8 @@ pub fn parse(b: *std.Build) Options {
         .static = b.option(bool, "static", "Build libmoar as a static library (default: shared)") orelse false,
         .mimalloc = b.option(bool, "mimalloc", "Use the bundled mimalloc allocator (default true)") orelse true,
         .zstd = b.option(bool, "zstd", "Link the system libzstd and use heap snapshot format 3 (default true)") orelse true,
-        .zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true,
+        .zig_impl = zig_impl,
+        .zig_gc = zig_gc,
         .config_h = config_h,
         .hash_stats = hash_stats,
         .uni_swiss = uni_swiss,
@@ -124,4 +143,13 @@ test "gc-debug and nursery-size default and parse" {
     try std.testing.expectEqual(@as(u32, 524288), nurserySize(524288));
     try std.testing.expectError(error.GcDebugOutOfRange, gcDebugLevel(4));
     try std.testing.expectEqualStrings("-Dgc-debug must be 0..3", gc_debug_range_message);
+}
+
+test "zig-gc needs zig-impl" {
+    try std.testing.expectEqual(true, try zigGc(true, null));
+    try std.testing.expectEqual(true, try zigGc(true, true));
+    try std.testing.expectEqual(false, try zigGc(true, false));
+    try std.testing.expectEqual(false, try zigGc(false, null));
+    try std.testing.expectError(error.ZigGcNeedsZigImpl, zigGc(false, true));
+    try std.testing.expectError(error.ZigGcNeedsZigImpl, zigGc(false, false));
 }

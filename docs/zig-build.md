@@ -30,6 +30,7 @@ Options (`zig build --help` lists them):
 | `-Dgc-debug=` | `0` | `MVM_GC_DEBUG` 0..3 for the C sources and translate-c; 1 and up compile in the GC debug checks, the per-collection log (`$MVM_GC_LOG`) and the RSS pin (`$MVM_GC_DEBUG_RSS`) (see "Garbage collector") |
 | `-Dnursery-size=` | `16777216` | `MVM_NURSERY_SIZE`, the maximum nursery size in bytes; small values stress the collector |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
+| `-Dzig-gc=` | `true` | also compile the Zig garbage collector from the `[zig-gc]` section; `false` keeps `src/gc` in C while the other Zig implementations stay Zig (the control of every GC comparison); needs `-Dzig-impl=true`, and giving it with `-Dzig-impl=false` is a configure error (see "Garbage collector") |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
 Always pass an absolute `--prefix`: it is baked into the binary's RUNPATH,
@@ -381,15 +382,21 @@ needs updating when the C sources move.
 
 ## Garbage collector
 
-Every C file of `src/gc/` has a Zig port under `src/zig/gc/`, one `[zig]`
-line each, behind the same C symbols. The ports are faithful: the same
+Every C file of `src/gc/` has a Zig port under `src/zig/gc/`, one
+`[zig-gc]` line each, behind the same C symbols. The ports are faithful: the same
 nursery and promotion rule, gen2 size classes and page layout, root sets
 and their walk order, write barrier, stop-the-world orchestration with work
 stealing, finalization and object ids, and the same atomic operations at the
 same sites (`traces/llm/specs/2026-11-04-zig-gc-port-design.md`; the
 evidence is in the plan's "Acceptance",
-`traces/llm/plans/2026-11-04-zig-gc-port.md`). With `-Dzig-impl=false` the
-C collector is compiled instead.
+`traces/llm/plans/2026-11-04-zig-gc-port.md`). With `-Dzig-gc=false` the
+C collector is compiled with the rest of the Zig implementations (the Zig
+hash engine among them): that build is the control every GC comparison is
+judged against, and it is built from the tree. Without `-Dzig-gc=true` the
+`gc-test` root is not registered, and `src/zig/root.zig` imports the
+`gc/` files only under `@import("zig_options").zig_gc`. With
+`-Dzig-impl=false` everything is C. The Perl build (`--zig=PATH`) always
+takes `[zig-gc]` with `[zig]`.
 
 | C file | Zig file | What it holds |
 |---|---|---|

@@ -1130,7 +1130,9 @@ sub configure {
 # '<zig file>: <c file> [<c file> ...]' lines; with $apply_zig true the
 # C files named there are removed from their sections and the Zig files
 # are returned under the 'zig_files' key. Without it the section is
-# validated and dropped. Mirrors build/zig/sources.zig.
+# validated and dropped. The [zig-gc] section (the collector) is read as
+# part of [zig]: the Perl build has no -Dzig-gc=false control.
+# Mirrors build/zig/sources.zig.
 sub read_sources_list {
     my ($file, $apply_zig) = @_;
     open my $fh, '<', $file or hardfail("cannot open $file: $!");
@@ -1144,19 +1146,19 @@ sub read_sources_list {
             next;
         }
         hardfail("$file: entry '$line' before any [section]") unless defined $current;
-        if ($current eq 'zig') {
+        if ($current eq 'zig' || $current eq 'zig-gc') {
             my ($zig_file, $rest) = $line =~ /^([^:]+):(.*)$/
-                or hardfail("$file: [zig] line '$line' must read '<zig file>: <c file> ...'");
+                or hardfail("$file: [$current] line '$line' must read '<zig file>: <c file> ...'");
             $zig_file =~ s/\s+$//;
             my @replaces = split ' ', $rest;
-            hardfail("$file: [zig] line '$line' names no C file") unless @replaces;
+            hardfail("$file: [$current] line '$line' names no C file") unless @replaces;
             push @zig, [ $zig_file, @replaces ];
             next;
         }
         push @{ $sections{$current} }, $line;
     }
     close $fh;
-    delete $sections{zig};
+    delete @sections{qw(zig zig-gc)};
     my %known = map { $_ => 1 } qw(core platform-posix jit jit-x64 jit-stub main);
     for my $name (sort keys %sections) {
         hardfail("$file: unknown section [$name]") unless $known{$name};

@@ -210,6 +210,11 @@ src/zig/core/hash/ptr_exports.zig: src/core/ptr_hash_table.c
 src/zig/core/hash/fixkey_exports.zig: src/core/fixkey_hash_table.c
 src/zig/core/hash/index_exports.zig: src/core/index_hash_table.c
 src/zig/core/hash/uni_exports.zig: src/core/uni_hash_table.c
+
+[zig-gc]
+# The garbage collector's Zig files, same line grammar as [zig]: applied
+# with the Zig implementations when -Dzig-gc=true (the default); with
+# zig build -Dzig-gc=false src/gc stays C while the [zig] files stay Zig.
 src/zig/gc/worklist.zig: src/gc/worklist.c
 src/zig/gc/allocation.zig: src/gc/allocation.c
 src/zig/gc/gen2.zig: src/gc/gen2.c

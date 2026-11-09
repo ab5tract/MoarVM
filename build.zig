@@ -30,9 +30,9 @@ pub fn build(b: *std.Build) void {
     const facts = platform.facts(&opts.target.result);
     const ver = version.detect(b);
     const raw_lists = sources.load(b, "build/sources.list");
-    const lists = if (opts.zig_impl) sources.applyZig(b.allocator, raw_lists) catch |err|
+    const lists = if (opts.zig_impl) sources.applyZig(b.allocator, raw_lists, opts.zig_gc) catch |err|
         std.process.fatal("cannot apply the [zig] section: {t}", .{err}) else raw_lists;
-    if (opts.zig_impl) zigimpl.checkRootImports(b, lists);
+    if (opts.zig_impl) zigimpl.checkRootImports(b, lists, opts.zig_gc);
 
     const config_h = config.configHeader(b, .{ .opts = opts, .facts = facts, .version = ver });
 
@@ -147,13 +147,15 @@ pub fn build(b: *std.Build) void {
             // Test roots linked against libmoar: the shims, the hash
             // engine's string table on real MVMStrings (plus the
             // microbenchmark's ladder test, hence build_options), and the
-            // GC port on a booted VM.
+            // GC port on a booted VM (only with -Dzig-gc: with the C
+            // collector there is no port to test).
             const roots = [_]struct { []const u8, []const u8, []const std.Build.Module.Import }{
                 .{ "src/zig/moar.zig", "shim-test", &.{} },
                 .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{ .{ .name = "build_options", .module = bench_options }, .{ .name = "zig_options", .module = stats_options } } },
                 .{ "src/zig/gc/gc_test.zig", "gc-test", &.{.{ .name = "zig_options", .module = stats_options }} },
             };
             for (roots) |root| {
+                if (!opts.zig_gc and std.mem.eql(u8, root[1], "gc-test")) continue;
                 const t = zigimpl.addShimTests(b, opts, impl, libmoar, config_h, moar.cflags(b, opts), root[0], root[1], root[2]);
                 unit_step.dependOn(&b.addRunArtifact(t).step);
             }

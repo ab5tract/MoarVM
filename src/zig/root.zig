@@ -1,6 +1,7 @@
 //! Root of the `moar_zig` object. Each implementation file listed in the
 //! [zig] section of build/sources.list must be referenced here so that its
-//! `export fn`s are emitted; the build checks this.
+//! `export fn`s are emitted; the build checks this. The [zig-gc] files are
+//! imported only with -Dzig-gc (the default); without it src/gc stays C.
 comptime {
     _ = @import("platform/time.zig");
     _ = @import("core/intcache.zig");
@@ -9,14 +10,16 @@ comptime {
     _ = @import("core/hash/fixkey_exports.zig");
     _ = @import("core/hash/index_exports.zig");
     _ = @import("core/hash/uni_exports.zig");
-    _ = @import("gc/worklist.zig");
-    _ = @import("gc/allocation.zig");
-    _ = @import("gc/gen2.zig");
-    _ = @import("gc/roots.zig");
-    _ = @import("gc/collect.zig");
-    _ = @import("gc/wb.zig");
-    _ = @import("gc/objectid.zig");
-    _ = @import("gc/finalize.zig");
-    _ = @import("gc/debug.zig");
-    _ = @import("gc/orchestrate.zig");
+    if (@import("zig_options").zig_gc) {
+        _ = @import("gc/worklist.zig");
+        _ = @import("gc/allocation.zig");
+        _ = @import("gc/gen2.zig");
+        _ = @import("gc/roots.zig");
+        _ = @import("gc/collect.zig");
+        _ = @import("gc/wb.zig");
+        _ = @import("gc/objectid.zig");
+        _ = @import("gc/finalize.zig");
+        _ = @import("gc/debug.zig");
+        _ = @import("gc/orchestrate.zig");
+    }
 }
