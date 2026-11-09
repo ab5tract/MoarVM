@@ -519,7 +519,14 @@ if (!defined $args{march} && $zig_cc && $Config{archname} =~ m/^x86_64|^amd64/) 
 
 # generate CFLAGS
 my @cflags;
-push @cflags, "-march=$args{march}" if defined $args{march} && $config{cc} ne 'cl';
+if (defined $args{march} && $config{cc} ne 'cl') {
+    # zig cc takes zig's model names, with underscores (x86-64-v3 ->
+    # x86_64_v3), as the -Dcpu mapping below does; gcc and clang keep
+    # the --march spelling.
+    my $march = $args{march};
+    $march =~ s/-/_/g if $zig_cc;
+    push @cflags, "-march=$march";
+}
 push @cflags, '-std=c99' if $defaults{os} eq 'mingw32';
 push @cflags, '-fwrapv'             if $config{cc} ne 'cl';
 push @cflags, $config{ccmiscflags};
@@ -854,7 +861,7 @@ if (defined $args{zig}) {
     $config{zig_out} = File::Spec->rel2abs('zig-out');
     my $jit = $config{jit_obj} =~ /JIT_ARCH_X64/ ? 'true' : 'false';
     my $zstd = $config{heapsnapformat} == 3 ? 'true' : 'false';
-    my $optimize = $args{debug} ? 'Debug' : 'ReleaseFast';
+    my $optimize = $args{debug} ? 'debug' : 'fast';
     $config{zig_build_flags} = "-Dconfig-h=src/gen/config.h -Dzstd=$zstd -Doptimize=$optimize -Djit=$jit";
     # Always explicit: the zig build's own default is LTO on, which a gcc
     # link cannot consume.
