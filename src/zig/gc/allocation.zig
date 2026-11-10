@@ -15,6 +15,7 @@ const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
 const view = @import("view.zig");
+const finalize = @import("finalize.zig");
 
 const Tc = view.Tc;
 const Object = view.Object;
@@ -141,7 +142,7 @@ pub fn allocateObject(tc: Tc, st: STable) Object {
     obj.header.owner = tc.thread_id;
     moar.assignRef(tc, &obj.header, &obj.st, rooted_st);
     if (rooted_st.mode_flags & c.MVM_FINALIZE_TYPE != 0)
-        c.MVM_gc_finalize_add_to_queue(tc, obj);
+        finalize.addToQueue(tc, obj);
     return obj;
 }
 

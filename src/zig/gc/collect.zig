@@ -7,8 +7,9 @@
 //! queued STables. No behaviour change. The worklist macros of
 //! src/gc/worklist.h stay C for C callers; `MVM_gc_worklist_add` is
 //! `moar.worklistAdd` and `MVM_gc_worklist_get` is `worklistGet` below. The
-//! roots, gen2 and worklist ports are called as Zig; the object-id,
-//! frame, STable, profiler and write-barrier calls go through `c.`. The
+//! roots, gen2, worklist and object-id ports are called as Zig, and so is
+//! the write barrier (`wb.noUpdateReferenced`, the Zig copy of wb.h's
+//! inline); the frame, STable and profiler calls go through `c.`. The
 //! dispatch on what a collectable is (type object, STable, frame, object)
 //! is a `switch` on `view.kind`, which keeps the C's flag precedence. Every
 //! atomic site uses src/zig/gc/atomic.zig (or `moar.trycas` for
@@ -29,6 +30,8 @@ const view = @import("view.zig");
 const worklist_mod = @import("worklist.zig");
 const gen2_mod = @import("gen2.zig");
 const roots = @import("roots.zig");
+const objectid = @import("objectid.zig");
+const wb = @import("wb.zig");
 
 const Tc = view.Tc;
 const Instance = view.Instance;
@@ -477,7 +480,7 @@ fn processWorklist(tc: Tc, worklist: Worklist, wtp: *WorkToPass, gen: Generation
                 // Yes; we should move it to the second generation. Allocate
                 // space in the second generation.
                 const to: Col = view.asCol(if (view.flags1(item).has_object_id)
-                    c.MVM_gc_object_id_use_allocation(tc, item).?
+                    objectid.useAllocation(tc, item)
                 else
                     gen2_mod.allocate(gen2, item.size));
 
@@ -560,7 +563,7 @@ fn processWorklist(tc: Tc, worklist: Worklist, wtp: *WorkToPass, gen: Generation
             for (worklist.list[gen2count..worklist.items]) |entry| {
                 const j: ColSlot = @ptrCast(entry);
                 if (j.*) |referenced|
-                    c.MVM_gc_write_barrier_no_update_referenced(tc, new_addr, referenced);
+                    wb.noUpdateReferenced(tc, new_addr, referenced);
             }
         }
     }
@@ -682,7 +685,7 @@ pub fn freeNurseryUncopied(executing: Tc, tc: Tc, limit: [*]u8) void {
                         c.MVM_free(item.sc_forward_u.sci);
                 }
                 if (dead and view.flags1(item).has_object_id)
-                    c.MVM_gc_object_id_clear(tc, item);
+                    objectid.clear(tc, item);
             },
             .stable => {
                 const st = view.asStable(item);
@@ -720,7 +723,7 @@ pub fn freeNurseryUncopied(executing: Tc, tc: Tc, limit: [*]u8) void {
                         c.MVM_free(item.sc_forward_u.sci);
                 }
                 if (dead and view.flags1(item).has_object_id)
-                    c.MVM_gc_object_id_clear(tc, item);
+                    objectid.clear(tc, item);
             },
         }
 
