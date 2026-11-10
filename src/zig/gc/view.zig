@@ -1,8 +1,9 @@
 //! Typed views of the collector's C structures, for the native GC ports:
 //! the pointer types the ports use in place of translate-c's `[*c]T`, the
 //! `flags1`/`flags2` bytes of `MVMCollectable` as packed structs, the
-//! `gc_status` word of `MVMThreadContext` as a typed status, and the view
-//! changes between a collectable and the object, STable or frame it heads.
+//! `gc_status` word of `MVMThreadContext` as a typed status, the kind of a
+//! collectable (`kind`, in the C's flag precedence), and the view changes
+//! between a collectable and the object, STable or frame it heads.
 //! The accessors here are the only `@ptrCast(@alignCast(…))` sites of the
 //! ports outside the C ABI. Every layout is the C's, asserted at comptime
 //! against the constants of src/6model/6model.h and
@@ -97,6 +98,21 @@ pub inline fn flags1(col: Col) *Flags1 {
 /// `col->flags2` through its view; reads and writes are the C byte's.
 pub inline fn flags2(col: Col) *Flags2 {
     return @ptrCast(&col.flags2);
+}
+
+/// What a collectable is, as the collector dispatches on it.
+pub const Kind = enum { type_object, stable, frame, object };
+
+/// The kind of `col`, in the C's precedence: the C tests `MVM_CF_TYPE_OBJECT`,
+/// then `MVM_CF_STABLE`, then `MVM_CF_FRAME` in sequence (collect.c:364-398,
+/// 565-593, 688-734), so a type object is a type object whatever else is
+/// set, and no flag means an object.
+pub inline fn kind(col: Col) Kind {
+    const f = flags1(col).*;
+    if (f.type_object) return .type_object;
+    if (f.stable) return .stable;
+    if (f.frame) return .frame;
+    return .object;
 }
 
 // ---- the GC status (src/core/threadcontext.h) ------------------------------

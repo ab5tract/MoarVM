@@ -1,25 +1,21 @@
-//! Tests of `collect.zig` (the port of src/gc/collect.c) on a booted VM. The
+//! Tests of `collect.zig` (the collector proper) on a booted VM. The
 //! collections are real ones, started through `MVM_gc_enter_from_allocator`
 //! as a full nursery starts them; with a single thread the main thread is
 //! the coordinator and the thread to blame.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const view = @import("../view.zig");
 const collect = @import("../collect.zig");
 const gen2 = @import("../gen2.zig");
 
-const Tc = [*c]c.MVMThreadContext;
+const Tc = view.Tc;
 const Object = c.MVMObject;
-const Collectable = c.MVMCollectable;
-
-fn col(p: anytype) [*c]Collectable {
-    return @ptrCast(@alignCast(p));
-}
 
 fn inNursery(tc: Tc, p: anytype) bool {
     const a = @intFromPtr(p);
-    const lo = @intFromPtr(tc.*.nursery_tospace);
-    return a >= lo and a < lo + tc.*.nursery_tospace_size;
+    const lo = @intFromPtr(tc.nursery_tospace);
+    return a >= lo and a < lo + tc.nursery_tospace_size;
 }
 
 /// Two collections, so that whatever the boot left in the nursery is in
@@ -32,7 +28,7 @@ fn settle(tc: Tc) void {
 test "an object surviving two collections is promoted and its forwarding pointer followed" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     settle(tc);
     // Two roots to one object: the first one processed copies it and writes
     // the forwarding pointer, the second one is updated through it.
@@ -77,7 +73,7 @@ test "an object surviving two collections is promoted and its forwarding pointer
 test "promoted bytes count the object's size" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     settle(tc);
     var a: ?*Object = c.MVM_repr_alloc_init(tc, instance.*.boot_types.BOOTArray);
     const r = moar.root(tc, &a);
@@ -86,11 +82,11 @@ test "promoted bytes count the object's size" {
     // promotion adds that header size (collect.c:265), not the aligned one.
     try std.testing.expectEqual(@as(u16, @intCast(a.?.st.*.size)), a.?.header.size);
     c.MVM_gc_enter_from_allocator(tc);
-    try std.testing.expectEqual(@as(u32, 0), tc.*.gc_promoted_bytes);
+    try std.testing.expectEqual(@as(u32, 0), tc.gc_promoted_bytes);
     c.MVM_gc_enter_from_allocator(tc);
     try std.testing.expect(a.?.header.flags2 & c.MVM_CF_SECOND_GEN != 0);
     // An empty VMArray has no unmanaged size, so the object is all of it.
-    try std.testing.expectEqual(@as(u32, a.?.header.size), tc.*.gc_promoted_bytes);
+    try std.testing.expectEqual(@as(u32, a.?.header.size), tc.gc_promoted_bytes);
 }
 
 // Needs `instance->gc_debug_rss_override`, which exists only in a
@@ -103,7 +99,7 @@ test "unreferenced gen2 object is freed on a full run" {
 fn freedOnFullRun() !void {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     settle(tc);
     var a: ?*Object = c.MVM_repr_alloc_init(tc, instance.*.boot_types.BOOTArray);
     {
@@ -127,10 +123,10 @@ fn freedOnFullRun() !void {
     // Swept: flagged (collect.c:686) and threaded on its bin's free list.
     try std.testing.expect(dead.header.flags2 & c.MVM_CF_DEBUG_IN_GEN2_FREE_LIST != 0);
     const bin = gen2.binOf(dead.header.size);
-    var p: [*c][*c]u8 = tc.*.gen2.*.size_classes[bin].free_list;
+    var p: ?*gen2.FreeNode = @ptrCast(@alignCast(tc.gen2.*.size_classes[bin].free_list));
     var found = false;
-    while (p != null) : (p = @ptrCast(@alignCast(p.*))) {
-        if (@intFromPtr(p) == @intFromPtr(dead)) found = true;
+    while (p) |n| : (p = n.next) {
+        if (@intFromPtr(n) == @intFromPtr(dead)) found = true;
     }
     try std.testing.expect(found);
 }
@@ -139,13 +135,10 @@ const pushes_per_thread = 1000;
 
 fn pushMany(tc: Tc, tag_base: usize) void {
     for (0..pushes_per_thread) |k| {
-        const work: [*c]c.MVMGCPassedWork = @ptrCast(@alignCast(c.MVM_calloc(1, @sizeOf(c.MVMGCPassedWork))));
+        const work: *c.MVMGCPassedWork = @ptrCast(@alignCast(c.MVM_calloc(1, @sizeOf(c.MVMGCPassedWork))));
         // A tag in the first item slot; num_items stays 0, so nothing would
         // be marked from these blocks if a collection did see them.
-        // Through `*`: indexing `work.*.items` on a `[*c]` indexes whole
-        // arrays in Zig 0.16 (see collect.zig, passedItems).
-        const w: *c.MVMGCPassedWork = work;
-        w.items[0] = @ptrFromInt(tag_base + k + 1);
+        work.items[0] = @ptrFromInt(tag_base + k + 1);
         collect.pushWorkToThreadInTray(tc, 1, work);
     }
 }
@@ -153,9 +146,9 @@ fn pushMany(tc: Tc, tag_base: usize) void {
 test "work pushed to a thread's in-tray from two threads is all there" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
-    try std.testing.expectEqual(@as(u32, 1), tc.*.thread_id);
-    try std.testing.expect(tc.*.gc_in_tray == null);
+    const tc: Tc = instance.*.main_thread;
+    try std.testing.expectEqual(@as(u32, 1), tc.thread_id);
+    try std.testing.expect(tc.gc_in_tray == null);
     // Target 1 is the main thread (collect.c:422-424), the third party here:
     // the two pushers are plain OS threads using tc only to find it.
     const t1 = try std.Thread.spawn(.{}, pushMany, .{ tc, 0 });
@@ -164,17 +157,16 @@ test "work pushed to a thread's in-tray from two threads is all there" {
     t2.join();
     var seen: [2 * pushes_per_thread]bool = @splat(false);
     var n: usize = 0;
-    var head = tc.*.gc_in_tray;
-    tc.*.gc_in_tray = null;
-    while (head != null) {
-        const next = head.*.next;
-        const h: *c.MVMGCPassedWork = head;
+    var head: ?*c.MVMGCPassedWork = tc.gc_in_tray;
+    tc.gc_in_tray = null;
+    while (head) |h| {
+        const next = h.next;
         const tag = @intFromPtr(h.items[0]);
         try std.testing.expect(tag >= 1 and tag <= seen.len);
         try std.testing.expect(!seen[tag - 1]);
         seen[tag - 1] = true;
         n += 1;
-        c.MVM_free(head);
+        c.MVM_free(h);
         head = next;
     }
     try std.testing.expectEqual(@as(usize, 2 * pushes_per_thread), n);
@@ -183,34 +175,75 @@ test "work pushed to a thread's in-tray from two threads is all there" {
 test "nursery doubles after a run that filled it, up to MVM_NURSERY_SIZE" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     // The main thread starts at the maximum, later threads at
     // MVM_NURSERY_THREAD_START unless the maximum is smaller (collect.c:24-30).
-    try std.testing.expectEqual(@as(u32, @min(c.MVM_NURSERY_SIZE, c.MVM_NURSERY_THREAD_START)), c.MVM_gc_new_thread_nursery_size(instance));
+    try std.testing.expectEqual(@as(u32, @min(c.MVM_NURSERY_SIZE, c.MVM_NURSERY_THREAD_START)), collect.newThreadNurserySize(instance));
+    try std.testing.expectEqual(collect.newThreadNurserySize(instance), c.MVM_gc_new_thread_nursery_size(instance));
     instance.*.main_thread = null;
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), c.MVM_gc_new_thread_nursery_size(instance));
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), collect.newThreadNurserySize(instance));
+    try std.testing.expectEqual(collect.newThreadNurserySize(instance), c.MVM_gc_new_thread_nursery_size(instance));
     instance.*.main_thread = tc;
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.*.nursery_tospace_size);
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.nursery_tospace_size);
     settle(tc);
     // Pretend the current tospace is half the maximum (its buffer is the
     // full size, so nothing is overrun). The run's blame falls on this
     // thread, so its next tospace doubles (collect.c:90-93) to the maximum,
     // and the fromspace is the half-size space it gave up.
-    tc.*.nursery_tospace_size = c.MVM_NURSERY_SIZE / 2;
+    tc.nursery_tospace_size = c.MVM_NURSERY_SIZE / 2;
     c.MVM_gc_enter_from_allocator(tc);
     try std.testing.expect(instance.*.thread_to_blame_for_gc == tc);
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE / 2), tc.*.nursery_fromspace_size);
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.*.nursery_tospace_size);
-    try std.testing.expectEqual(@intFromPtr(tc.*.nursery_tospace) + c.MVM_NURSERY_SIZE, @intFromPtr(tc.*.nursery_alloc_limit));
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE / 2), tc.nursery_fromspace_size);
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.nursery_tospace_size);
+    try std.testing.expectEqual(@intFromPtr(tc.nursery_tospace) + c.MVM_NURSERY_SIZE, @intFromPtr(tc.nursery_alloc_limit));
     // At the maximum it stays there. This run's old fromspace was labelled
     // half size, so it is freed and a full one allocated (collect.c:100-103);
     // the next run finds the sizes equal and reuses the old fromspace as
     // the new tospace (collect.c:97-98).
     c.MVM_gc_enter_from_allocator(tc);
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.*.nursery_tospace_size);
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.*.nursery_fromspace_size);
-    const from = tc.*.nursery_fromspace;
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.nursery_tospace_size);
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.nursery_fromspace_size);
+    const from = tc.nursery_fromspace;
     c.MVM_gc_enter_from_allocator(tc);
-    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.*.nursery_tospace_size);
-    try std.testing.expectEqual(from, tc.*.nursery_tospace);
+    try std.testing.expectEqual(@as(u32, c.MVM_NURSERY_SIZE), tc.nursery_tospace_size);
+    try std.testing.expectEqual(from, tc.nursery_tospace);
+}
+
+test "work passing grows the target list one entry at a time" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: Tc = instance.*.main_thread;
+    var wtp: collect.WorkToPass = .{};
+    // Stand-in collectables owned by thread ids 2, 3 and 4: passWorkItem
+    // reads only the owner, and with fewer than MVM_GC_PASS_WORK_SIZE items
+    // per target nothing is pushed to an in-tray (collect.c:485-489).
+    var heads: [3]c.MVMCollectable = @splat(std.mem.zeroes(c.MVMCollectable));
+    var slots: [3]?*c.MVMCollectable = undefined;
+    for (&heads, &slots, 2..) |*h, *s, owner| {
+        h.owner = @intCast(owner);
+        s.* = h;
+    }
+    // Each new target adds one entry, and the list holds exactly its
+    // entries, as the C's realloc to num_target_threads * sizeof(ThreadWork)
+    // (collect.c:467-474).
+    for (&slots, 1..) |*s, n| {
+        collect.passWorkItem(tc, &wtp, s);
+        try std.testing.expectEqual(n, wtp.targets.items.len);
+        try std.testing.expectEqual(n, wtp.targets.capacity);
+        const tw = wtp.targets.items[n - 1];
+        try std.testing.expectEqual(@as(u32, @intCast(n + 1)), tw.target);
+        const work = tw.work orelse return error.TestUnexpectedResult;
+        try std.testing.expectEqual(@as(u32, 1), work.num_items);
+        try std.testing.expectEqual(@intFromPtr(s), @intFromPtr(work.items[0]));
+    }
+    // A second item for a known target joins its work block; the list does
+    // not grow.
+    collect.passWorkItem(tc, &wtp, &slots[1]);
+    try std.testing.expectEqual(@as(usize, 3), wtp.targets.items.len);
+    try std.testing.expectEqual(@as(usize, 3), wtp.targets.capacity);
+    try std.testing.expectEqual(@as(u32, 2), wtp.targets.items[1].work.?.num_items);
+    try std.testing.expectEqual(@intFromPtr(&slots[1]), @intFromPtr(wtp.targets.items[1].work.?.items[1]));
+    // Clean up without passing: these thread ids do not exist.
+    for (wtp.targets.items) |tw| c.MVM_free(tw.work);
+    wtp.targets.deinit(moar.mvm_allocator);
 }

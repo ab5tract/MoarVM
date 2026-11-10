@@ -128,3 +128,34 @@ test "asObject, asStable, asFrame and asCol view the same address" {
     // `c.MVMSTable`'s header is its collectable.
     try std.testing.expect(view.asCol(st) == &st.header);
 }
+
+test "kind follows the C flag precedence" {
+    // The C tests the flags in sequence (collect.c:364-398, 565-593,
+    // 688-734): type object, then STable, then frame, else object. Every
+    // combination of the three bits, with the other flags1 bits set or not.
+    for (0..16) |bits| {
+        var header = std.mem.zeroes(c.MVMCollectable);
+        const f = view.flags1(&header);
+        f.type_object = bits & 1 != 0;
+        f.stable = bits & 2 != 0;
+        f.frame = bits & 4 != 0;
+        if (bits & 8 != 0) {
+            f.has_object_id = true;
+            f.serialization_index_allocated = true;
+            f.never_repossess = true;
+        }
+        const expected: view.Kind = if (bits & 1 != 0) .type_object else if (bits & 2 != 0) .stable else if (bits & 4 != 0) .frame else .object;
+        try std.testing.expectEqual(expected, view.kind(&header));
+    }
+
+    // Real collectables of each kind.
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: view.Tc = instance.*.main_thread;
+    const type_object: view.Object = instance.*.boot_types.BOOTArray;
+    try std.testing.expectEqual(view.Kind.type_object, view.kind(view.asCol(type_object)));
+    try std.testing.expectEqual(view.Kind.stable, view.kind(view.asCol(type_object.st)));
+    try std.testing.expectEqual(view.Kind.frame, view.kind(view.asCol(c.MVM_gc_allocate_frame(tc))));
+    const obj = c.MVM_repr_alloc_init(tc, type_object);
+    try std.testing.expectEqual(view.Kind.object, view.kind(view.asCol(obj)));
+}
