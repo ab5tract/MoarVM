@@ -278,17 +278,22 @@ fn mvmResize(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) b
     return false;
 }
 
-fn mvmRemap(_: *anyopaque, _: []u8, _: std.mem.Alignment, _: usize, _: usize) ?[*]u8 {
-    return null;
+fn mvmRemap(_: *anyopaque, memory: []u8, alignment: std.mem.Alignment, new_len: usize, _: usize) ?[*]u8 {
+    // As mvmAlloc: MVM_realloc keeps malloc alignment (16 bytes) only.
+    if (alignment.compare(.gt, .@"16")) return null;
+    // MVM_realloc may move the block, which remap allows; it panics rather
+    // than returning null.
+    const p = c.MVM_realloc(memory.ptr, new_len) orelse return null;
+    return @ptrCast(p);
 }
 
 fn mvmFree(_: *anyopaque, memory: []u8, _: std.mem.Alignment, _: usize) void {
     c.MVM_free(memory.ptr);
 }
 
-/// Allocator over MVM_malloc/MVM_free. Resize and remap are unsupported, so
-/// callers reallocate by alloc-copy-free. Allocations are at most 16-byte
-/// aligned.
+/// Allocator over MVM_malloc/MVM_realloc/MVM_free. Remap is MVM_realloc (the
+/// block may move); resize is unsupported, since MVM_realloc cannot promise
+/// to stay in place. Allocations are at most 16-byte aligned.
 pub const mvm_allocator: std.mem.Allocator = .{
     .ptr = undefined,
     .vtable = &.{
@@ -474,6 +479,29 @@ test "mvm_allocator allocates and frees through MVM_malloc" {
     defer mvm_allocator.free(buf);
     @memset(buf, 0xAB);
     try std.testing.expectEqual(@as(u8, 0xAB), buf[4095]);
+}
+
+test "an ArrayList over mvm_allocator grows through remap one entry at a time" {
+    // ensureTotalCapacityPrecise tries remap first (std/array_list.zig), so
+    // with remap over MVM_realloc each growth is one MVM_realloc to exactly
+    // len + 1 entries, the C's realloc sequence (collect.c:468-470).
+    var list: std.ArrayList([2]usize) = .empty;
+    defer list.deinit(mvm_allocator);
+    for (1..12) |n| {
+        list.ensureTotalCapacityPrecise(mvm_allocator, list.items.len + 1) catch unreachable;
+        list.appendAssumeCapacity(.{ n, n });
+        try std.testing.expectEqual(n, list.items.len);
+        try std.testing.expectEqual(n, list.capacity);
+    }
+    // The contents survive the moves.
+    for (list.items, 1..) |e, n| try std.testing.expectEqual([2]usize{ n, n }, e);
+    // Remap is MVM_realloc: it hands back a usable block of the new size.
+    const buf = try mvm_allocator.alloc(u8, 16);
+    @memset(buf, 0x5A);
+    const grown = mvm_allocator.remap(buf, 4096) orelse return error.TestUnexpectedResult;
+    defer mvm_allocator.free(grown);
+    try std.testing.expectEqual(@as(usize, 4096), grown.len);
+    try std.testing.expectEqual(@as(u8, 0x5A), grown[15]);
 }
 
 test "trycas swaps pointer slots" {
