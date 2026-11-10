@@ -392,7 +392,7 @@ evidence is in the plan's "Acceptance",
 `traces/llm/plans/2026-11-04-zig-gc-port.md`). With `-Dzig-gc=false` the
 C collector is compiled with the rest of the Zig implementations (the Zig
 hash engine among them): that build is the control every GC comparison is
-judged against, and it is built from the tree. Without `-Dzig-gc=true` the
+judged against, and it is built from the tree. With `-Dzig-gc=false` the
 `gc-test` root is not registered, and `src/zig/root.zig` imports the
 `gc/` files only under `@import("zig_options").zig_gc`. With
 `-Dzig-impl=false` everything is C. The Perl build (`--zig=PATH`) always
@@ -430,20 +430,8 @@ typed `GcStatus`. `add`, `incr` and `decr` take only `usize`-wide slots,
 as the C's `AO_t`.
 
 The native rewrite (`traces/llm/specs/2026-11-09-zig-native-gc-design.md`)
-gives the ports Zig shapes without changing a decision. `src/zig/gc/view.zig`
-holds the typed pointers the ports use in place of translate-c's `[*c]T`
-(`Tc`, `Col`, `ColSlot`, `Object`, `STable`, `Frame`, `Worklist`, `Gen2`,
-`Thread`, `Instance`), `flags1`/`flags2` as `packed struct(u8)` views
-(`view.flags2(col).second_gen`), `gc_status` as the `GcStatus` packed
-word, and the view changes `asCol`, `asObject`, `asStable` and `asFrame`,
-the only pointer casts between a collectable and what it heads; at
-`-Dgc-debug=1` and up `asStable` and `asFrame` panic when the flag that
-justifies the view is clear. Every bit and value is asserted at comptime
-against the C constants. In a rewritten file each ported function is a
-`pub fn` with Zig types, callable from Zig, and its `MVM_gc_…` export is
-a thin `callconv(.c)` wrapper (`nameExport`) with the translate-c types
-the C callers see, which converts and calls it; `worklist.zig` and
-`allocation.zig` are the first two. Unit
+gave every port Zig shapes without changing a decision; "Native shapes"
+below describes them for a reader of the code. Unit
 tests: `src/zig/gc/test/`, run by `zig build unit-test` in the
 libmoar-linked `gc-test` binary (they boot a VM), plus `atomic_test.zig`
 on the host. Some tests apply only at one debug level and skip at the other,
@@ -457,6 +445,100 @@ this, and reach the Zig side through translate-c (`c.MVM_GC_DEBUG`,
 |---|---|---|
 | `-Dgc-debug=` | `0` | `MVM_GC_DEBUG` (`src/gc/debug.h`). 0: no checks, and the release code path. 1: checks on reference assignments and worklist adds (`MVM_ASSERT_NOT_FROMSPACE`, the gen2 free-list check, `MVM_CHECK_CALLER_CHAIN`), plus the per-collection log and the RSS pin below. 2: also checks on every object register access (slow). 3: also a collection on every nursery allocation, and each collected thread's from-space filled with `0xef` once its uncopied objects are freed. In Zig each level is a `comptime` block, so nothing of it is compiled at 0. A debug level changes `MVMThreadContext`'s layout (`in_spesh` and the log counters exist only under it), so compare only builds of the same level |
 | `-Dnursery-size=` | `16777216` | `MVM_NURSERY_SIZE`, the maximum nursery in bytes; small values stress the collector (the stress builds use 524288) |
+
+### Native shapes
+
+The switch. `-Dzig-gc` (default `true`, needs `-Dzig-impl=true`) chooses
+the collector. With `true` the `[zig-gc]` section of `build/sources.list`
+is applied: each C file of `src/gc/` is replaced by its Zig file in
+`src/zig/gc/`. With `false` the section is not applied and `src/gc/` is
+compiled as C, with everything else unchanged (the Zig hash engine and the
+other Zig implementations stay). Both builds export the same symbol set, so the
+choice is invisible to every caller, and the `false` build is the control
+the oracle, the A/B and the suites compare against. `src/zig/root.zig`
+imports `gc/` only when the option is on, and the `gc-test` unit-test root
+exists only then.
+
+Typed pointers. The ports do not pass translate-c's `[*c]T` around.
+`src/zig/gc/view.zig` names the non-null single-item pointers they use
+instead: `Tc`, `Instance`, `Col` (a collectable), `ColSlot` (the address of
+a collectable slot, `*?*MVMCollectable`, which is what a worklist entry and a
+temp root hold), `Object`, `STable`, `Frame`, `Worklist`, `Gen2` and
+`Thread`. Where the C allows NULL the Zig type says so with `?`, and the
+C pointer is checked or unwrapped at the one place it enters Zig.
+
+Flag and status views. `flags1` and `flags2` of `MVMCollectable` are read
+and written through `packed struct(u8)` views (`view.flags2(col).second_gen
+= true`, `view.flags1(col).stable`), and `tc->gc_status` through the packed
+word `GcStatus` (a `Status` and a `Suspend` field, the latter named
+`suspend_state` because `suspend` is a Zig keyword, and non-exhaustive
+because the C compares the masked bits without range-checking them, so a
+word with bit 3 alone reads as the C reads it instead of being illegal
+behaviour at the `@bitCast`). The status types live in `atomic.zig`,
+whose host tests cannot import the C headers, and `view.zig` re-exports them;
+`atomic.loadStatus`, `storeStatus` and `casStatus` are the typed atomics on
+it. Every bit and value is asserted at comptime against the C constants, so
+a header change fails the build. `view.kind(col)` gives the kind of a
+collectable in the C's test order (type object, STable, frame, object), and
+`asCol`, `asObject`, `asStable` and `asFrame` are the only pointer casts
+between a collectable and what it heads; at `-Dgc-debug=1` and up
+`asStable` and `asFrame` panic when the flag that justifies the view is
+clear.
+
+The wrapper pattern. Each ported function is a `pub fn` with Zig types
+(`worklist.create(tc: Tc, include_gen2: bool) Worklist`), and its
+`MVM_gc_...` symbol is a separate `callconv(.c)` function named
+`<name>Export` with the translate-c types the C callers see, which
+converts its arguments, calls the Zig function and converts the result
+back (a `?*anyopaque` where the C returns NULL, as `objectid.useAllocation`).
+The `@export`s sit at the end of each file, with `.protected` visibility
+under `-Dlto`, and the exported set equals the C collector's (2850 names in
+libmoar either way).
+
+Zig-to-Zig calls. Inside the collector the files call each other's Zig
+functions directly (`orchestrate` calls `collect.collect` and
+`finalize.walkQueues`, `allocation` calls `orchestrate.enterFromAllocator`,
+`wb` calls `roots.gen2Add`), not the C symbols, so the compiler sees and
+can inline across them. The C header inlines the collector itself depends
+on are written out in Zig for the same reason: the temp-root push and pop
+(`moar.root` and its `TempRoot` handle, `roots.h`'s
+`MVM_gc_root_temp_push`/`_pop`) and the one `wb.h` fast path the collector
+calls, `MVM_gc_write_barrier_no_update_referenced` (`wb.noUpdateReferenced`,
+a `pub inline fn`); translate-c's copy of a header inline is
+an ordinary out-of-line function, which the before-profile found on the
+allocation path.
+
+Comptime root tables. The single-field instance and thread-context roots
+of `roots.c` are comptime tables in `roots.zig` (`instance_roots`,
+`thread_roots`) of a slot getter, the heap-snapshot description string and,
+for thread roots, a condition; `inline for` walks them, so the generated
+code is the C's sequence of adds. The order is the C's: it fixes the
+marking order and with it the to-space layout the oracle compares. The
+loops and subsystem calls the C interleaves with the single fields stay
+between table segments, joined with `++`.
+
+Slices. Where the C walks a pointer and a count, the ports take a slice
+of it once (`gen2.sizeClasses`, `roots.gen2List`, `roots.rootSlots`,
+`orchestrate.workList`, the from-space bytes in `collect`) and iterate with
+`for`, keeping the C's index order and its unsigned arithmetic; the
+allocations behind them are still `MVM_malloc`/`MVM_realloc`.
+
+The work passing. `collect.zig`'s `WorkToPass` holds the per-target
+chunks as an `std.ArrayList(ThreadWork)` over `moar.mvm_allocator`, the
+`std.mem.Allocator` whose `alloc`, `remap` and `free` are `MVM_malloc`,
+`MVM_realloc` and `MVM_free`. It grows one entry at a time
+(`ensureTotalCapacityPrecise(len + 1)`), so the sequence of allocator calls
+and sizes is the C's `realloc` of `target_work` by one `ThreadWork`.
+
+The fence. `atomic.fence()` is `MVM_barrier()`, a sequentially consistent
+full fence. Zig has no `@fence`, so it emits what clang emits for
+`atomic_thread_fence(memory_order_seq_cst)`: on x86-64 the identity locked
+read-modify-write `lock orl $0, -64(%rsp)`, which orders like `mfence` but
+costs less (the faithful port's `mfence` at the forwarder-publishing site
+of `processWorklist` was about 15 percent of its profiled gap); `dmb ish`
+on ARM64, `fence rw,rw` on RISC-V, a seq_cst read-modify-write of a private
+word elsewhere. Every other atomic site keeps its operation, its `.seq_cst`
+ordering and a comment naming the C macro and line it replaces.
 
 ### Per-collection log
 
@@ -513,7 +595,9 @@ The machinery is in `tools/bench/gc/` (its `README.md`; every script takes
 - A/B: default builds,
   `tools/bench/gc/ab.sh --base=<prefix>/lib --head=<prefix>/lib --rounds=7 --runs=5 --volume=100000 [--bad-packages] --out=<dir>`
   on the user's `crc-getter.raku`, interleaved, with `summary.md` holding
-  the round medians and the head/base ratios for wall and peak RSS; the
+  the round medians and the head/base ratios for wall and peak RSS;
+  `--head2=<prefix>/lib` adds a third side (the native campaign measured
+  the C control, the faithful port and the native rewrite in one run). The
   rakudo spectest A/B is the main performance gate.
 
 The two prefixes of a pair must have paths of the same length, and both
