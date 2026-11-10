@@ -46,6 +46,7 @@ case $runs in ''|*[!0-9]*) usage "--runs must be a number" ;; esac
 [ -e "$nqp_lib/nqp.moarvm" ] || usage "$nqp_lib/nqp.moarvm missing"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/cleanup.XXXXXX")
+trap 'rm -rf "$work"; exit 130' INT TERM
 progs="running blocked three"
 for p in $progs; do
     if [ -n "$stress" ]; then

@@ -387,6 +387,15 @@ const golden_tc_descriptions = [_][]const u8{
     "Frame referenced for stepping mode",
 };
 
+/// The index of the interp_cu entry of `roots.thread_roots`, found by its
+/// description so a reordering of the table cannot point the test elsewhere.
+const interp_cu_root = blk: {
+    for (roots.thread_roots, 0..) |r, i| {
+        if (std.mem.eql(u8, std.mem.span(r.desc), "Current interpreter compilation unit")) break :blk i;
+    }
+    @compileError("no thread root describes interp_cu");
+};
+
 test "thread roots are added in the C order" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
@@ -401,7 +410,7 @@ test "thread roots are added in the C order" {
     const interp_cu = tc.interp_cu;
     defer tc.interp_cu = interp_cu;
     tc.interp_cu = null;
-    try std.testing.expect(!table[6].when(tc));
+    try std.testing.expect(!table[interp_cu_root].when(tc));
     var cu: ?*c.MVMCompUnit = null;
     tc.interp_cu = @ptrCast(&cu);
 

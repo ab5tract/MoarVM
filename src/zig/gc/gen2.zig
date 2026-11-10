@@ -82,17 +82,11 @@ inline fn sizeClasses(al: Gen2) []SizeClass {
     return al.size_classes[0..BINS];
 }
 
-/// The slice type of a C list field `P` (a pointer to its first element).
-fn List(comptime P: type) type {
-    return []@typeInfo(P).pointer.child;
-}
-
 /// `ptr[0..len]` of a C list field `ptr` with its count `len`, which the C
 /// may hold as NULL with a zero count (a bin never set up, an overflow or
-/// root list freed by transfer): slicing a NULL `[*c]` is not allowed.
-inline fn list(ptr: anytype, len: u32) List(@TypeOf(ptr)) {
-    return if (len == 0) &.{} else ptr[0..len];
-}
+/// root list freed by transfer): slicing a NULL `[*c]` is not allowed
+/// (view.list; the u32 counts widen to its usize).
+const list = view.list;
 
 /// The slots of `size` bytes from `from` up to `to`, in address order, as
 /// the C walks them with `while (cur_ptr < end_ptr) cur_ptr += size`: none

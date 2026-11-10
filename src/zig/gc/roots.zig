@@ -54,10 +54,8 @@ inline fn slot(p: anytype) ColSlot {
 
 /// `ptr[0..len]` of a C list `ptr` with its count `len`, which the C may
 /// hold as NULL with a zero count (a static frame without locals, a callsite
-/// without flags): slicing a NULL `[*c]` is not allowed.
-inline fn list(ptr: anytype, len: usize) []@typeInfo(@TypeOf(ptr)).pointer.child {
-    return if (len == 0) &.{} else ptr[0..len];
-}
+/// without flags): slicing a NULL `[*c]` is not allowed (view.list).
+const list = view.list;
 
 /// A root list of the C (`MVMCollectable ***`: permroots, temproots) as the
 /// slots it holds; the C never stores NULL in one.

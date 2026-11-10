@@ -81,10 +81,9 @@ inline fn logReprId(col: Col) c_int {
 }
 
 /// `ptr[0..len]` of a C list field `ptr` with its count `len`, which the C
-/// may hold as NULL with a zero count: slicing a NULL `[*c]` is not allowed.
-inline fn list(ptr: anytype, len: usize) []@typeInfo(@TypeOf(ptr)).pointer.child {
-    return if (len == 0) &.{} else ptr[0..len];
-}
+/// may hold as NULL with a zero count: slicing a NULL `[*c]` is not allowed
+/// (view.list).
+const list = view.list;
 
 /// The bytes of a collectable, for the copies.
 inline fn bytesOf(col: Col, size: usize) []u8 {

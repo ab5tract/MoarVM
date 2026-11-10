@@ -413,8 +413,10 @@ takes `[zig-gc]` with `[zig]`.
 
 The inline fast paths in the headers (`MVM_gc_allocate`, the
 `MVM_gc_worklist_add` macros, `MVM_gc_write_barrier` and `MVM_ASSIGN_REF`,
-the temp-root push and pop) stay C inlines; the Zig ports call the slow
-paths they call. Shared helpers: `src/zig/moar.zig` has `assignRef` (the
+the temp-root push and pop) stay C inlines for their C callers; the Zig
+ports call the slow paths they call, and for the temp-root push and pop
+the Zig allocators use `moar.root` (`TempRoot`), a Zig inline mirroring
+the same `roots.h` code (Ruling R6). Shared helpers: `src/zig/moar.zig` has `assignRef` (the
 `MVM_ASSIGN_REF` macro with its `MVM_GC_DEBUG` checks, through
 `assertNotFromspace`), `worklistAdd` (the `MVM_gc_worklist_add` statement
 macro, which translate-c cannot express, with its debug checks), `root`

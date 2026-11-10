@@ -68,10 +68,12 @@ fn addToFinalizing(tc: Tc, obj: Object) void {
 
 /// (finalize.c:44-72) The queue is compacted in place: entry `i` is read
 /// before `collapse_pos <= i` is written, and the walk never changes
-/// `num_finalize` (dead entries go to the other queue).
+/// `num_finalize` (dead entries go to the other queue). The queue is NULL
+/// with a zero count for every thread that never allocated a finalizable
+/// object, so the walk takes the guarded `view.list`.
 fn walkThreadFinalizeQueue(tc: Tc, gen: Generations) void {
     var collapse_pos: u32 = 0;
-    for (tc.finalize[0..tc.num_finalize]) |entry| {
+    for (view.list(tc.finalize, tc.num_finalize)) |entry| {
         const obj: Object = entry;
         // See if it's dead, taking which generation we've marked into
         // account.

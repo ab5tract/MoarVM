@@ -395,6 +395,9 @@ fn finishGc(tc: Tc, gen: Generations, is_coordinator: bool) void {
 
     // Reset GC status flags. This is also where thread destruction happens,
     // and it needs to happen before we acknowledge this GC run is finished.
+    // The slice is stable across the loop: nothing in the body calls addWork
+    // on tc (only signalAll/enterFromInterrupt do, before runGc), so the C's
+    // per-iteration re-read of gc_work/gc_work_count reads the same.
     for (workList(tc)) |*work| {
         const other: Tc = work.tc;
         const thread_obj: Thread = other.thread_obj;
@@ -701,7 +704,10 @@ fn runGc(tc: Tc, what_to_do: WhatToDo) void {
     const start_time: u64 = if (is_coordinator) c.uv_hrtime() else 0;
 
     // Do GC work for ourselves and any work threads (the count read once,
-    // as the C's `n`).
+    // as the C's `n`). The slice is stable across the loop: nothing in the
+    // body calls addWork on tc (only signalAll/enterFromInterrupt do, before
+    // runGc), so the C's per-iteration re-read of gc_work/gc_work_count reads
+    // the same.
     for (workList(tc)) |*work| {
         const other: Tc = work.tc;
         work.limit = other.nursery_alloc;

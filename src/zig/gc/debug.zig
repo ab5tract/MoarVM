@@ -45,7 +45,8 @@ pub fn findRegion(tc: Tc, ptr: ?*anyopaque) void {
         const gen2: Gen2 = thread_tc.gen2 orelse continue;
         for (gen2.size_classes[0..c.MVM_GEN2_BINS], 0..) |szc, bin| {
             const page_size: usize = @as(usize, c.MVM_GEN2_PAGE_ITEMS) * gen2_mod.sizeOfBin(@intCast(bin));
-            for (szc.pages[0..szc.num_pages]) |page_start| {
+            // NULL with a zero count for a bin never set up: the guarded view.list.
+            for (view.list(szc.pages, szc.num_pages)) |page_start| {
                 if (within(p, page_start, page_size)) {
                     _ = c.printf("In gen2 bin of thread %d\n", thread_id);
                     return;

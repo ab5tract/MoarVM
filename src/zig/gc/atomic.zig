@@ -118,6 +118,8 @@ var fence_word: usize = 0;
 /// hardware orders as a full barrier on the remaining targets.
 pub inline fn fence() void {
     switch (builtin.target.cpu.arch) {
+        // -64(%rsp) is in the SysV red zone, the offset clang uses on this
+        // target; a target without a red zone (Win64, noredzone) would use (%rsp).
         .x86_64 => asm volatile ("lock orl $0, -64(%%rsp)" ::: .{ .memory = true, .cc = true }),
         .x86 => asm volatile ("lock orl $0, (%%esp)" ::: .{ .memory = true, .cc = true }),
         .aarch64, .aarch64_be => asm volatile ("dmb ish" ::: .{ .memory = true }),

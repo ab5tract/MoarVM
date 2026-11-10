@@ -68,7 +68,7 @@ test "presize_for 5000 then 5000 pushes leaves alloc unchanged" {
     try std.testing.expectEqual(alloc, wl.alloc);
 }
 
-test "the C add macro and a Zig pop agree" {
+test "the C add macro and the Zig entry accessor agree" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
     const tc = instance.*.main_thread;

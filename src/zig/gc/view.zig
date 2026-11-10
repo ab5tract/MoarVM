@@ -3,9 +3,11 @@
 //! `flags1`/`flags2` bytes of `MVMCollectable` as packed structs, the
 //! `gc_status` word of `MVMThreadContext` as a typed status, the kind of a
 //! collectable (`kind`, in the C's flag precedence), and the view changes
-//! between a collectable and the object, STable or frame it heads.
-//! The accessors here are the only `@ptrCast(@alignCast(…))` sites of the
-//! ports outside the C ABI. Every layout is the C's, asserted at comptime
+//! between a collectable and the object, STable or frame it heads, and
+//! `list`, the guarded slice of a C list field. view.zig holds the only view
+//! changes between a collectable and what it heads (object, STable, frame,
+//! collectable); the casts on allocator results elsewhere in the ports are
+//! not view changes. Every layout is the C's, asserted at comptime
 //! against the constants of src/6model/6model.h and
 //! src/core/threadcontext.h, so a header change fails the build. A plain
 //! module: it exports nothing.
@@ -13,6 +15,16 @@ const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
 const atomic = @import("atomic.zig");
+
+// ---- C lists -------------------------------------------------------------
+
+/// `ptr[0..len]` of a C list field `ptr` with its count `len`, which the C
+/// may hold as NULL with a zero count: slicing a NULL `[*c]` is not allowed
+/// (safety-checked builds panic on it), so a zero count gives the empty
+/// slice: the walk enters no iteration, like the C's index loop.
+pub inline fn list(ptr: anytype, len: usize) []@typeInfo(@TypeOf(ptr)).pointer.child {
+    return if (len == 0) &.{} else ptr[0..len];
+}
 
 // ---- typed pointers ------------------------------------------------------
 
