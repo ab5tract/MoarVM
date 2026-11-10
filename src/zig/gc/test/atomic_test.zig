@@ -76,9 +76,9 @@ test "works on a pointer slot" {
 }
 
 test "casStatus returns the previous value and swaps only on match" {
-    const none: atomic.GcStatus = .{ .status = .none, .@"suspend" = .none };
-    const interrupt: atomic.GcStatus = .{ .status = .interrupt, .@"suspend" = .none };
-    const unable_requested: atomic.GcStatus = .{ .status = .unable, .@"suspend" = .request };
+    const none: atomic.GcStatus = .{ .status = .none, .suspend_state = .none };
+    const interrupt: atomic.GcStatus = .{ .status = .interrupt, .suspend_state = .none };
+    const unable_requested: atomic.GcStatus = .{ .status = .unable, .suspend_state = .request };
     var slot: usize = 0;
     // Match: the previous value comes back and the slot holds the new one.
     try std.testing.expectEqual(none, atomic.casStatus(&slot, none, interrupt));
@@ -89,8 +89,23 @@ test "casStatus returns the previous value and swaps only on match" {
     // The suspend bits take part in the comparison, as the C compares the word.
     atomic.storeStatus(&slot, unable_requested);
     try std.testing.expectEqual(@as(usize, 6), slot);
-    try std.testing.expectEqual(unable_requested, atomic.casStatus(&slot, .{ .status = .unable, .@"suspend" = .none }, none));
+    try std.testing.expectEqual(unable_requested, atomic.casStatus(&slot, .{ .status = .unable, .suspend_state = .none }, none));
     try std.testing.expectEqual(unable_requested, atomic.loadStatus(&slot));
+}
+
+test "a suspend value the C never writes still reads as a status" {
+    // Bit 3 alone (8) names no MVMSuspendState. The C masks the bits and
+    // compares them, never range-checks them, so the view reads such a word
+    // instead of trapping at the `@bitCast` (Ruling R9); the status bits are
+    // what they are.
+    var slot: usize = 8 | 3;
+    const s = atomic.loadStatus(&slot);
+    try std.testing.expectEqual(atomic.Status.stolen, s.status);
+    try std.testing.expectEqual(@as(u2, 2), @backingInt(s.suspend_state));
+    try std.testing.expect(s.suspend_state != .none and s.suspend_state != .request and s.suspend_state != .suspended);
+    // Written back, the same word.
+    atomic.storeStatus(&slot, s);
+    try std.testing.expectEqual(@as(usize, 11), slot);
 }
 
 test "fence" {

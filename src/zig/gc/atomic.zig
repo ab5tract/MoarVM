@@ -132,8 +132,11 @@ pub inline fn fence() void {
 pub const Status = enum(u2) { none = 0, interrupt = 1, unable = 2, stolen = 3 };
 
 /// `MVMSuspendState` (threadcontext.h): bits 2 and 3 of `tc->gc_status`
-/// (`MVMSUSPENDSTATUS_MASK`, 12); 8 alone is never set.
-pub const Suspend = enum(u2) { none = 0, request = 1, suspended = 3 };
+/// (`MVMSUSPENDSTATUS_MASK`, 12). Non-exhaustive: the C never writes bit 3
+/// alone (2 here), but it compares the masked bits and never range-checks
+/// them, so a word holding that value is read as the C reads it (Ruling R9)
+/// instead of being illegal behaviour at the `@bitCast`.
+pub const Suspend = enum(u2) { none = 0, request = 1, suspended = 3, _ };
 
 /// `tc->gc_status` (an `AO_t`) as the value it is: a GC status and a
 /// suspend state packed in one word. Defined here rather than in `view.zig`
@@ -141,7 +144,11 @@ pub const Suspend = enum(u2) { none = 0, request = 1, suspended = 3 };
 /// `view.zig` re-exports it and asserts it against the C constants.
 pub const GcStatus = packed struct(usize) {
     status: Status,
-    @"suspend": Suspend,
+    /// The `MVMSuspendState` bits; `.none` by default, so `.{ .status = .none }`
+    /// is the whole-word `MVMGCStatus_NONE` the C compares against.
+    suspend_state: Suspend = .none,
+    /// The bits above the suspend state, which the C's whole-word
+    /// comparisons and `switch`es see too; zero in every value the C writes.
     _pad: @Int(.unsigned, @bitSizeOf(usize) - 4) = 0,
 };
 

@@ -131,7 +131,7 @@ comptime {
     std.debug.assert(@backingInt(Status.stolen) == c.MVMGCStatus_STOLEN);
     const word = struct {
         fn of(s: Suspend) usize {
-            return @bitCast(GcStatus{ .status = .none, .@"suspend" = s });
+            return @bitCast(GcStatus{ .status = .none, .suspend_state = s });
         }
     }.of;
     std.debug.assert(word(.none) == c.MVMSuspendState_NONE);
@@ -139,7 +139,7 @@ comptime {
     std.debug.assert(word(.suspended) == c.MVMSuspendState_SUSPENDED);
     std.debug.assert(word(.suspended) == c.MVMSUSPENDSTATUS_MASK);
     // The status is the bits below the mask.
-    std.debug.assert(@as(usize, @bitCast(GcStatus{ .status = .stolen, .@"suspend" = .none })) == c.MVMSUSPENDSTATUS_MASK >> 2);
+    std.debug.assert(@as(usize, @bitCast(GcStatus{ .status = .stolen, .suspend_state = .none })) == c.MVMSUSPENDSTATUS_MASK >> 2);
 }
 
 /// `&tc->gc_status`, for the typed atomics (`atomic.loadStatus` and friends).

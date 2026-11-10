@@ -95,12 +95,12 @@ test "flag views round-trip every MVM_CF_ constant" {
 }
 
 test "GcStatus round-trips the C constants" {
-    try std.testing.expectEqual(@as(usize, 0), @as(usize, @bitCast(view.GcStatus{ .status = .none, .@"suspend" = .none })));
-    try std.testing.expectEqual(@as(usize, 5), @as(usize, @bitCast(view.GcStatus{ .status = .interrupt, .@"suspend" = .request })));
-    try std.testing.expectEqual(@as(usize, 14), @as(usize, @bitCast(view.GcStatus{ .status = .unable, .@"suspend" = .suspended })));
+    try std.testing.expectEqual(@as(usize, 0), @as(usize, @bitCast(view.GcStatus{ .status = .none, .suspend_state = .none })));
+    try std.testing.expectEqual(@as(usize, 5), @as(usize, @bitCast(view.GcStatus{ .status = .interrupt, .suspend_state = .request })));
+    try std.testing.expectEqual(@as(usize, 14), @as(usize, @bitCast(view.GcStatus{ .status = .unable, .suspend_state = .suspended })));
     const s: view.GcStatus = @bitCast(@as(usize, c.MVMGCStatus_STOLEN | c.MVMSuspendState_SUSPEND_REQUEST));
     try std.testing.expectEqual(view.Status.stolen, s.status);
-    try std.testing.expectEqual(view.Suspend.request, s.@"suspend");
+    try std.testing.expectEqual(view.Suspend.request, s.suspend_state);
 
     // The slot of a running thread: no interrupt, no suspend.
     const instance = c.MVM_vm_create_instance();
@@ -109,7 +109,7 @@ test "GcStatus round-trips the C constants" {
     try std.testing.expect(view.gcStatus(tc) == &tc.gc_status);
     const now = atomic.loadStatus(view.gcStatus(tc));
     try std.testing.expectEqual(view.Status.none, now.status);
-    try std.testing.expectEqual(view.Suspend.none, now.@"suspend");
+    try std.testing.expectEqual(view.Suspend.none, now.suspend_state);
 }
 
 test "asObject, asStable, asFrame and asCol view the same address" {

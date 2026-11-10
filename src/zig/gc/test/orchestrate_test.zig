@@ -4,14 +4,28 @@
 //! suspend requests of global destruction, and the debug-only RSS
 //! override of the full-collection decision. The two-thread test waits only
 //! on observable state (an atomic phase counter and `gc_status`), never on
-//! time.
+//! time. The status is read and written through the typed view
+//! (`view.GcStatus`), as the port reads it.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const atomic = @import("../atomic.zig");
+const view = @import("../view.zig");
 const orchestrate = @import("../orchestrate.zig");
 
-const Tc = [*c]c.MVMThreadContext;
+const Tc = view.Tc;
+const Thread = view.Thread;
 const Object = c.MVMObject;
+const GcStatus = view.GcStatus;
+
+// The states the tests set and expect, as the C names them.
+const none: GcStatus = .{ .status = .none };
+const interrupt: GcStatus = .{ .status = .interrupt };
+const unable: GcStatus = .{ .status = .unable };
+const stolen: GcStatus = .{ .status = .stolen };
+const interrupt_requested: GcStatus = .{ .status = .interrupt, .suspend_state = .request };
+const unable_requested: GcStatus = .{ .status = .unable, .suspend_state = .request };
+const unable_suspended: GcStatus = .{ .status = .unable, .suspend_state = .suspended };
 
 /// From src/zig/test/layout_probe.c: the C compiler's view of
 /// MVMDebugServerData, which translate-c leaves opaque.
@@ -30,72 +44,77 @@ test "the MVMDebugServerData mirror has the C compiler's layout" {
     try std.testing.expectEqual(moar_probe_offsetof_debugserver_debugspam_protocol(), @offsetOf(D, "debugspam_protocol"));
 }
 
-fn seq(instance: [*c]c.MVMInstance) c.AO_t {
-    return @atomicLoad(c.AO_t, &instance.*.gc_seq_number, .seq_cst);
+fn seq(instance: view.Instance) usize {
+    return atomic.load(&instance.gc_seq_number);
 }
 
-fn gcStatus(tc: Tc) c.AO_t {
-    return @atomicLoad(c.AO_t, &tc.*.gc_status, .seq_cst);
+fn status(tc: Tc) GcStatus {
+    return atomic.loadStatus(view.gcStatus(tc));
+}
+
+fn setStatus(tc: Tc, s: GcStatus) void {
+    atomic.storeStatus(view.gcStatus(tc), s);
 }
 
 fn inTospace(tc: Tc, p: anytype) bool {
     const a = @intFromPtr(p);
-    const lo = @intFromPtr(tc.*.nursery_tospace);
-    return a >= lo and a < lo + tc.*.nursery_tospace_size;
+    const lo = @intFromPtr(tc.nursery_tospace);
+    return a >= lo and a < lo + tc.nursery_tospace_size;
 }
 
 /// A second registered thread, as MVM_thread_new and MVM_thread_run set one
-/// up (src/core/threads.c), without its libuv thread. `thread` must be a
+/// up (src/core/threads.c), without its libuv thread. `slot` must be a
 /// temporary root of the caller while collections run.
-fn registerThread(tc: Tc, thread: *[*c]c.MVMThread) Tc {
-    const instance = tc.*.instance;
-    thread.* = @ptrCast(@alignCast(c.MVM_repr_alloc_init(tc, instance.*.Thread)));
-    const child_tc = c.MVM_tc_create(tc, instance);
-    child_tc.*.thread_obj = thread.*;
-    child_tc.*.thread_id = @truncate(1 + @atomicRmw(c.AO_t, &instance.*.next_user_thread_id, .Add, 1, .seq_cst));
-    thread.*.*.body.tc = child_tc;
-    thread.*.*.body.thread_id = child_tc.*.thread_id;
-    c.uv_mutex_lock(&instance.*.mutex_threads);
-    c.MVM_gc_write_barrier(tc, &thread.*.*.common.header, @ptrCast(instance.*.threads));
-    thread.*.*.body.next = instance.*.threads;
-    instance.*.threads = thread.*;
-    thread.*.*.body.stage = c.MVM_thread_stage_started;
-    c.uv_mutex_unlock(&instance.*.mutex_threads);
+fn registerThread(tc: Tc, slot: *?Thread) Tc {
+    const instance: view.Instance = tc.instance;
+    const thread: Thread = @ptrCast(@alignCast(c.MVM_repr_alloc_init(tc, instance.Thread)));
+    slot.* = thread;
+    const child_tc: Tc = c.MVM_tc_create(tc, instance);
+    child_tc.thread_obj = thread;
+    child_tc.thread_id = @truncate(1 + atomic.incr(&instance.next_user_thread_id));
+    thread.body.tc = child_tc;
+    thread.body.thread_id = child_tc.thread_id;
+    c.uv_mutex_lock(&instance.mutex_threads);
+    c.MVM_gc_write_barrier(tc, &thread.common.header, @ptrCast(instance.threads));
+    thread.body.next = instance.threads;
+    instance.threads = thread;
+    thread.body.stage = c.MVM_thread_stage_started;
+    c.uv_mutex_unlock(&instance.mutex_threads);
     return child_tc;
 }
 
 test "a single thread's collection advances gc_seq_number by one and returns status NONE" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     const s0 = seq(instance);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
+    try std.testing.expectEqual(none, status(tc));
     orchestrate.enterFromAllocator(tc);
     try std.testing.expectEqual(s0 + 1, seq(instance));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
+    try std.testing.expectEqual(none, status(tc));
     // The protocol's end state (orchestrate.c:312-338): the start, finish
     // and ack counts are back at zero, the run is marked completed, the
     // in-trays are agreed clear, and the VM is no longer in GC.
-    try std.testing.expectEqual(@as(c.AO_t, 0), @atomicLoad(c.AO_t, &instance.*.gc_start, .seq_cst));
-    try std.testing.expectEqual(@as(c.AO_t, 0), @atomicLoad(c.AO_t, &instance.*.gc_finish, .seq_cst));
-    try std.testing.expectEqual(@as(c.AO_t, 0), @atomicLoad(c.AO_t, &instance.*.gc_ack, .seq_cst));
-    try std.testing.expectEqual(@as(c.AO_t, 1), @atomicLoad(c.AO_t, &instance.*.gc_completed, .seq_cst));
-    try std.testing.expectEqual(@as(c.AO_t, 0), @atomicLoad(c.AO_t, &instance.*.gc_intrays_clearing, .seq_cst));
+    try std.testing.expectEqual(@as(usize, 0), atomic.load(&instance.*.gc_start));
+    try std.testing.expectEqual(@as(usize, 0), atomic.load(&instance.*.gc_finish));
+    try std.testing.expectEqual(@as(usize, 0), atomic.load(&instance.*.gc_ack));
+    try std.testing.expectEqual(@as(usize, 1), atomic.load(&instance.*.gc_completed));
+    try std.testing.expectEqual(@as(usize, 0), atomic.load(&instance.*.gc_intrays_clearing));
     try std.testing.expectEqual(@as(c.MVMuint32, 0), instance.*.in_gc);
     try std.testing.expect(instance.*.thread_to_blame_for_gc == tc);
     // The main thread is its own first work item (orchestrate.c:593).
-    try std.testing.expect(tc.*.gc_work_count >= 1);
-    try std.testing.expect(tc.*.gc_work[0].tc == tc);
+    try std.testing.expect(tc.gc_work_count >= 1);
+    try std.testing.expect(tc.gc_work[0].tc == tc);
     // A second run advances the sequence number by one again.
     orchestrate.enterFromAllocator(tc);
     try std.testing.expectEqual(s0 + 2, seq(instance));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
+    try std.testing.expectEqual(none, status(tc));
 }
 
 test "a collection keeps a coordinator's pending suspend request" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     // As global destruction leaves a thread it asked after the thread won
     // the gc_start election. signal_all counts it as already interrupted
     // (orchestrate.c:44), so the run goes on with the coordinator's own
@@ -103,38 +122,53 @@ test "a collection keeps a coordinator's pending suspend request" {
     // keeps that state (orchestrate.c:285-286) instead of producing
     // NONE | SUSPEND_REQUEST. The plain INTERRUPT case, reset to NONE, is
     // the test above.
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST, .seq_cst);
+    setStatus(tc, interrupt_requested);
     const s0 = seq(instance);
     orchestrate.enterFromAllocator(tc);
     try std.testing.expectEqual(s0 + 1, seq(instance));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(tc));
+    try std.testing.expectEqual(interrupt_requested, status(tc));
     // Back to running, so the instance can be destroyed normally.
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_NONE, .seq_cst);
+    setStatus(tc, none);
 }
 
 test "mark_thread_blocked then unblocked round-trips through UNABLE" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.MVMint32, 0), orchestrate.isThreadBlocked(tc));
+    const tc: Tc = instance.*.main_thread;
+    try std.testing.expectEqual(none, status(tc));
+    try std.testing.expect(!orchestrate.isThreadBlocked(tc));
     // NONE -> UNABLE (orchestrate.c:348).
     orchestrate.markThreadBlocked(tc);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.MVMint32, 1), orchestrate.isThreadBlocked(tc));
+    try std.testing.expectEqual(unable, status(tc));
+    try std.testing.expect(orchestrate.isThreadBlocked(tc));
     // UNABLE -> NONE (orchestrate.c:371).
     orchestrate.markThreadUnblocked(tc);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.MVMint32, 0), orchestrate.isThreadBlocked(tc));
+    try std.testing.expectEqual(none, status(tc));
+    try std.testing.expect(!orchestrate.isThreadBlocked(tc));
     // is_thread_blocked looks at the status bits only (orchestrate.c:423):
     // STOLEN counts as blocked, a suspend request on UNABLE does not change it.
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_STOLEN, .seq_cst);
-    try std.testing.expectEqual(@as(c.MVMint32, 1), orchestrate.isThreadBlocked(tc));
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST, .seq_cst);
-    try std.testing.expectEqual(@as(c.MVMint32, 1), orchestrate.isThreadBlocked(tc));
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_INTERRUPT, .seq_cst);
-    try std.testing.expectEqual(@as(c.MVMint32, 0), orchestrate.isThreadBlocked(tc));
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_NONE, .seq_cst);
+    setStatus(tc, stolen);
+    try std.testing.expect(orchestrate.isThreadBlocked(tc));
+    setStatus(tc, unable_requested);
+    try std.testing.expect(orchestrate.isThreadBlocked(tc));
+    setStatus(tc, interrupt);
+    try std.testing.expect(!orchestrate.isThreadBlocked(tc));
+    setStatus(tc, none);
+}
+
+test "is_thread_blocked reads the status bits whatever the suspend bits hold" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: Tc = instance.*.main_thread;
+    // The C masks with MVMGCSTATUS_MASK (orchestrate.c:423), so bit 3 set
+    // alone above the status, a value no MVMSuspendState names, changes
+    // nothing: the port reads it through the non-exhaustive view (Ruling
+    // R9) instead of trapping on it.
+    atomic.store(view.gcStatus(tc), c.MVMGCStatus_STOLEN | 8);
+    try std.testing.expect(orchestrate.isThreadBlocked(tc));
+    atomic.store(view.gcStatus(tc), c.MVMGCStatus_INTERRUPT | 8);
+    try std.testing.expect(!orchestrate.isThreadBlocked(tc));
+    setStatus(tc, none);
 }
 
 const Stolen = struct {
@@ -156,7 +190,7 @@ const Stolen = struct {
 fn stolenThread(s: *Stolen) void {
     const tc = s.tc;
     c.MVM_set_running_threads_context(tc);
-    s.obj = c.MVM_repr_alloc_init(tc, tc.*.instance.*.boot_types.BOOTArray);
+    s.obj = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTArray);
     s.born = s.obj;
     c.MVM_gc_root_temp_push(tc, @ptrCast(&s.obj));
     // Blocked (NONE -> UNABLE) while the main thread collects: the
@@ -170,15 +204,15 @@ fn stolenThread(s: *Stolen) void {
     s.waitFor(4);
     // Exit as src/core/threads.c start_thread does: exited, then blocked,
     // so later collections clear the nursery and destroy the context.
-    @atomicStore(c.AO_t, &tc.*.thread_obj.*.body.stage, c.MVM_thread_stage_exited, .seq_cst);
+    atomic.store(&tc.thread_obj.*.body.stage, c.MVM_thread_stage_exited);
     orchestrate.markThreadBlocked(tc);
 }
 
 test "a blocked thread's collection is stolen by the coordinator" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
-    var thread: [*c]c.MVMThread = null;
+    const tc: Tc = instance.*.main_thread;
+    var thread: ?Thread = null;
     c.MVM_gc_root_temp_push(tc, @ptrCast(&thread));
     defer c.MVM_gc_root_temp_pop(tc);
     const child_tc = registerThread(tc, &thread);
@@ -198,10 +232,10 @@ test "a blocked thread's collection is stolen by the coordinator" {
     var shared: Stolen = .{ .tc = child_tc };
     const t = try std.Thread.spawn(.{}, stolenThread, .{&shared});
     shared.waitFor(1);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE), gcStatus(child_tc));
+    try std.testing.expectEqual(unable, status(child_tc));
     const born = shared.born.?;
     try std.testing.expect(inTospace(child_tc, born));
-    try std.testing.expectEqual(child_tc.*.thread_id, born.header.owner);
+    try std.testing.expectEqual(child_tc.thread_id, born.header.owner);
 
     // The main thread's run: the blocked thread is signalled (orchestrate.c:52,
     // UNABLE -> STOLEN), its work added to the coordinator's list, collected
@@ -209,11 +243,11 @@ test "a blocked thread's collection is stolen by the coordinator" {
     const s0 = seq(instance);
     orchestrate.enterFromAllocator(tc);
     try std.testing.expectEqual(s0 + 1, seq(instance));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE), gcStatus(child_tc));
+    try std.testing.expectEqual(none, status(tc));
+    try std.testing.expectEqual(unable, status(child_tc));
     var stolen_in_work = false;
-    for (0..tc.*.gc_work_count) |i| {
-        if (tc.*.gc_work[i].tc == child_tc) stolen_in_work = true;
+    for (tc.gc_work[0..tc.gc_work_count]) |w| {
+        if (w.tc == child_tc) stolen_in_work = true;
     }
     try std.testing.expect(stolen_in_work);
     // Its object was moved: a nursery copy in the second thread's new
@@ -221,9 +255,9 @@ test "a blocked thread's collection is stolen by the coordinator" {
     const moved = shared.obj.?;
     try std.testing.expect(moved != born);
     try std.testing.expect(inTospace(child_tc, moved));
-    try std.testing.expect(moved.header.flags2 & c.MVM_CF_NURSERY_SEEN != 0);
-    try std.testing.expectEqual(child_tc.*.thread_id, moved.header.owner);
-    try std.testing.expect(born.header.flags2 & c.MVM_CF_FORWARDER_VALID != 0);
+    try std.testing.expect(view.flags2(&moved.header).nursery_seen);
+    try std.testing.expectEqual(child_tc.thread_id, moved.header.owner);
+    try std.testing.expect(view.flags2(&born.header).forwarder_valid);
     try std.testing.expectEqual(@intFromPtr(moved), @intFromPtr(born.header.sc_forward_u.forwarder));
 
     if (has_log) {
@@ -234,7 +268,7 @@ test "a blocked thread's collection is stolen by the coordinator" {
         const n = c.fread(&buf, 1, buf.len, log);
         try std.testing.expect(n > 0 and n < buf.len);
         var want_buf: [64]u8 = undefined;
-        const want = try std.mem.print(&want_buf, "seq={d} tid={d} full=", .{ s0 + 1, child_tc.*.thread_id });
+        const want = try std.mem.print(&want_buf, "seq={d} tid={d} full=", .{ s0 + 1, child_tc.thread_id });
         var found = false;
         var lines = std.mem.splitScalar(u8, buf[0..n], '\n');
         while (lines.next()) |line| {
@@ -248,23 +282,24 @@ test "a blocked thread's collection is stolen by the coordinator" {
 
     shared.phase.store(2, .seq_cst);
     shared.waitFor(3);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(child_tc));
+    try std.testing.expectEqual(none, status(child_tc));
     shared.phase.store(4, .seq_cst);
     t.join();
     // Two collections clear and destroy the exited thread's context
-    // (orchestrate.c:255-257, then :230-242).
+    // (orchestrate.c:255-257, then :230-242). The thread object moves with
+    // the collections, so it is read through the root slot each time.
     orchestrate.enterFromAllocator(tc);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVM_thread_stage_clearing_nursery), @atomicLoad(c.AO_t, &thread.*.body.stage, .seq_cst));
+    try std.testing.expectEqual(@as(usize, c.MVM_thread_stage_clearing_nursery), atomic.load(&thread.?.body.stage));
     orchestrate.enterFromAllocator(tc);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVM_thread_stage_destroyed), @atomicLoad(c.AO_t, &thread.*.body.stage, .seq_cst));
-    try std.testing.expect(thread.*.body.tc == null);
+    try std.testing.expectEqual(@as(usize, c.MVM_thread_stage_destroyed), atomic.load(&thread.?.body.stage));
+    try std.testing.expect(thread.?.body.tc == null);
 }
 
-/// Waits up to 5 s for `tc` to reach `status`; false on a timeout, so a
+/// Waits up to 5 s for `tc` to reach `want`; false on a timeout, so a
 /// regression fails the test instead of hanging it.
-fn awaitStatus(tc: Tc, status: c.AO_t) bool {
+fn awaitStatus(tc: Tc, want: GcStatus) bool {
     const deadline = c.uv_hrtime() + 5_000_000_000;
-    while (gcStatus(tc) != status) {
+    while (status(tc) != want) {
         if (c.uv_hrtime() > deadline) return false;
         std.Thread.yield() catch {};
     }
@@ -276,17 +311,17 @@ fn resumeParked(tc: Tc, seen: *bool) void {
     // UNABLE | SUSPENDED, orchestrate.c:352), then clear the suspend bits.
     // On a timeout the bits are cleared anyway, which releases a thread
     // stuck in the park loop, and the test fails on `seen`.
-    seen.* = awaitStatus(tc, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED);
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_UNABLE, .seq_cst);
+    seen.* = awaitStatus(tc, unable_suspended);
+    setStatus(tc, unable);
 }
 
 test "a suspend request without a debugserver parks until the bits clear" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     try std.testing.expect(instance.*.debugserver == null);
     // As global destruction asks a running thread.
-    @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST, .seq_cst);
+    setStatus(tc, interrupt_requested);
     const s0 = seq(instance);
     var seen = false;
     const t = try std.Thread.spawn(.{}, resumeParked, .{ tc, &seen });
@@ -295,7 +330,7 @@ test "a suspend request without a debugserver parks until the bits clear" {
     orchestrate.enterFromInterrupt(tc);
     t.join();
     try std.testing.expect(seen);
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
+    try std.testing.expectEqual(none, status(tc));
     try std.testing.expectEqual(s0, seq(instance));
 }
 
@@ -305,8 +340,8 @@ fn parkWhenAsked(tc: Tc, seen: *bool) void {
     // park as enter_from_interrupt does (INTERRUPT | SUSPEND_REQUEST ->
     // UNABLE | SUSPENDED, orchestrate.c:352). Never asked within 5 s: give
     // up, and the test fails on `seen`.
-    seen.* = awaitStatus(tc, c.MVMGCStatus_INTERRUPT | c.MVMSuspendState_SUSPEND_REQUEST);
-    if (seen.*) @atomicStore(c.AO_t, &tc.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED, .seq_cst);
+    seen.* = awaitStatus(tc, interrupt_requested);
+    if (seen.*) setStatus(tc, unable_suspended);
 }
 
 test "global_destruction waits for the other threads to honour the suspend request" {
@@ -315,7 +350,7 @@ test "global_destruction waits for the other threads to honour the suspend reque
     // heap twice. The steps destroy_instance takes before it are taken
     // here in its order (src/moar.c:730-746).
     const instance = c.MVM_vm_create_instance();
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     c.MVM_thread_join_foreground(tc);
     c.MVM_io_flush_standard_handles(tc);
     c.MVM_spesh_worker_stop(tc);
@@ -328,7 +363,7 @@ test "global_destruction waits for the other threads to honour the suspend reque
     // helper thread), one blocked with the request already set, one
     // parked, and one already cleaned up (no tc left). None stays
     // pending, so the wait ends long before its 2000 x 1 ms bound.
-    var threads: [4][*c]c.MVMThread = @splat(null);
+    var threads: [4]?Thread = @splat(null);
     for (&threads) |*t| c.MVM_gc_root_temp_push(tc, @ptrCast(t));
     var others: [4]Tc = undefined;
     for (&threads, &others) |*t, *o| o.* = registerThread(tc, t);
@@ -336,15 +371,15 @@ test "global_destruction waits for the other threads to honour the suspend reque
     const running = others[0];
     const requested = others[1];
     const parked = others[2];
-    @atomicStore(c.AO_t, &requested.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST, .seq_cst);
-    @atomicStore(c.AO_t, &parked.*.gc_status, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED, .seq_cst);
-    threads[3].*.body.tc = null;
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(running));
+    setStatus(requested, unable_requested);
+    setStatus(parked, unable_suspended);
+    threads[3].?.body.tc = null;
+    try std.testing.expectEqual(none, status(tc));
+    try std.testing.expectEqual(none, status(running));
     var asked = false;
     const helper = try std.Thread.spawn(.{}, parkWhenAsked, .{ running, &asked });
-    const fromspace = tc.*.nursery_fromspace;
-    const tospace = tc.*.nursery_tospace;
+    const fromspace = tc.nursery_fromspace;
+    const tospace = tc.nursery_tospace;
     const start = c.uv_hrtime();
     orchestrate.globalDestruction(tc);
     const elapsed = c.uv_hrtime() - start;
@@ -355,14 +390,14 @@ test "global_destruction waits for the other threads to honour the suspend reque
     // SUSPENDED proves the request arrived. The settled ones are untouched
     // (:867-870), the caller is running again (:830, :885), and the loop
     // returned well inside the bound.
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED), gcStatus(running));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPEND_REQUEST), gcStatus(requested));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_UNABLE | c.MVMSuspendState_SUSPENDED), gcStatus(parked));
-    try std.testing.expectEqual(@as(c.AO_t, c.MVMGCStatus_NONE), gcStatus(tc));
+    try std.testing.expectEqual(unable_suspended, status(running));
+    try std.testing.expectEqual(unable_requested, status(requested));
+    try std.testing.expectEqual(unable_suspended, status(parked));
+    try std.testing.expectEqual(none, status(tc));
     try std.testing.expect(elapsed < 1_000_000_000);
     // The faked nursery run swapped the semi-spaces (orchestrate.c:889-891).
-    try std.testing.expectEqual(tospace, tc.*.nursery_fromspace);
-    try std.testing.expectEqual(fromspace, tc.*.nursery_tospace);
+    try std.testing.expectEqual(tospace, tc.nursery_fromspace);
+    try std.testing.expectEqual(fromspace, tc.nursery_tospace);
     try std.testing.expect(instance.*.stables_to_free == null);
 }
 
@@ -376,26 +411,26 @@ test "is_full_collection uses the RSS override at gc-debug 1" {
 fn fullCollectionOverride() !void {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
-    const tc = instance.*.main_thread;
+    const tc: Tc = instance.*.main_thread;
     // Below the absolute minimum the RSS is not consulted (orchestrate.c:433-435).
-    @atomicStore(c.AO_t, &instance.*.gc_promoted_bytes_since_last_full, c.MVM_GC_GEN2_THRESHOLD_MINIMUM - 1, .seq_cst);
+    atomic.store(&instance.*.gc_promoted_bytes_since_last_full, c.MVM_GC_GEN2_THRESHOLD_MINIMUM - 1);
     instance.*.gc_debug_rss_override = 1;
-    try std.testing.expectEqual(@as(c.MVMint32, 0), orchestrate.isFullCollection(tc));
+    try std.testing.expect(!orchestrate.isFullCollection(tc));
     // At the minimum, a pinned resident set of one byte makes any growth
     // exceed the 20 % (orchestrate.c:443-452)...
-    @atomicStore(c.AO_t, &instance.*.gc_promoted_bytes_since_last_full, c.MVM_GC_GEN2_THRESHOLD_MINIMUM, .seq_cst);
-    try std.testing.expectEqual(@as(c.MVMint32, 1), orchestrate.isFullCollection(tc));
+    atomic.store(&instance.*.gc_promoted_bytes_since_last_full, c.MVM_GC_GEN2_THRESHOLD_MINIMUM);
+    try std.testing.expect(orchestrate.isFullCollection(tc));
     // ... exactly 20 % of the pin is a full run, one byte less is not.
     instance.*.gc_debug_rss_override = 5 * c.MVM_GC_GEN2_THRESHOLD_MINIMUM;
-    try std.testing.expectEqual(@as(c.MVMint32, 1), orchestrate.isFullCollection(tc));
+    try std.testing.expect(orchestrate.isFullCollection(tc));
     instance.*.gc_debug_rss_override = 5 * c.MVM_GC_GEN2_THRESHOLD_MINIMUM + 1;
-    try std.testing.expectEqual(@as(c.MVMint32, 0), orchestrate.isFullCollection(tc));
+    try std.testing.expect(!orchestrate.isFullCollection(tc));
     // The coordinator takes the decision at the start of the run
     // (orchestrate.c:576) and zeroes the counter on a full one (:632).
     instance.*.gc_debug_rss_override = 1;
     orchestrate.enterFromAllocator(tc);
     try std.testing.expect(instance.*.gc_full_collect != 0);
-    try std.testing.expect(@atomicLoad(c.AO_t, &instance.*.gc_promoted_bytes_since_last_full, .seq_cst) < c.MVM_GC_GEN2_THRESHOLD_MINIMUM);
+    try std.testing.expect(atomic.load(&instance.*.gc_promoted_bytes_since_last_full) < c.MVM_GC_GEN2_THRESHOLD_MINIMUM);
     instance.*.gc_debug_rss_override = 0;
     orchestrate.enterFromAllocator(tc);
     try std.testing.expectEqual(@as(c.MVMuint32, 0), instance.*.gc_full_collect);

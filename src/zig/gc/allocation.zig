@@ -16,6 +16,7 @@ const moar = @import("moar");
 const c = moar.c;
 const view = @import("view.zig");
 const finalize = @import("finalize.zig");
+const orchestrate = @import("orchestrate.zig");
 
 const Tc = view.Tc;
 const Object = view.Object;
@@ -63,7 +64,7 @@ pub fn allocateNursery(tc: Tc, size_in: usize) *anyopaque {
     // atomic load, as the C: it's okay if the interrupt is delayed a bit.
     // The whole word, so a suspend request alone enters too.
     if (tc.gc_status != 0)
-        c.MVM_gc_enter_from_interrupt(tc);
+        orchestrate.enterFromInterrupt(tc);
 
     // Guard against 0-byte allocation.
     if (size == 0)
@@ -77,12 +78,12 @@ pub fn allocateNursery(tc: Tc, size_in: usize) *anyopaque {
         while (@intFromPtr(tc.nursery_alloc) + size >= @intFromPtr(tc.nursery_alloc_limit)) {
             if (size > c.MVM_NURSERY_SIZE)
                 c.MVM_panic(c.MVM_exitcode_gcalloc, "Attempt to allocate more than the maximum nursery size");
-            c.MVM_gc_enter_from_allocator(tc);
+            orchestrate.enterFromAllocator(tc);
         }
     } else {
         if (size > c.MVM_NURSERY_SIZE)
             c.MVM_panic(c.MVM_exitcode_gcalloc, "Attempt to allocate more than the maximum nursery size");
-        c.MVM_gc_enter_from_allocator(tc);
+        orchestrate.enterFromAllocator(tc);
     }
 
     // Allocate (just bump the pointer).
