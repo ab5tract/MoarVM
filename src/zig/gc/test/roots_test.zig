@@ -5,6 +5,7 @@ const c = moar.c;
 const roots = @import("../roots.zig");
 
 const Collectable = c.MVMCollectable;
+const ColSlot = *?*Collectable;
 
 fn asCol(p: anytype) [*c]Collectable {
     return @ptrCast(@alignCast(p));
@@ -133,6 +134,123 @@ test "gen2_add sets IN_GEN2_ROOT_LIST and gen2_cleanup drops entries whose refer
     tc.num_gen2roots = base;
 }
 
+/// The description strings of src/gc/roots.c
+/// `MVM_gc_root_add_instance_roots_to_worklist`, in the C order, copied
+/// from the C at authoring (roots.c:70-137, 22 `add_collectable` sites; the
+/// controller's "40" is not the C's number). Four are the loop and weakhash
+/// sites; the other 18 are the single-field roots of `roots.instance_roots`.
+const golden_instance_descriptions = [_][]const u8{
+    "Thread list",
+    "Compiler registry",
+    "HLL symbols",
+    "Command line args",
+    "Event loop thread",
+    "Event loop todo queue",
+    "Event loop permit queue",
+    "Event loop cancel queue",
+    "Event loop active task list",
+    "Event loop active free indices list",
+    "Specialization thread",
+    "Specialization log queue",
+    "Integer to string cache entry",
+    "SC weakhash hash key",
+    "SC weakhash unresolved handle",
+    "SC weakhash unclaimed SC",
+    "Cached backend configuration hash",
+    "Cached environment variable hash",
+    "Cached signal mapping array",
+    "VM Event Subscription Queue",
+    "VM Event GCEvent type",
+    "VM Event SpeshOverviewEvent type",
+};
+
+/// The descriptions of the instance walk that are not single-field roots.
+const instance_loop_descriptions = [_][]const u8{
+    "Integer to string cache entry",
+    "SC weakhash hash key",
+    "SC weakhash unresolved handle",
+    "SC weakhash unclaimed SC",
+};
+
+fn isIn(comptime list: []const []const u8, s: []const u8) bool {
+    for (list) |x| {
+        if (std.mem.eql(u8, x, s)) return true;
+    }
+    return false;
+}
+
+/// The 18 single-field instance root slots, in the C order (roots.c:70-137),
+/// as addresses: the golden list of the worklist walk.
+fn goldenInstanceSlots(i: *c.MVMInstance) [18]ColSlot {
+    return .{
+        @ptrCast(&i.threads),
+        @ptrCast(&i.compiler_registry),
+        @ptrCast(&i.hll_syms),
+        @ptrCast(&i.clargs),
+        @ptrCast(&i.event_loop_thread),
+        @ptrCast(&i.event_loop_todo_queue),
+        @ptrCast(&i.event_loop_permit_queue),
+        @ptrCast(&i.event_loop_cancel_queue),
+        @ptrCast(&i.event_loop_active),
+        @ptrCast(&i.event_loop_free_indices),
+        @ptrCast(&i.spesh_thread),
+        @ptrCast(&i.spesh_queue),
+        @ptrCast(&i.cached_backend_config),
+        @ptrCast(&i.env_hash),
+        @ptrCast(&i.sig_arr),
+        @ptrCast(&i.subscriptions.subscription_queue),
+        @ptrCast(&i.subscriptions.GCEvent),
+        @ptrCast(&i.subscriptions.SpeshOverviewEvent),
+    };
+}
+
+/// A heap-snapshot stand-in: a real, zeroed `MVMHeapSnapshotState` with its
+/// collection and snapshot, so `MVM_profile_heap_add_collectable_rel_const_cstr`
+/// records each reference; `descriptions` reads the references back as
+/// their description strings, in the order they were added.
+const SnapshotRecorder = struct {
+    col: c.MVMHeapSnapshotCollection = std.mem.zeroes(c.MVMHeapSnapshotCollection),
+    hs: c.MVMHeapSnapshot = std.mem.zeroes(c.MVMHeapSnapshot),
+    ss: c.MVMHeapSnapshotState = std.mem.zeroes(c.MVMHeapSnapshotState),
+
+    fn init(self: *SnapshotRecorder) *c.MVMHeapSnapshotState {
+        self.ss.col = &self.col;
+        self.ss.hs = &self.hs;
+        return &self.ss;
+    }
+
+    fn deinit(self: *SnapshotRecorder, tc: *c.MVMThreadContext) void {
+        c.MVM_free(@ptrCast(self.ss.workitems));
+        c.MVM_ptr_hash_demolish(tc, &self.ss.seen);
+        c.MVM_free(@ptrCast(self.hs.collectables));
+        c.MVM_free(@ptrCast(self.hs.references));
+        c.MVM_free(@ptrCast(self.col.strings));
+        c.MVM_free(@ptrCast(self.col.strings_free));
+    }
+
+    fn description(self: *const SnapshotRecorder, k: usize) [*:0]const u8 {
+        const index = self.hs.references[k].description >> c.MVM_SNAPSHOT_REF_KIND_BITS;
+        return @ptrCast(self.col.strings[index]);
+    }
+
+    /// The recorded descriptions of the instance walk, other references
+    /// (callsite interns, dispatcher registry) dropped, runs of one string
+    /// (the 65-entry integer cache) collapsed to one.
+    fn walkSequence(self: *const SnapshotRecorder, out: *std.ArrayList([]const u8)) !void {
+        for (0..self.hs.num_references) |k| {
+            const d = std.mem.span(self.description(k));
+            if (!isIn(&golden_instance_descriptions, d)) continue;
+            if (out.items.len > 0 and std.mem.eql(u8, out.items[out.items.len - 1], d)) continue;
+            try out.append(std.testing.allocator, d);
+        }
+    }
+};
+
+fn expectSequence(expected: []const []const u8, got: []const []const u8) !void {
+    try std.testing.expectEqual(expected.len, got.len);
+    for (expected, got) |e, g| try std.testing.expectEqualStrings(e, g);
+}
+
 test "instance roots are added in the C order" {
     const instance = c.MVM_vm_create_instance();
     defer c.MVM_vm_destroy_instance(instance);
@@ -159,6 +277,150 @@ test "instance roots are added in the C order" {
         const a = @intFromPtr(wl.*.list[i]);
         try std.testing.expect(a < base or a >= base + @sizeOf(c.MVMInstance));
     }
+
+    // The golden list. The table holds the 18 single-field roots, in the
+    // C order, with the C's descriptions.
+    const table = roots.instance_roots;
+    try std.testing.expectEqual(@as(usize, golden_instance_descriptions.len - instance_loop_descriptions.len), table.len);
+    const slots = goldenInstanceSlots(instance);
+    var table_descs: [table.len][*:0]const u8 = undefined;
+    inline for (table, &table_descs, 0..) |r, *d, k| {
+        d.* = r.desc;
+        try std.testing.expectEqual(@intFromPtr(slots[k]), @intFromPtr(r.get(instance)));
+    }
+    {
+        var k: usize = 0;
+        for (golden_instance_descriptions) |d| {
+            if (isIn(&instance_loop_descriptions, d)) continue;
+            try std.testing.expectEqualStrings(d, std.mem.span(table_descs[k]));
+            k += 1;
+        }
+    }
+
+    // Make every site of the walk fire: each field root non-null, one
+    // integer cache entry, and the weak hash's one entry (the SC a fresh
+    // instance registers at boot) unclaimed.
+    var was_null: [slots.len]bool = undefined;
+    for (slots, &was_null) |s, *n| {
+        n.* = s.* == null;
+        if (n.*) s.* = @ptrCast(instance.*.VMNull);
+    }
+    defer for (slots, was_null) |s, n| {
+        if (n) s.* = null;
+    };
+    const cache0: *?*c.MVMString = @ptrCast(&instance.*.int_to_str_cache[0]);
+    const cache0_was = cache0.*;
+    if (cache0_was == null) cache0.* = instance.*.str_consts.empty;
+    defer cache0.* = cache0_was;
+    const weakhash = &instance.*.sc_weakhash;
+    const it = c.MVM_str_hash_first(tc, weakhash);
+    try std.testing.expect(c.MVM_str_hash_at_end(tc, weakhash, it) == 0);
+    const entry: *c.MVMSerializationContextWeakHashEntry = @ptrCast(@alignCast(c.MVM_str_hash_current_nocheck(tc, weakhash, it)));
+    try std.testing.expect(c.MVM_str_hash_at_end(tc, weakhash, c.MVM_str_hash_next_nocheck(tc, weakhash, it)) != 0);
+    const scb: *c.MVMSerializationContextBody = entry.scb;
+    try std.testing.expect(scb.sc != null);
+    const claimed = scb.claimed;
+    scb.claimed = 0;
+    defer scb.claimed = claimed;
+
+    // The worklist walk: the items inside MVMInstance are the 18 field
+    // slots, in the C order.
+    wl.*.items = 0;
+    roots.addInstanceRootsToWorklist(tc, wl, null);
+    {
+        var k: usize = 0;
+        for (0..wl.*.items) |i| {
+            const a = @intFromPtr(wl.*.list[i]);
+            if (a < base or a >= base + @sizeOf(c.MVMInstance)) continue;
+            try std.testing.expect(k < slots.len);
+            try std.testing.expectEqual(@intFromPtr(slots[k]), a);
+            k += 1;
+        }
+        try std.testing.expectEqual(slots.len, k);
+    }
+
+    // The heap-snapshot walk, twice: the weak hash entry takes "unclaimed
+    // SC" while its SC is set, "unresolved handle" without it.
+    inline for (.{ "SC weakhash unresolved handle", "SC weakhash unclaimed SC" }) |absent| {
+        const sc = scb.sc;
+        if (comptime std.mem.eql(u8, absent, "SC weakhash unclaimed SC")) scb.sc = null;
+        defer scb.sc = sc;
+        var rec: SnapshotRecorder = .{};
+        const ss = rec.init();
+        defer rec.deinit(tc);
+        roots.addInstanceRootsToWorklist(tc, null, ss);
+        var got: std.ArrayList([]const u8) = .empty;
+        defer got.deinit(std.testing.allocator);
+        try rec.walkSequence(&got);
+        var expected: std.ArrayList([]const u8) = .empty;
+        defer expected.deinit(std.testing.allocator);
+        for (golden_instance_descriptions) |d| {
+            if (!std.mem.eql(u8, d, absent)) try expected.append(std.testing.allocator, d);
+        }
+        try expectSequence(expected.items, got.items);
+        // Each field root is described once, through the table's own string.
+        var from_table: usize = 0;
+        for (0..rec.hs.num_references) |k| {
+            const d = rec.description(k);
+            for (table_descs) |t| {
+                if (d == t) from_table += 1;
+            }
+        }
+        try std.testing.expectEqual(table.len, from_table);
+    }
+}
+
+/// The description strings of the single-field roots of src/gc/roots.c
+/// `MVM_gc_root_add_tc_roots_to_worklist`, in the C order (roots.c:157-232),
+/// copied from the C at authoring; the handler, callback cache and
+/// mark_args loops are not in the table.
+const golden_tc_descriptions = [_][]const u8{
+    "Current bytecode frame",
+    "Last exception payload",
+    "Thread object",
+    "Thread entry frame",
+    "Last handler result",
+    "Compiling serialization contexts",
+    "Current interpreter compilation unit",
+    "Specialization log",
+    "Current static frame for watching for OSR spesh candidate",
+    "Frame referenced for stepping mode",
+};
+
+test "thread roots are added in the C order" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: *c.MVMThreadContext = instance.*.main_thread;
+    const table = roots.thread_roots;
+    try std.testing.expectEqual(golden_tc_descriptions.len, table.len);
+    inline for (golden_tc_descriptions, table) |d, r|
+        try std.testing.expectEqualStrings(d, std.mem.span(r.desc));
+
+    // interp_cu is the address of the interpreter's compunit variable, or
+    // NULL when no interpreter runs: no slot then.
+    const interp_cu = tc.interp_cu;
+    defer tc.interp_cu = interp_cu;
+    tc.interp_cu = null;
+    try std.testing.expect(!table[6].when(tc));
+    var cu: ?*c.MVMCompUnit = null;
+    tc.interp_cu = @ptrCast(&cu);
+
+    // The single-field slots (interp_cu is the slot the tc points at), in
+    // the C order.
+    const slots = [_]ColSlot{
+        @ptrCast(&tc.cur_frame),
+        @ptrCast(&tc.last_payload),
+        @ptrCast(&tc.thread_obj),
+        @ptrCast(&tc.thread_entry_frame),
+        @ptrCast(&tc.last_handler_result),
+        @ptrCast(&tc.compiling_scs),
+        @ptrCast(&cu),
+        @ptrCast(&tc.spesh_log),
+        @ptrCast(&tc.osr_hunt_static_frame),
+        @ptrCast(&tc.step_mode_frame),
+    };
+    inline for (table, 0..) |r, k|
+        try std.testing.expectEqual(@intFromPtr(slots[k]), @intFromPtr(r.get(tc)));
 }
 
 test "instance roots mark both VM event subscription types" {
