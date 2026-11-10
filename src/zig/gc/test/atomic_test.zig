@@ -75,6 +75,24 @@ test "works on a pointer slot" {
     try std.testing.expectEqual(@as(usize, 2), atomic.load(cn));
 }
 
+test "casStatus returns the previous value and swaps only on match" {
+    const none: atomic.GcStatus = .{ .status = .none, .@"suspend" = .none };
+    const interrupt: atomic.GcStatus = .{ .status = .interrupt, .@"suspend" = .none };
+    const unable_requested: atomic.GcStatus = .{ .status = .unable, .@"suspend" = .request };
+    var slot: usize = 0;
+    // Match: the previous value comes back and the slot holds the new one.
+    try std.testing.expectEqual(none, atomic.casStatus(&slot, none, interrupt));
+    try std.testing.expectEqual(@as(usize, 1), slot);
+    // Mismatch: the slot keeps INTERRUPT, which comes back.
+    try std.testing.expectEqual(interrupt, atomic.casStatus(&slot, none, unable_requested));
+    try std.testing.expectEqual(@as(usize, 1), slot);
+    // The suspend bits take part in the comparison, as the C compares the word.
+    atomic.storeStatus(&slot, unable_requested);
+    try std.testing.expectEqual(@as(usize, 6), slot);
+    try std.testing.expectEqual(unable_requested, atomic.casStatus(&slot, .{ .status = .unable, .@"suspend" = .none }, none));
+    try std.testing.expectEqual(unable_requested, atomic.loadStatus(&slot));
+}
+
 test "fence" {
     atomic.fence();
 }

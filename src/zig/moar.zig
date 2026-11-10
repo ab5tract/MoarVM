@@ -156,7 +156,7 @@ pub inline fn worklistAdd(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, 
 
 // ---- MVMROOT .. MVMROOT6 from src/gc/roots.h ----------------------------
 
-/// Handle returned by `root`/`rootN`; `defer r.pop(tc)` ends the scope.
+/// Handle returned by `rootN`; `defer r.pop(tc)` ends the scope.
 pub const Root = struct {
     n: u32,
     pub inline fn pop(self: Root, tc: *ThreadContext) void {
@@ -173,11 +173,44 @@ inline fn checkRef(comptime T: type) void {
     if (!ok) @compileError("root: expected a pointer to a collectable pointer (e.g. *?*MVMObject), got " ++ @typeName(T));
 }
 
+/// MVM_gc_root_temp_push(tc, obj_ref) (roots.h:12-29) in Zig, so that it
+/// inlines into its callers as the C inline does (the translate-c copy is a
+/// separate `callconv(.c)` function the Zig callers call out of line): the
+/// fast path stores into the always-allocated roots, the slow path is the
+/// export `MVM_gc_root_temp_push_slow` (roots.zig `tempPushSlow`).
+inline fn tempPush(tc: *ThreadContext, obj_ref: [*c][*c]Collectable) void {
+    if (comptime c.MVM_TEMP_ROOT_DEBUG != 0) {
+        if (obj_ref == null)
+            c.MVM_panic(c.MVM_exitcode_gcroots, "Illegal attempt to add null object address as a temporary root");
+    }
+    if (tc.num_temproots < c.MVM_TEMP_ROOT_BASE_ALLOC) {
+        @branchHint(.likely);
+        tc.temproots[tc.num_temproots] = obj_ref;
+        tc.num_temproots += 1;
+    } else {
+        c.MVM_gc_root_temp_push_slow(tc, obj_ref);
+    }
+}
+
+/// Handle returned by `root`; `defer r.pop(tc)` ends the scope.
+pub const TempRoot = struct {
+    /// MVM_gc_root_temp_pop(tc) (roots.h:72-78) in Zig, inlined as the C.
+    pub inline fn pop(self: TempRoot, tc: *ThreadContext) void {
+        _ = self;
+        if (comptime c.MVM_TEMP_ROOT_DEBUG != 0) {
+            if (tc.num_temproots <= 0)
+                c.MVM_panic(1, "Illegal attempt to pop empty temporary root stack");
+        }
+        // An unsigned decrement, as the C's.
+        tc.num_temproots -%= 1;
+    }
+};
+
 /// MVMROOT(tc, obj) { ... }  ->  const r = root(tc, &obj); defer r.pop(tc);
-pub inline fn root(tc: *ThreadContext, ref: anytype) Root {
-    checkRef(@TypeOf(ref));
-    c.MVM_gc_root_temp_push(tc, @ptrCast(ref));
-    return .{ .n = 1 };
+pub inline fn root(tc: *ThreadContext, slot: anytype) TempRoot {
+    checkRef(@TypeOf(slot));
+    tempPush(tc, @ptrCast(slot));
+    return .{};
 }
 
 /// MVMROOTn(tc, a, b, ...) { ... }  ->  const r = rootN(tc, .{ &a, &b }); defer r.pop(tc);
@@ -307,6 +340,24 @@ test "root and rootN push and pop temp roots" {
         defer r.pop(tc);
         try std.testing.expectEqual(before + 6, tc.num_temproots);
     }
+    try std.testing.expectEqual(before, tc.num_temproots);
+}
+
+test "root grows through the slow path past MVM_TEMP_ROOT_BASE_ALLOC" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc: *ThreadContext = instance.*.main_thread;
+    const before = tc.num_temproots;
+    // Enough slots to pass the always-allocated roots from wherever the
+    // boot left the stack.
+    var slots: [c.MVM_TEMP_ROOT_BASE_ALLOC + 4]?*Object = @splat(instance.*.VMNull);
+    var handles: [slots.len]TempRoot = undefined;
+    for (&slots, &handles) |*slot, *h| h.* = root(tc, slot);
+    try std.testing.expectEqual(before + slots.len, tc.num_temproots);
+    try std.testing.expect(tc.alloc_temproots >= tc.num_temproots);
+    for (&slots, 0..) |*slot, i|
+        try std.testing.expectEqual(@intFromPtr(slot), @intFromPtr(tc.temproots[before + i]));
+    for (handles) |h| h.pop(tc);
     try std.testing.expectEqual(before, tc.num_temproots);
 }
 

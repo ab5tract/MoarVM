@@ -9,8 +9,10 @@
 //! `*usize` (the C's `AO_t`), `*u32`, `*u64` and on a pointer slot (`*?*T`, `**T`, `*[*c]T`),
 //! volatile or not, and on the same slots through a C pointer; `add`,
 //! `incr` and `decr` only on an `AO_t`-wide integer slot, as the C. Pointer slots are operated on as the word they are, as
-//! the C casts them to `volatile AO_t *`. Pure Zig: no `moar` import, so the
-//! host unit tests build it alone.
+//! the C casts them to `volatile AO_t *`. `loadStatus`, `storeStatus` and
+//! `casStatus` are the same operations on `tc->gc_status` read as a
+//! `GcStatus`. Pure Zig: no `moar` import, so the host unit tests build it
+//! alone.
 const std = @import("std");
 const builtin = @import("builtin");
 
@@ -106,18 +108,57 @@ pub inline fn cas(ptr: anytype, old: Slot(@TypeOf(ptr)), new: Slot(@TypeOf(ptr))
 var fence_word: usize = 0;
 
 /// MVM_barrier() (moar.h:359): `atomic_thread_fence(memory_order_seq_cst)`.
-/// Zig 0.16 has no `@fence`, so this emits what the C compilers emit for
-/// the seq_cst fence: `mfence` on x86, `dmb ish` on ARM64, `fence rw,rw`
-/// on RISC-V, each with a memory clobber so the compiler moves no access
-/// across it. Elsewhere a seq_cst read-modify-write of a private word,
-/// which the hardware orders as a full barrier on the remaining targets.
+/// Zig has no `@fence`, so this emits what clang emits for the seq_cst
+/// fence: on x86-64 the identity locked read-modify-write
+/// `lock orl $0, -64(%rsp)` (on 32-bit x86 `lock orl $0, (%esp)`), a full
+/// barrier like `mfence` and cheaper (Ruling R5, the ngc profile); `dmb ish`
+/// on ARM64, `fence rw,rw` on RISC-V; each with a memory clobber so the
+/// compiler moves no access across it (and on x86 the flags clobber of the
+/// `or`). Elsewhere a seq_cst read-modify-write of a private word, which the
+/// hardware orders as a full barrier on the remaining targets.
 pub inline fn fence() void {
     switch (builtin.target.cpu.arch) {
-        .x86, .x86_64 => asm volatile ("mfence" ::: .{ .memory = true }),
+        .x86_64 => asm volatile ("lock orl $0, -64(%%rsp)" ::: .{ .memory = true, .cc = true }),
+        .x86 => asm volatile ("lock orl $0, (%%esp)" ::: .{ .memory = true, .cc = true }),
         .aarch64, .aarch64_be => asm volatile ("dmb ish" ::: .{ .memory = true }),
         .riscv32, .riscv64 => asm volatile ("fence rw,rw" ::: .{ .memory = true }),
         else => _ = @atomicRmw(usize, &fence_word, .Add, 0, .seq_cst),
     }
+}
+
+// ---- the typed GC status (src/core/threadcontext.h) ---------------------
+
+/// `MVMGCStatus` (threadcontext.h): the low two bits of `tc->gc_status`.
+pub const Status = enum(u2) { none = 0, interrupt = 1, unable = 2, stolen = 3 };
+
+/// `MVMSuspendState` (threadcontext.h): bits 2 and 3 of `tc->gc_status`
+/// (`MVMSUSPENDSTATUS_MASK`, 12); 8 alone is never set.
+pub const Suspend = enum(u2) { none = 0, request = 1, suspended = 3 };
+
+/// `tc->gc_status` (an `AO_t`) as the value it is: a GC status and a
+/// suspend state packed in one word. Defined here rather than in `view.zig`
+/// so this file stays pure Zig (the host unit tests build it alone);
+/// `view.zig` re-exports it and asserts it against the C constants.
+pub const GcStatus = packed struct(usize) {
+    status: Status,
+    @"suspend": Suspend,
+    _pad: @Int(.unsigned, @bitSizeOf(usize) - 4) = 0,
+};
+
+/// MVM_load(&tc->gc_status) as a `GcStatus`.
+pub inline fn loadStatus(slot: *usize) GcStatus {
+    return @bitCast(load(slot));
+}
+
+/// MVM_store(&tc->gc_status, v) from a `GcStatus`.
+pub inline fn storeStatus(slot: *usize, v: GcStatus) void {
+    store(slot, @bitCast(v));
+}
+
+/// MVM_cas(&tc->gc_status, expected, new) over `GcStatus` values; returns
+/// the value found, which equals `expected` exactly when the swap happened.
+pub inline fn casStatus(slot: *usize, expected: GcStatus, new: GcStatus) GcStatus {
+    return @bitCast(cas(slot, @bitCast(expected), @bitCast(new)));
 }
 
 test {

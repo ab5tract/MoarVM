@@ -417,12 +417,33 @@ the temp-root push and pop) stay C inlines; the Zig ports call the slow
 paths they call. Shared helpers: `src/zig/moar.zig` has `assignRef` (the
 `MVM_ASSIGN_REF` macro with its `MVM_GC_DEBUG` checks, through
 `assertNotFromspace`), `worklistAdd` (the `MVM_gc_worklist_add` statement
-macro, which translate-c cannot express, with its debug checks) and
-`trycas`; `src/zig/gc/atomic.zig` has `load`, `store`, `add`, `incr`,
-`decr`, `cas` and `fence`, all sequentially consistent like the C11
-operations behind `MVM_load` and friends (translate-c cannot use those),
-each call site commented with the C macro and line it replaces. `add`,
-`incr` and `decr` take only `usize`-wide slots, as the C's `AO_t`. Unit
+macro, which translate-c cannot express, with its debug checks), `root`
+(the `MVMROOT` macro, with the temp-root push and pop written out in Zig
+from `roots.h` so that they inline into the Zig callers as the C inlines
+do; the translate-c copies are separate functions) and `trycas`;
+`src/zig/gc/atomic.zig` has `load`, `store`, `add`, `incr`, `decr`, `cas`
+and `fence`, all sequentially consistent like the C11 operations behind
+`MVM_load` and friends (translate-c cannot use those), each call site
+commented with the C macro and line it replaces, and `loadStatus`,
+`storeStatus` and `casStatus`, the same operations on `tc->gc_status` as a
+typed `GcStatus`. `add`, `incr` and `decr` take only `usize`-wide slots,
+as the C's `AO_t`.
+
+The native rewrite (`traces/llm/specs/2026-11-09-zig-native-gc-design.md`)
+gives the ports Zig shapes without changing a decision. `src/zig/gc/view.zig`
+holds the typed pointers the ports use in place of translate-c's `[*c]T`
+(`Tc`, `Col`, `ColSlot`, `Object`, `STable`, `Frame`, `Worklist`, `Gen2`,
+`Thread`, `Instance`), `flags1`/`flags2` as `packed struct(u8)` views
+(`view.flags2(col).second_gen`), `gc_status` as the `GcStatus` packed
+word, and the view changes `asCol`, `asObject`, `asStable` and `asFrame`,
+the only pointer casts between a collectable and what it heads; at
+`-Dgc-debug=1` and up `asStable` and `asFrame` panic when the flag that
+justifies the view is clear. Every bit and value is asserted at comptime
+against the C constants. In a rewritten file each ported function is a
+`pub fn` with Zig types, callable from Zig, and its `MVM_gc_…` export is
+a thin `callconv(.c)` wrapper (`nameExport`) with the translate-c types
+the C callers see, which converts and calls it; `worklist.zig` and
+`allocation.zig` are the first two. Unit
 tests: `src/zig/gc/test/`, run by `zig build unit-test` in the
 libmoar-linked `gc-test` binary (they boot a VM), plus `atomic_test.zig`
 on the host. Some tests apply only at one debug level and skip at the other,
@@ -531,10 +552,13 @@ Recipes the campaign used, for a maintainer repeating the comparison:
 
 These were found while porting on 0.16 and still hold on 0.17.
 
-- There is no `@fence`. `atomic.fence()` emits what C compilers emit for
-  `atomic_thread_fence(memory_order_seq_cst)`: `mfence` on x86 (`dmb ish`
-  on ARM64, `fence rw,rw` on RISC-V) with a memory clobber, and a seq_cst
-  read-modify-write of a private word on other targets.
+- There is no `@fence`. `atomic.fence()` emits what clang emits for
+  `atomic_thread_fence(memory_order_seq_cst)`: on x86-64 the identity
+  locked read-modify-write `lock orl $0, -64(%rsp)` (`(%esp)` on 32-bit
+  x86), which the port first wrote as `mfence`, a costlier full barrier
+  (the native campaign's profile); `dmb ish` on ARM64, `fence rw,rw` on
+  RISC-V; each with a memory clobber; and a seq_cst read-modify-write of a
+  private word on other targets.
 - An array field reached through a translated `[*c]` pointer must not be
   indexed as `p.*.arr[i]`: through a `[*c]S`, that indexes whole arrays
   (elements of type `[N]T`) past the field, and it compiles silently when the

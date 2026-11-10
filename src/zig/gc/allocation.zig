@@ -1,19 +1,25 @@
 //! Zig port of src/gc/allocation.c (lines 1-104): allocation from the
 //! nursery, the memory space managed by the garbage collector, and the
-//! STable, type object, object and frame allocators built on it. Faithful
-//! port; no behaviour change. The four `MVM_STATIC_INLINE` functions of
+//! STable, type object, object and frame allocators built on it. No
+//! behaviour change. The four `MVM_STATIC_INLINE` functions of
 //! src/gc/allocation.h (`MVM_gc_allocate`, `MVM_gc_allocate_zeroed` and the
 //! gen2 default set/clear) stay C; the allocators below call the translated
 //! `MVM_gc_allocate_zeroed`, which reaches `MVM_gc_allocate_nursery` (the
 //! export below) as the C does. The `MVMROOT` macro, which translate-c
-//! cannot translate, is spelled out from src/gc/roots.h; `MVM_ASSIGN_REF`
-//! (src/gc/wb.h, with src/gc/debug.h's `MVM_ASSERT_NOT_FROMSPACE`) is the
-//! shared `moar.assignRef`.
+//! cannot translate, is `moar.root`, whose push and pop inline as the C's;
+//! `MVM_ASSIGN_REF` (src/gc/wb.h, with src/gc/debug.h's
+//! `MVM_ASSERT_NOT_FROMSPACE`) is the shared `moar.assignRef`. The
+//! allocators are Zig-typed; the `MVM_gc_allocate_*` exports are thin C-ABI
+//! wrappers over them.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const view = @import("view.zig");
 
-const Tc = [*c]c.MVMThreadContext;
+const Tc = view.Tc;
+const Object = view.Object;
+const STable = view.STable;
+const Frame = view.Frame;
 
 // The MVMThreadContext fields the nursery path uses, with the types the C
 // declares (void *, AO_t, MVMuint32); spec section 8, layout checks. The
@@ -46,8 +52,7 @@ pub inline fn alignSize(size: usize) usize {
 
 /// Allocate the specified amount of memory from the nursery. Will trigger a
 /// GC run if there is not enough. (allocation.c:8-51)
-pub fn allocateNursery(tc: Tc, size_in: usize) callconv(.c) ?*anyopaque {
-    var allocated: ?*anyopaque = undefined;
+pub fn allocateNursery(tc: Tc, size_in: usize) *anyopaque {
     // Objects in the nursery must be aligned, so we pad at the end. The
     // assumption that they are aligned is also encoded in the collector.
     const size = alignSize(size_in);
@@ -55,101 +60,121 @@ pub fn allocateNursery(tc: Tc, size_in: usize) callconv(.c) ?*anyopaque {
     // Before an allocation is a GC safe-point and thus a good GC sync point
     // also; check if we've been signalled to collect. A plain read, not an
     // atomic load, as the C: it's okay if the interrupt is delayed a bit.
-    if (tc.*.gc_status != 0)
+    // The whole word, so a suspend request alone enters too.
+    if (tc.gc_status != 0)
         c.MVM_gc_enter_from_interrupt(tc);
 
     // Guard against 0-byte allocation.
-    if (size > 0) {
-        // Do a GC run if this allocation won't fit in what we have left in
-        // the nursery. A loop for the pathological case where everything in
-        // the nursery is young and survives in it; the next run promotes it.
-        // Without the loop at MVM_GC_DEBUG 3 (collect on every allocation).
-        if (comptime c.MVM_GC_DEBUG < 3) {
-            while (@intFromPtr(tc.*.nursery_alloc) + size >= @intFromPtr(tc.*.nursery_alloc_limit)) {
-                if (size > c.MVM_NURSERY_SIZE)
-                    c.MVM_panic(c.MVM_exitcode_gcalloc, "Attempt to allocate more than the maximum nursery size");
-                c.MVM_gc_enter_from_allocator(tc);
-            }
-        } else {
+    if (size == 0)
+        c.MVM_panic(c.MVM_exitcode_gcalloc, "Cannot allocate 0 bytes of memory in the nursery");
+
+    // Do a GC run if this allocation won't fit in what we have left in the
+    // nursery. A loop for the pathological case where everything in the
+    // nursery is young and survives in it; the next run promotes it.
+    // Without the loop at MVM_GC_DEBUG 3 (collect on every allocation).
+    if (comptime c.MVM_GC_DEBUG < 3) {
+        while (@intFromPtr(tc.nursery_alloc) + size >= @intFromPtr(tc.nursery_alloc_limit)) {
             if (size > c.MVM_NURSERY_SIZE)
                 c.MVM_panic(c.MVM_exitcode_gcalloc, "Attempt to allocate more than the maximum nursery size");
             c.MVM_gc_enter_from_allocator(tc);
         }
-
-        // Allocate (just bump the pointer).
-        allocated = tc.*.nursery_alloc;
-        tc.*.nursery_alloc = @ptrFromInt(@intFromPtr(tc.*.nursery_alloc) + size);
     } else {
-        c.MVM_panic(c.MVM_exitcode_gcalloc, "Cannot allocate 0 bytes of memory in the nursery");
+        if (size > c.MVM_NURSERY_SIZE)
+            c.MVM_panic(c.MVM_exitcode_gcalloc, "Attempt to allocate more than the maximum nursery size");
+        c.MVM_gc_enter_from_allocator(tc);
     }
 
+    // Allocate (just bump the pointer).
+    const allocated = tc.nursery_alloc.?;
+    tc.nursery_alloc = @ptrFromInt(@intFromPtr(allocated) + size);
     return allocated;
+}
+
+/// `MVM_gc_allocate_zeroed` (allocation.h), the collectable at its head.
+fn allocateZeroed(tc: Tc, size: usize) view.Col {
+    return view.asCol(c.MVM_gc_allocate_zeroed(tc, size).?);
 }
 
 /// Allocates a new STable, based on the specified thread context, REPR and
 /// meta-object. (allocation.c:53-68)
-pub fn allocateStable(tc: Tc, repr: [*c]const c.MVMREPROps, how_in: [*c]c.MVMObject) callconv(.c) [*c]c.MVMSTable {
-    var how = how_in;
-    var st: [*c]c.MVMSTable = undefined;
+pub fn allocateStable(tc: Tc, repr: *const c.MVMREPROps, how: Object) STable {
     // MVMROOT(tc, how) { ... }
-    _ = c.__MVM_gc_root_temp_push_nonvoid(tc, @ptrCast(&how), 0);
-    {
-        st = @ptrCast(@alignCast(c.MVM_gc_allocate_zeroed(tc, @sizeOf(c.MVMSTable))));
-        st.*.header.flags1 = c.MVM_CF_STABLE;
-        st.*.header.size = @sizeOf(c.MVMSTable);
-        st.*.header.owner = tc.*.thread_id;
-        st.*.REPR = repr;
-        st.*.type_cache_id = c.MVM_6model_next_type_cache_id(tc);
-        st.*.debug_name = null;
-        moar.assignRef(tc, &st.*.header, @as(*[*c]c.MVMObject, &st.*.HOW), how);
-    }
-    c.MVM_gc_root_temp_pop(tc);
+    var rooted_how = how;
+    const r = moar.root(tc, &rooted_how);
+    defer r.pop(tc);
+    const header = allocateZeroed(tc, @sizeOf(c.MVMSTable));
+    view.flags1(header).* = .{ .stable = true };
+    const st = view.asStable(header);
+    st.header.size = @sizeOf(c.MVMSTable);
+    st.header.owner = tc.thread_id;
+    st.REPR = repr;
+    st.type_cache_id = c.MVM_6model_next_type_cache_id(tc);
+    st.debug_name = null;
+    moar.assignRef(tc, &st.header, &st.HOW, rooted_how);
     return st;
 }
 
 /// Allocates a new type object. (allocation.c:70-81)
-pub fn allocateTypeObject(tc: Tc, st_in: [*c]c.MVMSTable) callconv(.c) [*c]c.MVMObject {
-    var st = st_in;
-    var obj: [*c]c.MVMObject = undefined;
+pub fn allocateTypeObject(tc: Tc, st: STable) Object {
     // MVMROOT(tc, st) { ... }
-    _ = c.__MVM_gc_root_temp_push_nonvoid(tc, @ptrCast(&st), 0);
-    {
-        obj = @ptrCast(@alignCast(c.MVM_gc_allocate_zeroed(tc, @sizeOf(c.MVMObject))));
-        obj.*.header.flags1 = c.MVM_CF_TYPE_OBJECT;
-        obj.*.header.size = @sizeOf(c.MVMObject);
-        obj.*.header.owner = tc.*.thread_id;
-        moar.assignRef(tc, &obj.*.header, @as(*[*c]c.MVMSTable, &obj.*.st), st);
-    }
-    c.MVM_gc_root_temp_pop(tc);
+    var rooted_st = st;
+    const r = moar.root(tc, &rooted_st);
+    defer r.pop(tc);
+    const header = allocateZeroed(tc, @sizeOf(c.MVMObject));
+    view.flags1(header).* = .{ .type_object = true };
+    const obj = view.asObject(header);
+    obj.header.size = @sizeOf(c.MVMObject);
+    obj.header.owner = tc.thread_id;
+    moar.assignRef(tc, &obj.header, &obj.st, rooted_st);
     return obj;
 }
 
 /// Allocates a new object, and points it at the specified STable.
 /// (allocation.c:83-95)
-pub fn allocateObject(tc: Tc, st_in: [*c]c.MVMSTable) callconv(.c) [*c]c.MVMObject {
-    var st = st_in;
-    var obj: [*c]c.MVMObject = undefined;
+pub fn allocateObject(tc: Tc, st: STable) Object {
     // MVMROOT(tc, st) { ... }
-    _ = c.__MVM_gc_root_temp_push_nonvoid(tc, @ptrCast(&st), 0);
-    {
-        obj = @ptrCast(@alignCast(c.MVM_gc_allocate_zeroed(tc, st.*.size)));
-        obj.*.header.size = @truncate(st.*.size);
-        obj.*.header.owner = tc.*.thread_id;
-        moar.assignRef(tc, &obj.*.header, @as(*[*c]c.MVMSTable, &obj.*.st), st);
-        if (st.*.mode_flags & c.MVM_FINALIZE_TYPE != 0)
-            c.MVM_gc_finalize_add_to_queue(tc, obj);
-    }
-    c.MVM_gc_root_temp_pop(tc);
+    var rooted_st = st;
+    const r = moar.root(tc, &rooted_st);
+    defer r.pop(tc);
+    const obj = view.asObject(allocateZeroed(tc, rooted_st.size));
+    obj.header.size = @truncate(rooted_st.size);
+    obj.header.owner = tc.thread_id;
+    moar.assignRef(tc, &obj.header, &obj.st, rooted_st);
+    if (rooted_st.mode_flags & c.MVM_FINALIZE_TYPE != 0)
+        c.MVM_gc_finalize_add_to_queue(tc, obj);
     return obj;
 }
 
 /// Allocates a new heap frame. (allocation.c:97-104)
-pub fn allocateFrame(tc: Tc) callconv(.c) [*c]c.MVMFrame {
-    const f: [*c]c.MVMFrame = @ptrCast(@alignCast(c.MVM_gc_allocate_zeroed(tc, @sizeOf(c.MVMFrame))));
-    f.*.header.flags1 = c.MVM_CF_FRAME;
-    f.*.header.size = @sizeOf(c.MVMFrame);
-    f.*.header.owner = tc.*.thread_id;
+pub fn allocateFrame(tc: Tc) Frame {
+    const header = allocateZeroed(tc, @sizeOf(c.MVMFrame));
+    view.flags1(header).* = .{ .frame = true };
+    const f = view.asFrame(header);
+    f.header.size = @sizeOf(c.MVMFrame);
+    f.header.owner = tc.thread_id;
     return f;
+}
+
+// ---- the C ABI -------------------------------------------------------------
+
+fn allocateNurseryExport(tc: [*c]c.MVMThreadContext, size: usize) callconv(.c) ?*anyopaque {
+    return allocateNursery(tc, size);
+}
+
+fn allocateStableExport(tc: [*c]c.MVMThreadContext, repr: [*c]const c.MVMREPROps, how: [*c]c.MVMObject) callconv(.c) [*c]c.MVMSTable {
+    return allocateStable(tc, repr, how);
+}
+
+fn allocateTypeObjectExport(tc: [*c]c.MVMThreadContext, st: [*c]c.MVMSTable) callconv(.c) [*c]c.MVMObject {
+    return allocateTypeObject(tc, st);
+}
+
+fn allocateObjectExport(tc: [*c]c.MVMThreadContext, st: [*c]c.MVMSTable) callconv(.c) [*c]c.MVMObject {
+    return allocateObject(tc, st);
+}
+
+fn allocateFrameExport(tc: [*c]c.MVMThreadContext) callconv(.c) [*c]c.MVMFrame {
+    return allocateFrame(tc);
 }
 
 // Under -Dlto (--zig-lto) the exports are protected: they stay in libmoar's
@@ -159,9 +184,9 @@ pub fn allocateFrame(tc: Tc) callconv(.c) [*c]c.MVMFrame {
 const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
-    @export(&allocateNursery, .{ .name = "MVM_gc_allocate_nursery", .visibility = visibility });
-    @export(&allocateStable, .{ .name = "MVM_gc_allocate_stable", .visibility = visibility });
-    @export(&allocateTypeObject, .{ .name = "MVM_gc_allocate_type_object", .visibility = visibility });
-    @export(&allocateObject, .{ .name = "MVM_gc_allocate_object", .visibility = visibility });
-    @export(&allocateFrame, .{ .name = "MVM_gc_allocate_frame", .visibility = visibility });
+    @export(&allocateNurseryExport, .{ .name = "MVM_gc_allocate_nursery", .visibility = visibility });
+    @export(&allocateStableExport, .{ .name = "MVM_gc_allocate_stable", .visibility = visibility });
+    @export(&allocateTypeObjectExport, .{ .name = "MVM_gc_allocate_type_object", .visibility = visibility });
+    @export(&allocateObjectExport, .{ .name = "MVM_gc_allocate_object", .visibility = visibility });
+    @export(&allocateFrameExport, .{ .name = "MVM_gc_allocate_frame", .visibility = visibility });
 }

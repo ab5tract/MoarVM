@@ -3,6 +3,8 @@
 //! VM. The root sits in this directory because a module's files must lie
 //! under its root file's directory.
 test {
+    // First: its panic test must be the first test the child runs.
+    _ = @import("test/view_test.zig");
     _ = @import("test/worklist_test.zig");
     _ = @import("test/allocation_test.zig");
     _ = @import("test/gen2_test.zig");

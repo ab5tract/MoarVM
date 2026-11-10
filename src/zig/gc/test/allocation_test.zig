@@ -3,12 +3,13 @@ const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
 const allocation = @import("../allocation.zig");
+const view = @import("../view.zig");
 
 /// From src/zig/test/layout_probe.c: the C compiler's offset of
 /// `MVMThreadContext.num_temproots`.
 extern fn moar_probe_offsetof_num_temproots() usize;
 
-const Tc = [*c]c.MVMThreadContext;
+const Tc = view.Tc;
 
 /// The environment variable that turns the test binary into the child of a
 /// "panic" test: the runner takes no filter argument, so the child runs the
@@ -37,11 +38,11 @@ fn runChild(name: []const u8) !std.process.RunResult {
 /// Gives a raw nursery block a header the collector's sweep can step over
 /// (a dead type object of the block's size): the sweep walks the nursery by
 /// header size, and a zero size would never advance.
-fn stampRaw(tc: Tc, p: ?*anyopaque, size: usize) void {
-    const h: *c.MVMCollectable = @ptrCast(@alignCast(p.?));
-    h.flags1 = c.MVM_CF_TYPE_OBJECT;
+fn stampRaw(tc: Tc, p: *anyopaque, size: usize) void {
+    const h = view.asCol(p);
+    view.flags1(h).* = .{ .type_object = true };
     h.size = @intCast(size);
-    h.owner = tc.*.thread_id;
+    h.owner = tc.thread_id;
 }
 
 fn seq(instance: [*c]c.MVMInstance) c.AO_t {
@@ -54,9 +55,9 @@ fn gcStatus(tc: Tc) c.AO_t {
 
 /// The st of BOOTInt, which the bootstrap allocates in gen2, so it does not
 /// move when the tests collect.
-fn bootIntSt(instance: [*c]c.MVMInstance) ![*c]c.MVMSTable {
-    const st = instance.*.boot_types.BOOTInt.*.st;
-    try std.testing.expect(st.*.header.flags2 & c.MVM_CF_SECOND_GEN != 0);
+fn bootIntSt(instance: view.Instance) !view.STable {
+    const st: view.STable = instance.boot_types.BOOTInt.*.st;
+    try std.testing.expect(view.flags2(&st.header).second_gen);
     return st;
 }
 
@@ -91,7 +92,7 @@ test "nursery allocation is 8-aligned, zeroed and bumps alloc" {
     const p = allocation.allocateNursery(tc, 24);
     try std.testing.expectEqual(before, @intFromPtr(p));
     try std.testing.expectEqual(@as(usize, 0), @intFromPtr(p) % 8);
-    const bytes: [*]const u8 = @ptrCast(p.?);
+    const bytes: [*]const u8 = @ptrCast(p);
     for (bytes[0..24]) |b| try std.testing.expectEqual(@as(u8, 0), b);
     try std.testing.expectEqual(before + 24, @intFromPtr(tc.*.nursery_alloc));
     stampRaw(tc, p, 24);
