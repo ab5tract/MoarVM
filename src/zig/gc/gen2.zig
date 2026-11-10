@@ -1,23 +1,24 @@
 //! Zig port of src/gc/gen2.c (lines 1-291): the second generation
 //! allocator, a set of fixed size-class bins of 256-item pages plus a list
 //! of overflow blocks malloc'd for anything larger than the last bin.
-//! Faithful port; no behaviour change. The structs and constants stay in
-//! src/gc/gen2.h; all memory goes through `MVM_malloc`/`MVM_calloc`/
-//! `MVM_realloc`/`MVM_free` as in the C, so collect.c and the other C
-//! callers keep walking `size_classes`, `pages` and `overflows` directly.
-//! The free list is threaded through the first word of a freed item; the
-//! sweep in collect.c pushes items onto it (and, under MVM_GC_DEBUG, sets
+//! No behaviour change. The structs and constants stay in src/gc/gen2.h;
+//! all memory goes through `MVM_malloc`/`MVM_calloc`/`MVM_realloc`/
+//! `MVM_free` as in the C, so collect.c and the other C callers keep walking
+//! `size_classes`, `pages` and `overflows` directly. The free list is
+//! threaded through the first word of a freed item (`FreeNode`); the sweep
+//! in collect.c pushes items onto it (and, under MVM_GC_DEBUG, sets
 //! MVM_CF_DEBUG_IN_GEN2_FREE_LIST on them); gen2.c only pops it, so that
-//! flag is not touched here.
+//! flag is not touched here. The functions are Zig-typed; the
+//! `MVM_gc_gen2_*` exports are thin C-ABI wrappers over them.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
+const view = @import("view.zig");
 
-const Tc = [*c]c.MVMThreadContext;
-const Al = [*c]c.MVMGen2Allocator;
-const Collectable = c.MVMCollectable;
-/// `char ***` in MVM_gc_gen2_transfer.
-const FreelistPos = [*c][*c][*c]u8;
+const Tc = view.Tc;
+const Instance = view.Instance;
+const Gen2 = view.Gen2;
+const SizeClass = c.MVMGen2SizeClass;
 
 const BIN_BITS: u5 = c.MVM_GEN2_BIN_BITS;
 const BIN_MASK: u32 = c.MVM_GEN2_BIN_MASK;
@@ -50,286 +51,359 @@ comptime {
     }
 }
 
+// ---- the free list ---------------------------------------------------------
+
+/// A free item of a bin: its first word holds the next free item, the C's
+/// `char **` threading. The head field `free_list` of a size class has the
+/// same one-word shape, which is what lets the C walk both with one
+/// `char ***` (MVM_gc_gen2_transfer's `freelist_insert_pos`).
+pub const FreeNode = extern struct { next: ?*FreeNode };
+
+comptime {
+    std.debug.assert(@sizeOf(FreeNode) == @sizeOf(usize));
+    std.debug.assert(@sizeOf(@FieldType(SizeClass, "free_list")) == @sizeOf(usize));
+}
+
+/// The word at `word` (a free item, or the `free_list` field of a size
+/// class) as a free-list node: the one view of the threading.
+inline fn node(word: anytype) *FreeNode {
+    return @ptrCast(@alignCast(word));
+}
+
+/// The free-list head of `sc`, as a link.
+inline fn freeList(sc: *SizeClass) *?*FreeNode {
+    return &node(&sc.free_list).next;
+}
+
+// ---- slices over the C's lists ---------------------------------------------
+
+/// The size classes of `al`, `MVM_GEN2_BINS` of them.
+inline fn sizeClasses(al: Gen2) []SizeClass {
+    return al.size_classes[0..BINS];
+}
+
+/// The slice type of a C list field `P` (a pointer to its first element).
+fn List(comptime P: type) type {
+    return []@typeInfo(P).pointer.child;
+}
+
+/// `ptr[0..len]` of a C list field `ptr` with its count `len`, which the C
+/// may hold as NULL with a zero count (a bin never set up, an overflow or
+/// root list freed by transfer): slicing a NULL `[*c]` is not allowed.
+inline fn list(ptr: anytype, len: u32) List(@TypeOf(ptr)) {
+    return if (len == 0) &.{} else ptr[0..len];
+}
+
+/// The slots of `size` bytes from `from` up to `to`, in address order, as
+/// the C walks them with `while (cur_ptr < end_ptr) cur_ptr += size`: none
+/// when `to` is not above `from`.
+pub const Slots = struct {
+    bytes: []u8,
+    size: u32,
+    off: usize = 0,
+
+    pub fn init(from: [*]u8, to: [*]u8, size: u32) Slots {
+        if (@intFromPtr(to) <= @intFromPtr(from)) return .{ .bytes = &.{}, .size = size };
+        return .{ .bytes = from[0 .. @intFromPtr(to) - @intFromPtr(from)], .size = size };
+    }
+
+    pub fn next(s: *Slots) ?[*]u8 {
+        if (s.off >= s.bytes.len) return null;
+        const slot = s.bytes[s.off..].ptr;
+        s.off += s.size;
+        return slot;
+    }
+};
+
+/// The slots of page `k` of `sc` (gen2.c:191-196): the whole page, except
+/// the last, the one being allocated in, which ends at `alloc_pos`.
+pub fn pageItems(sc: *const SizeClass, k: usize, obj_size: u32) Slots {
+    const pages = sc.pages[0..sc.num_pages];
+    const page = pages[k];
+    const end = if (k + 1 == pages.len) sc.alloc_pos else page + obj_size *% PAGE_ITEMS;
+    return .init(page, end, obj_size);
+}
+
+// ---- the allocator ---------------------------------------------------------
+
 /// Creates a new second generation allocator. (gen2.c:3-17)
-pub fn create(i: [*c]c.MVMInstance) callconv(.c) Al {
+pub fn create(i: Instance) Gen2 {
     _ = i;
     // Create allocator data structure.
-    const al: Al = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(c.MVMGen2Allocator))));
+    const al: Gen2 = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(c.MVMGen2Allocator))));
 
     // Create empty size classes array data structure.
-    al.*.size_classes = @ptrCast(@alignCast(c.MVM_calloc(BINS, @sizeOf(c.MVMGen2SizeClass))));
+    al.size_classes = @ptrCast(@alignCast(c.MVM_calloc(BINS, @sizeOf(SizeClass))));
 
     // Set up overflows area.
-    al.*.alloc_overflows = c.MVM_GEN2_OVERFLOWS;
-    al.*.num_overflows = 0;
-    al.*.overflows = @ptrCast(@alignCast(c.MVM_malloc(@as(usize, al.*.alloc_overflows) * @sizeOf([*c]Collectable))));
+    al.alloc_overflows = c.MVM_GEN2_OVERFLOWS;
+    al.num_overflows = 0;
+    al.overflows = @ptrCast(@alignCast(c.MVM_malloc(@as(usize, al.alloc_overflows) * @sizeOf(view.Col))));
 
     return al;
 }
 
-/// Sets up a size class bin in the second generation. (gen2.c:19-35)
-fn setupBin(al: Al, bin: c.MVMuint32) void {
+/// Sets up the size class of `bin` in the second generation. (gen2.c:19-35)
+fn setupBin(sc: *SizeClass, bin: u32) void {
     // Work out page size we want.
-    const page_size: c.MVMuint32 = PAGE_ITEMS *% sizeOfBin(bin);
+    const page_size: u32 = PAGE_ITEMS *% sizeOfBin(bin);
 
     // We'll just allocate a single page to start off with.
-    al.*.size_classes[bin].num_pages = 1;
-    al.*.size_classes[bin].pages = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(?*anyopaque) * @as(usize, al.*.size_classes[bin].num_pages))));
-    al.*.size_classes[bin].pages[0] = @ptrCast(c.MVM_malloc(page_size));
+    sc.num_pages = 1;
+    sc.pages = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(?*anyopaque) * @as(usize, sc.num_pages))));
+    sc.pages[0] = @ptrCast(c.MVM_malloc(page_size));
 
     // Set up allocation position and limit.
-    al.*.size_classes[bin].alloc_pos = al.*.size_classes[bin].pages[0];
-    al.*.size_classes[bin].alloc_limit = al.*.size_classes[bin].alloc_pos + page_size;
+    sc.alloc_pos = sc.pages[0];
+    sc.alloc_limit = sc.alloc_pos + page_size;
 
     // Free list is empty until GC run (and we just do page by page allocation).
-    al.*.size_classes[bin].free_list = null;
+    sc.free_list = null;
 }
 
-/// Adds a new page to a size class bin. (gen2.c:37-55)
-fn addPage(al: Al, bin: c.MVMuint32) void {
+/// Adds a new page to the size class of `bin`. (gen2.c:37-55)
+fn addPage(sc: *SizeClass, bin: u32) void {
     // Work out page size.
-    const page_size: c.MVMuint32 = PAGE_ITEMS *% sizeOfBin(bin);
+    const page_size: u32 = PAGE_ITEMS *% sizeOfBin(bin);
 
     // Add the extra page.
-    const cur_page: c.MVMuint32 = al.*.size_classes[bin].num_pages;
-    al.*.size_classes[bin].num_pages +%= 1;
-    al.*.size_classes[bin].pages = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(al.*.size_classes[bin].pages), @sizeOf(?*anyopaque) * @as(usize, al.*.size_classes[bin].num_pages))));
-    al.*.size_classes[bin].pages[cur_page] = @ptrCast(c.MVM_malloc(page_size));
+    const cur_page = sc.num_pages;
+    sc.num_pages +%= 1;
+    sc.pages = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(sc.pages), @sizeOf(?*anyopaque) * @as(usize, sc.num_pages))));
+    sc.pages[cur_page] = @ptrCast(c.MVM_malloc(page_size));
 
     // Set up allocation position and limit.
-    al.*.size_classes[bin].alloc_pos = al.*.size_classes[bin].pages[cur_page];
-    al.*.size_classes[bin].alloc_limit = al.*.size_classes[bin].alloc_pos + page_size;
+    sc.alloc_pos = sc.pages[cur_page];
+    sc.alloc_limit = sc.alloc_pos + page_size;
 
     // set the cur_page to a proper value
-    al.*.size_classes[bin].cur_page = cur_page;
+    sc.cur_page = cur_page;
 }
 
 /// Allocates space using the second generation allocator and returns a
 /// pointer to the allocated space. Does not zero the space or set it up in
 /// any way. (gen2.c:57-105)
-pub fn allocate(al: Al, size: c.MVMuint32) callconv(.c) ?*anyopaque {
-    var result: ?*anyopaque = undefined;
-
+pub fn allocate(al: Gen2, size: u32) *anyopaque {
     // Determine the bin (gen2.c:66-68).
-    const bin: c.MVMuint32 = binOf(size);
+    const bin = binOf(size);
 
     // If the selected bin is in range...
     if (bin < BINS) {
+        const sc = &sizeClasses(al)[bin];
+
         // If we've no pages yet, never encountered this bin; set it up.
-        if (al.*.size_classes[bin].pages == null)
-            setupBin(al, bin);
+        if (sc.pages == null)
+            setupBin(sc, bin);
 
         // If there's a free list entry, use that.
-        if (al.*.size_classes[bin].free_list != null) {
-            result = @ptrCast(al.*.size_classes[bin].free_list);
-            al.*.size_classes[bin].free_list = @ptrCast(@alignCast(al.*.size_classes[bin].free_list.*));
-        } else {
-            // If we're at the page limit, add a new page.
-            if (al.*.size_classes[bin].alloc_pos == al.*.size_classes[bin].alloc_limit)
-                addPage(al, bin);
-
-            // Now we can allocate.
-            result = @ptrCast(al.*.size_classes[bin].alloc_pos);
-            al.*.size_classes[bin].alloc_pos += sizeOfBin(bin);
+        const free = freeList(sc);
+        if (free.*) |item| {
+            free.* = item.next;
+            return item;
         }
-    } else {
-        // We're beyond the size class bins, so resort to malloc.
-        result = c.MVM_malloc(size);
 
-        // Add to overflows list.
-        if (al.*.num_overflows == al.*.alloc_overflows) {
-            al.*.alloc_overflows *%= 2;
-            al.*.overflows = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(al.*.overflows), @as(usize, al.*.alloc_overflows) * @sizeOf([*c]Collectable))));
-        }
-        al.*.overflows[al.*.num_overflows] = @ptrCast(@alignCast(result));
-        al.*.num_overflows +%= 1;
+        // If we're at the page limit, add a new page.
+        if (sc.alloc_pos == sc.alloc_limit)
+            addPage(sc, bin);
+
+        // Now we can allocate.
+        const result: *anyopaque = sc.alloc_pos;
+        sc.alloc_pos += sizeOfBin(bin);
+        return result;
     }
 
+    // We're beyond the size class bins, so resort to malloc.
+    const result = c.MVM_malloc(size).?;
+
+    // Add to overflows list.
+    if (al.num_overflows == al.alloc_overflows) {
+        al.alloc_overflows *%= 2;
+        al.overflows = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(al.overflows), @as(usize, al.alloc_overflows) * @sizeOf(view.Col))));
+    }
+    al.overflows[al.num_overflows] = view.asCol(result);
+    al.num_overflows +%= 1;
     return result;
 }
 
 /// Allocates space using the second generation allocator and returns a
 /// pointer to the allocated space. Promises the memory will be zeroed,
 /// except that the MVMCollectable gen 2 flag will get set. (gen2.c:107-115)
-pub fn allocateZeroed(al: Al, size: c.MVMuint32) callconv(.c) ?*anyopaque {
+pub fn allocateZeroed(al: Gen2, size: u32) *anyopaque {
     const a = allocate(al, size);
-    const bytes: [*c]u8 = @ptrCast(a);
-    @memset(bytes[0..size], 0);
-    @as([*c]Collectable, @ptrCast(@alignCast(a))).*.flags2 = c.MVM_CF_SECOND_GEN;
+    @memset(@as([*]u8, @ptrCast(a))[0..size], 0);
+    view.flags2(view.asCol(a)).* = .{ .second_gen = true };
     return a;
 }
 
 /// Frees all memory associated with the second generation. (gen2.c:117-139)
-pub fn destroy(i: [*c]c.MVMInstance, al: Al) callconv(.c) void {
+pub fn destroy(i: Instance, al: Gen2) void {
     _ = i;
-    var j: c.MVMuint32 = 0;
-
     // Remove all pages.
-    while (j < BINS) : (j += 1) {
-        var k: c.MVMuint32 = 0;
-        while (k < al.*.size_classes[j].num_pages) : (k += 1)
-            c.MVM_free(@ptrCast(al.*.size_classes[j].pages[k]));
-        c.MVM_free(@ptrCast(al.*.size_classes[j].pages));
+    for (sizeClasses(al)) |sc| {
+        for (list(sc.pages, sc.num_pages)) |page|
+            c.MVM_free(@ptrCast(page));
+        c.MVM_free(@ptrCast(sc.pages));
     }
 
     // Free any allocated overflows.
-    j = 0;
-    while (j < al.*.num_overflows) : (j += 1) {
-        if (al.*.overflows[j] != null)
-            c.MVM_free(@ptrCast(al.*.overflows[j]));
+    for (list(al.overflows, al.num_overflows)) |overflow| {
+        if (overflow != null)
+            c.MVM_free(@ptrCast(overflow));
     }
 
     // Clean up allocator data structure.
-    c.MVM_free(@ptrCast(al.*.size_classes));
-    al.*.size_classes = null;
-    c.MVM_free(@ptrCast(al.*.overflows));
-    al.*.overflows = null;
-    c.MVM_free(@ptrCast(al));
+    c.MVM_free(@ptrCast(al.size_classes));
+    al.size_classes = null;
+    c.MVM_free(@ptrCast(al.overflows));
+    al.overflows = null;
+    c.MVM_free(al);
 }
 
 /// Blindly move pages from one gen2 to another. (gen2.c:141-267)
-pub fn transfer(src: Tc, dest: Tc) callconv(.c) void {
-    const gen2: Al = src.*.gen2;
-    const dest_gen2: Al = dest.*.gen2;
-    var obj_size: c.MVMuint32 = undefined;
-    var freelist_insert_pos: FreelistPos = undefined;
+pub fn transfer(src: Tc, dest: Tc) void {
+    const gen2: Gen2 = src.gen2;
+    const dest_gen2: Gen2 = dest.gen2;
 
-    var bin: c.MVMuint32 = 0;
-    while (bin < BINS) : (bin += 1) {
-        const orig_dest_num_pages: c.MVMuint32 = dest_gen2.*.size_classes[bin].num_pages;
-        var cur_ptr: [*c]u8 = undefined;
-        var end_ptr: [*c]u8 = undefined;
+    for (sizeClasses(gen2), sizeClasses(dest_gen2), 0..) |*sc, *dest_sc, bin| {
+        const orig_dest_num_pages = dest_sc.num_pages;
         // If we've nothing allocated in this size class, skip it.
-        if (gen2.*.size_classes[bin].pages == null)
+        if (sc.pages == null)
             continue;
 
-        if (dest_gen2.*.size_classes[bin].pages == null)
-            dest_gen2.*.size_classes[bin].free_list = null;
+        if (dest_sc.pages == null)
+            dest_sc.free_list = null;
 
         // Calculate object size for this bin.
-        obj_size = sizeOfBin(bin);
+        const obj_size = sizeOfBin(@intCast(bin));
 
-        // freelist_insert_pos is a pointer to a memory location that stores
-        // the address of the last traversed free list node (char **).
-        // Initialize freelist insertion position to free list head.
-        freelist_insert_pos = &gen2.*.size_classes[bin].free_list;
+        // freelist_insert_pos is the link that stores the address of the
+        // last traversed free list node (the C's char ***). Initialize
+        // freelist insertion position to free list head.
+        var freelist_insert_pos = freeList(sc);
 
-        if (dest_gen2.*.size_classes[bin].pages == null) {
-            dest_gen2.*.size_classes[bin].pages = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(?*anyopaque) * @as(usize, gen2.*.size_classes[bin].num_pages))));
-            dest_gen2.*.size_classes[bin].num_pages = gen2.*.size_classes[bin].num_pages;
+        if (dest_sc.pages == null) {
+            dest_sc.pages = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(?*anyopaque) * @as(usize, sc.num_pages))));
+            dest_sc.num_pages = sc.num_pages;
         } else {
-            dest_gen2.*.size_classes[bin].num_pages +%= gen2.*.size_classes[bin].num_pages;
-            dest_gen2.*.size_classes[bin].pages = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(dest_gen2.*.size_classes[bin].pages), @sizeOf(?*anyopaque) * @as(usize, dest_gen2.*.size_classes[bin].num_pages))));
+            dest_sc.num_pages +%= sc.num_pages;
+            dest_sc.pages = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(dest_sc.pages), @sizeOf(?*anyopaque) * @as(usize, dest_sc.num_pages))));
         }
+        const dest_pages = dest_sc.pages[0..dest_sc.num_pages];
 
         // Visit each page in the source.
-        var page: c.MVMuint32 = 0;
-        while (page < gen2.*.size_classes[bin].num_pages) : (page += 1) {
+        for (sc.pages[0..sc.num_pages], 0..) |page, k| {
             // Visit all the objects, looking for dead ones and swap the
             // owner for each of them.
-            cur_ptr = gen2.*.size_classes[bin].pages[page];
-            end_ptr = if (page +% 1 == gen2.*.size_classes[bin].num_pages)
-                gen2.*.size_classes[bin].alloc_pos
-            else
-                cur_ptr + obj_size *% PAGE_ITEMS;
-            while (@intFromPtr(cur_ptr) < @intFromPtr(end_ptr)) {
-                if (cur_ptr == @as([*c]u8, @ptrCast(freelist_insert_pos))) {
+            var slots = pageItems(sc, k, obj_size);
+            while (slots.next()) |slot| {
+                if (@intFromPtr(slot) == @intFromPtr(freelist_insert_pos)) {
                     // skip
-                } else if (cur_ptr == @as([*c]u8, @ptrCast(freelist_insert_pos.*))) {
-                    freelist_insert_pos = @ptrCast(@alignCast(cur_ptr));
+                } else if (@intFromPtr(slot) == @intFromPtr(freelist_insert_pos.*)) {
+                    freelist_insert_pos = &node(slot).next;
                 } else { // note: we don't have tests that exercise this path yet.
-                    @as([*c]Collectable, @ptrCast(@alignCast(cur_ptr))).*.owner = dest.*.thread_id;
+                    view.asCol(slot).owner = dest.thread_id;
                 }
-
-                // Move to the next object.
-                cur_ptr += obj_size;
             }
-            dest_gen2.*.size_classes[bin].pages[page +% orig_dest_num_pages] = gen2.*.size_classes[bin].pages[page];
+            dest_pages[k + orig_dest_num_pages] = page;
         }
 
-        freelist_insert_pos = &dest_gen2.*.size_classes[bin].free_list;
-        while (freelist_insert_pos.* != null) {
-            freelist_insert_pos = @ptrCast(@alignCast(freelist_insert_pos.*));
-        }
+        freelist_insert_pos = freeList(dest_sc);
+        while (freelist_insert_pos.*) |n|
+            freelist_insert_pos = &n.next;
         // chain the destination's freelist through any remaining unallocated area
-        if (dest_gen2.*.size_classes[bin].alloc_pos != null) {
-            cur_ptr = dest_gen2.*.size_classes[bin].alloc_pos;
-            end_ptr = dest_gen2.*.size_classes[bin].alloc_limit;
-            while (@intFromPtr(cur_ptr) < @intFromPtr(end_ptr)) {
-                freelist_insert_pos.* = @ptrCast(@alignCast(cur_ptr));
-                freelist_insert_pos = @ptrCast(@alignCast(cur_ptr));
-                cur_ptr += obj_size;
+        if (dest_sc.alloc_pos != null) {
+            var rest: Slots = .init(dest_sc.alloc_pos, dest_sc.alloc_limit, obj_size);
+            while (rest.next()) |slot| {
+                freelist_insert_pos.* = node(slot);
+                freelist_insert_pos = &node(slot).next;
             }
         }
 
         // link to the new pages, if any
-        freelist_insert_pos.* = gen2.*.size_classes[bin].free_list;
+        freelist_insert_pos.* = freeList(sc).*;
 
-        dest_gen2.*.size_classes[bin].alloc_pos = gen2.*.size_classes[bin].alloc_pos;
-        dest_gen2.*.size_classes[bin].alloc_limit = gen2.*.size_classes[bin].alloc_limit;
+        dest_sc.alloc_pos = sc.alloc_pos;
+        dest_sc.alloc_limit = sc.alloc_limit;
 
-        c.MVM_free(@ptrCast(gen2.*.size_classes[bin].pages));
-        gen2.*.size_classes[bin].pages = null;
-        gen2.*.size_classes[bin].num_pages = 0;
+        c.MVM_free(@ptrCast(sc.pages));
+        sc.pages = null;
+        sc.num_pages = 0;
     }
     { // transfer the overflows
-        if (gen2.*.num_overflows +% dest_gen2.*.num_overflows > dest_gen2.*.alloc_overflows) {
-            dest_gen2.*.alloc_overflows = (if (gen2.*.alloc_overflows > dest_gen2.*.alloc_overflows)
-                gen2.*.alloc_overflows
-            else
-                dest_gen2.*.alloc_overflows) *% 2; // double the larger of the 2 sizes
-            dest_gen2.*.overflows = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(dest_gen2.*.overflows), @as(usize, dest_gen2.*.alloc_overflows) * @sizeOf([*c]Collectable))));
+        if (gen2.num_overflows +% dest_gen2.num_overflows > dest_gen2.alloc_overflows) {
+            // double the larger of the 2 sizes
+            dest_gen2.alloc_overflows = @max(gen2.alloc_overflows, dest_gen2.alloc_overflows) *% 2;
+            dest_gen2.overflows = @ptrCast(@alignCast(c.MVM_realloc(@ptrCast(dest_gen2.overflows), @as(usize, dest_gen2.alloc_overflows) * @sizeOf(view.Col))));
         }
-        var i: c.MVMuint32 = 0;
-        while (i < gen2.*.num_overflows) : (i += 1)
-            gen2.*.overflows[i].*.owner = dest.*.thread_id;
+        const overflows = list(gen2.overflows, gen2.num_overflows);
+        for (overflows) |overflow|
+            overflow.*.owner = dest.thread_id;
         // memcpy(&dest_gen2->overflows[dest_gen2->num_overflows], gen2->overflows,
         //        gen2->num_overflows * sizeof(MVMCollectable *))
-        const dest_at: [*c][*c]Collectable = &dest_gen2.*.overflows[dest_gen2.*.num_overflows];
-        @memcpy(dest_at[0..gen2.*.num_overflows], gen2.*.overflows[0..gen2.*.num_overflows]);
-        dest_gen2.*.num_overflows +%= gen2.*.num_overflows;
+        @memcpy(dest_gen2.overflows[dest_gen2.num_overflows..][0..overflows.len], overflows);
+        dest_gen2.num_overflows +%= gen2.num_overflows;
 
-        gen2.*.num_overflows = 0;
-        gen2.*.alloc_overflows = 0;
-        c.MVM_free(@ptrCast(gen2.*.overflows));
-        gen2.*.overflows = null;
+        gen2.num_overflows = 0;
+        gen2.alloc_overflows = 0;
+        c.MVM_free(@ptrCast(gen2.overflows));
+        gen2.overflows = null;
     }
     { // copy the roots...
-        const n: c.MVMuint32 = src.*.num_gen2roots;
-        var i: c.MVMuint32 = 0;
-        while (i < n) : (i += 1) {
-            c.MVM_gc_root_gen2_add(dest, src.*.gen2roots[i]);
-        }
-        src.*.num_gen2roots = 0;
-        src.*.alloc_gen2roots = 0;
-        c.MVM_free(@ptrCast(src.*.gen2roots));
-        src.*.gen2roots = null;
+        for (list(src.gen2roots, src.num_gen2roots)) |root|
+            c.MVM_gc_root_gen2_add(dest, root);
+        src.num_gen2roots = 0;
+        src.alloc_gen2roots = 0;
+        c.MVM_free(@ptrCast(src.gen2roots));
+        src.gen2roots = null;
     }
 }
 
 /// Compact the overflow list to prevent it from growing without bounds.
 /// (gen2.c:270-291)
-pub fn compactOverflows(al: Al) callconv(.c) void {
-    const overflows: [*c][*c]Collectable = al.*.overflows;
-    const num_overflows: c.MVMuint32 = al.*.num_overflows;
-    var cursor: c.MVMuint32 = 0;
-    var live: c.MVMuint32 = undefined;
+pub fn compactOverflows(al: Gen2) void {
+    const overflows = list(al.overflows, al.num_overflows);
 
     // Find the first NULL object.
-    while (cursor < num_overflows and overflows[cursor] != null)
-        cursor += 1;
-    live = cursor;
+    const first_null: u32 = for (overflows, 0..) |overflow, cursor| {
+        if (overflow == null) break @intCast(cursor);
+    } else al.num_overflows;
 
     // Slide others back so the alive ones are at the start of the list.
-    while (cursor < num_overflows) {
-        if (overflows[cursor] != null) {
-            overflows[live] = overflows[cursor];
+    var live = first_null;
+    for (overflows[first_null..]) |overflow| {
+        if (overflow != null) {
+            overflows[live] = overflow;
             live += 1;
         }
-        cursor += 1;
     }
 
-    al.*.num_overflows = live;
+    al.num_overflows = live;
+}
+
+// ---- the C ABI -------------------------------------------------------------
+
+fn createExport(i: [*c]c.MVMInstance) callconv(.c) [*c]c.MVMGen2Allocator {
+    return create(i);
+}
+
+fn allocateExport(al: [*c]c.MVMGen2Allocator, size: c.MVMuint32) callconv(.c) ?*anyopaque {
+    return allocate(al, size);
+}
+
+fn allocateZeroedExport(al: [*c]c.MVMGen2Allocator, size: c.MVMuint32) callconv(.c) ?*anyopaque {
+    return allocateZeroed(al, size);
+}
+
+fn destroyExport(i: [*c]c.MVMInstance, al: [*c]c.MVMGen2Allocator) callconv(.c) void {
+    destroy(i, al);
+}
+
+fn transferExport(src: [*c]c.MVMThreadContext, dest: [*c]c.MVMThreadContext) callconv(.c) void {
+    transfer(src, dest);
+}
+
+fn compactOverflowsExport(al: [*c]c.MVMGen2Allocator) callconv(.c) void {
+    compactOverflows(al);
 }
 
 // Under -Dlto (--zig-lto) the exports are protected: they stay in libmoar's
@@ -339,10 +413,10 @@ pub fn compactOverflows(al: Al) callconv(.c) void {
 const visibility: std.lang.SymbolVisibility = if (@import("zig_options").lto) .protected else .default;
 
 comptime {
-    @export(&create, .{ .name = "MVM_gc_gen2_create", .visibility = visibility });
-    @export(&allocate, .{ .name = "MVM_gc_gen2_allocate", .visibility = visibility });
-    @export(&allocateZeroed, .{ .name = "MVM_gc_gen2_allocate_zeroed", .visibility = visibility });
-    @export(&destroy, .{ .name = "MVM_gc_gen2_destroy", .visibility = visibility });
-    @export(&transfer, .{ .name = "MVM_gc_gen2_transfer", .visibility = visibility });
-    @export(&compactOverflows, .{ .name = "MVM_gc_gen2_compact_overflows", .visibility = visibility });
+    @export(&createExport, .{ .name = "MVM_gc_gen2_create", .visibility = visibility });
+    @export(&allocateExport, .{ .name = "MVM_gc_gen2_allocate", .visibility = visibility });
+    @export(&allocateZeroedExport, .{ .name = "MVM_gc_gen2_allocate_zeroed", .visibility = visibility });
+    @export(&destroyExport, .{ .name = "MVM_gc_gen2_destroy", .visibility = visibility });
+    @export(&transferExport, .{ .name = "MVM_gc_gen2_transfer", .visibility = visibility });
+    @export(&compactOverflowsExport, .{ .name = "MVM_gc_gen2_compact_overflows", .visibility = visibility });
 }
