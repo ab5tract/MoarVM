@@ -160,6 +160,16 @@ test "object_id is stable across a collection and clear removes it" {
     try std.testing.expectEqual(@as(usize, @intCast(third_id)), @intFromPtr(objectid.useAllocation(tc, &third.header)));
     try std.testing.expect(!view.flags1(&third.header).has_object_id);
     try std.testing.expect(!hashed(tc, third));
+
+    // No entry: NULL, from the Zig function and through the export, as the
+    // C returns the hash's 0 (objectid.c:42); the flag is toggled all the
+    // same (objectid.c:43).
+    const none: *Object = c.MVM_repr_alloc_init(tc, instance.*.boot_types.BOOTArray);
+    try std.testing.expect(!hashed(tc, none));
+    try std.testing.expect(objectid.useAllocation(tc, &none.header) == null);
+    try std.testing.expect(view.flags1(&none.header).has_object_id);
+    try std.testing.expect(c.MVM_gc_object_id_use_allocation(tc, &none.header) == null);
+    try std.testing.expect(!view.flags1(&none.header).has_object_id);
 }
 
 test "finalize_set marks the type and add_to_queue grows the queue" {
@@ -366,8 +376,12 @@ fn collectionLogLines() !void {
 
     const f = c.fopen(&path, "r") orelse return error.LogNotReadable;
     defer _ = c.fclose(f);
-    var got: [1024]u8 = undefined;
+    var got: [16384]u8 = undefined;
     const n = c.fread(&got, 1, got.len, f);
+    if (n == got.len) {
+        std.debug.print("$MVM_GC_LOG holds more than {d} bytes after one collection\n", .{got.len});
+        return error.LogTooLong;
+    }
     const text = got[0..n];
     // One line per thread the run worked for (the main thread, which
     // started it and is coord=1, first; then the VM's other threads), each

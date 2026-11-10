@@ -480,7 +480,7 @@ fn processWorklist(tc: Tc, worklist: Worklist, wtp: *WorkToPass, gen: Generation
                 // Yes; we should move it to the second generation. Allocate
                 // space in the second generation.
                 const to: Col = view.asCol(if (view.flags1(item).has_object_id)
-                    objectid.useAllocation(tc, item)
+                    objectid.useAllocation(tc, item).?
                 else
                     gen2_mod.allocate(gen2, item.size));
 

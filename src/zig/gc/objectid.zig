@@ -51,10 +51,11 @@ pub fn objectId(tc: Tc, obj: Object) u64 {
 
 /// If an object with an entry here lives long enough to be promoted to
 /// gen2, this removes the hash entry for it and returns the pre-allocated
-/// gen2 address. (objectid.c:40-46) The entry exists whenever the
-/// `MVM_CF_HAS_OBJECT_ID` flag is set, which is when the collector calls
-/// this; the C does not test the address either (it copies to it).
-pub fn useAllocation(tc: Tc, item: Col) *anyopaque {
+/// gen2 address, or null when the hash has no entry for it (the C returns
+/// the hash's 0 as NULL). (objectid.c:40-46) The collector calls this only
+/// with `MVM_CF_HAS_OBJECT_ID` set, which implies an entry, and unwraps
+/// the result with `.?` as the faithful port did.
+pub fn useAllocation(tc: Tc, item: Col) ?*anyopaque {
     const i: view.Instance = tc.instance;
     c.uv_mutex_lock(&i.mutex_object_ids);
     defer c.uv_mutex_unlock(&i.mutex_object_ids);
@@ -62,6 +63,7 @@ pub fn useAllocation(tc: Tc, item: Col) *anyopaque {
     // `flags1 ^= MVM_CF_HAS_OBJECT_ID`: a toggle, as the C's.
     const f1 = view.flags1(item);
     f1.has_object_id = !f1.has_object_id;
+    if (addr == 0) return null;
     return @ptrFromInt(addr);
 }
 
