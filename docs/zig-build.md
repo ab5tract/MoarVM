@@ -542,6 +542,25 @@ on ARM64, `fence rw,rw` on RISC-V, a seq_cst read-modify-write of a private
 word elsewhere. Every other atomic site keeps its operation, its `.seq_cst`
 ordering and a comment naming the C macro and line it replaces.
 
+Call-boundary parity. Where the C build calls a collector function out of
+line, the Zig build calls it out of line too, and where the C inlines, the
+Zig inlines: the comparison is with the C `-syms` build's disassembly under
+its own LTO, not with the C source's file boundaries. Under `-Dlto` LLVM
+sees across the Zig files and would otherwise inline a slow path the C
+keeps out of line (with `gen2Add` and `addToQueue` inlined into it,
+`allocateObject` was 786 bytes against the C allocator's 384; without
+them it is 369), so the rule is held with `noinline` on the definition,
+not at the call site. Six definitions carry it: `roots.gen2Add`,
+`finalize.addToQueue`, `worklist.addSlow`, `worklist.create`,
+`worklist.presizeFor` and `finalize.walkQueues`; each allocates or grows a
+buffer, or walks the threads, and the C build calls each out of line.
+`tools/bench/gc/call-boundary.sh LIBDIR` checks the shape on an unstripped
+build (`-Dstrip=false`): it reads the disassembly of `LIBDIR/libmoar.so`
+and exits 0 only if each audited callee is reached by a `call` from each
+of its expected callers (the table is in the script; the audit behind it is
+`traces/llm/bench/cb-audit.md`), 1 when a call is missing and 2 when a
+symbol is (a stripped build). It is not part of `zig build test`.
+
 ### Per-collection log
 
 At `-Dgc-debug=1` and up, `MVM_GC_LOG=<file>` opens `<file>` for append at
