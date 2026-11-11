@@ -54,7 +54,7 @@ inline fn append(list: *Queue, num: *u32, alloc: *u32, obj: Object) void {
 
 /// Adds an object we've just allocated to the queue of those with
 /// finalizers that will need calling upon collection. (finalize.c:15-27)
-pub fn addToQueue(tc: Tc, obj: Object) void {
+pub noinline fn addToQueue(tc: Tc, obj: Object) void {
     moar.assertNotFromspace(tc, obj);
     append(&tc.finalize, &tc.num_finalize, &tc.alloc_finalize, obj);
 }

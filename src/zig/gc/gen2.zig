@@ -14,6 +14,7 @@ const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
 const view = @import("view.zig");
+const roots = @import("roots.zig");
 
 const Tc = view.Tc;
 const Instance = view.Instance;
@@ -344,7 +345,7 @@ pub fn transfer(src: Tc, dest: Tc) void {
     }
     { // copy the roots...
         for (list(src.gen2roots, src.num_gen2roots)) |root|
-            c.MVM_gc_root_gen2_add(dest, root);
+            roots.gen2Add(dest, root);
         src.num_gen2roots = 0;
         src.alloc_gen2roots = 0;
         c.MVM_free(@ptrCast(src.gen2roots));

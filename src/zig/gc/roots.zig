@@ -18,6 +18,7 @@ const builtin = @import("builtin");
 const moar = @import("moar");
 const c = moar.c;
 const view = @import("view.zig");
+const collect = @import("collect.zig");
 const worklist_mod = @import("worklist.zig");
 
 const Tc = view.Tc;
@@ -454,7 +455,7 @@ pub fn addTempsToWorklist(tc: Tc, worklist: ?Worklist, snapshot: ?*c.MVMHeapSnap
 
 /// Pushes a collectable that is in generation 2, but now references a nursery
 /// collectable, into the gen2 root set. (roots.c:306-325)
-pub fn gen2Add(tc: Tc, maybe_col: ?Col) void {
+pub noinline fn gen2Add(tc: Tc, maybe_col: ?Col) void {
     // Ensure the collectable is not null.
     const col = maybe_col orelse
         c.MVM_panic(c.MVM_exitcode_gcroots, "Illegal attempt to add null collectable address as an inter-generational root");
@@ -498,7 +499,7 @@ pub fn addGen2sToWorklist(tc: Tc, worklist: Worklist) void {
         // be set not to include gen2 things, only nursery things will make it
         // in.
         cAssert(!view.flags2(col).forwarder_valid);
-        c.MVM_gc_mark_collectable(tc, worklist, col);
+        collect.markCollectable(tc, worklist, col);
 
         // If we added any nursery objects, or if we are a frame with ->work
         // area, keep in this list.
