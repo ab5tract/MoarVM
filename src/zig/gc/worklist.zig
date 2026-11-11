@@ -33,7 +33,7 @@ fn resize(worklist: Worklist) void {
 }
 
 /// Allocates a new GC worklist. (worklist.c:3-11)
-pub fn create(tc: Tc, include_gen2: bool) Worklist {
+pub noinline fn create(tc: Tc, include_gen2: bool) Worklist {
     _ = tc;
     const worklist: Worklist = @ptrCast(@alignCast(c.MVM_malloc(@sizeOf(c.MVMGCWorklist))));
     worklist.items = 0;
@@ -44,7 +44,7 @@ pub fn create(tc: Tc, include_gen2: bool) Worklist {
 }
 
 /// Adds an item to the worklist, expanding it if needed. (worklist.c:13-20)
-pub fn addSlow(worklist: Worklist, item: ColSlot) void {
+pub noinline fn addSlow(worklist: Worklist, item: ColSlot) void {
     if (worklist.items == worklist.alloc) {
         worklist.alloc *%= 2;
         resize(worklist);
@@ -55,7 +55,7 @@ pub fn addSlow(worklist: Worklist, item: ColSlot) void {
 
 /// Pre-sizes the worklist in expectation a certain number of items is about to be
 /// added. (worklist.c:22-29)
-pub fn presizeFor(worklist: Worklist, items: u32) void {
+pub noinline fn presizeFor(worklist: Worklist, items: u32) void {
     const wanted = worklist.items +% items;
     if (wanted >= worklist.alloc) {
         worklist.alloc = wanted;

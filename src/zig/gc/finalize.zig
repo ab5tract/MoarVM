@@ -101,7 +101,7 @@ fn walkThreadFinalizeQueue(tc: Tc, gen: Generations) void {
 }
 
 /// (finalize.c:73-83)
-pub fn walkQueues(tc: Tc, gen: Generations) void {
+pub noinline fn walkQueues(tc: Tc, gen: Generations) void {
     var cur_thread: ?Thread = atomic.load(&tc.instance.*.threads); // MVM_load, finalize.c:74
     while (cur_thread) |thread| : (cur_thread = thread.body.next) {
         const thread_tc: Tc = thread.body.tc orelse continue;
