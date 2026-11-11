@@ -559,7 +559,7 @@ build (`-Dstrip=false`): it reads the disassembly of `LIBDIR/libmoar.so`
 and exits 0 only if each audited callee is reached by a `call` from each
 of its expected callers (the table is in the script; the audit behind it is
 `traces/llm/bench/cb-audit.md`), 1 when a call is missing and 2 when a
-symbol is (a stripped build). It is not part of `zig build test`.
+symbol is absent (a stripped build). It is not part of `zig build test`.
 
 ### Per-collection log
 

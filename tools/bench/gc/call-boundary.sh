@@ -10,8 +10,10 @@
 # symbols must be defined in LIBDIR/libmoar.so (`nm --defined-only`, exact
 # name), and the caller's disassembly
 #     objdump -d --no-show-raw-insn --disassemble=<caller> LIBDIR/libmoar.so
-# must contain at least one `call <addr> <callee>` line, the callee's name
-# matched exactly between the angle brackets.
+# must contain at least one `call <addr> <callee>` line (or `callq`, as
+# older binutils and llvm-objdump print it), the callee's name matched
+# exactly between the angle brackets. Requires GNU binutils (`objdump`,
+# `nm`).
 #
 # The table: the noinline rows of the audit (traces/llm/bench/cb-audit.md),
 # with the symbol names LTO gives them in a -Dstrip=false build, plus the
@@ -90,7 +92,7 @@ printf '%s\n' "$rows" | {
             fi
         done
         k=$(objdump -d --no-show-raw-insn --disassemble="$caller" "$lib" |
-            grep -E '[[:space:]]call[[:space:]]' | grep -cF "<$callee>" || true)
+            grep -E '[[:space:]]callq?[[:space:]]' | grep -cF "<$callee>" || true)
         if [ "$k" -lt 1 ]; then
             echo "call-boundary.sh: FAIL $caller does not call $callee in $lib" >&2
             exit 1
