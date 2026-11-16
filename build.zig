@@ -148,11 +148,14 @@ pub fn build(b: *std.Build) void {
             // engine's string table on real MVMStrings (plus the
             // microbenchmark's ladder test, hence build_options), and the
             // GC port on a booted VM (only with -Dzig-gc: with the C
-            // collector there is no port to test).
+            // collector there is no port to test), and the REPR vtable
+            // builder (with -Dzig-reprs on or off: it compares the linked
+            // array table against the C table's recorded dump).
             const roots = [_]struct { []const u8, []const u8, []const std.Build.Module.Import }{
                 .{ "src/zig/moar.zig", "shim-test", &.{} },
                 .{ "src/zig/core/hash/hash_test.zig", "hash-str-test", &.{ .{ .name = "build_options", .module = bench_options }, .{ .name = "zig_options", .module = stats_options } } },
                 .{ "src/zig/gc/gc_test.zig", "gc-test", &.{.{ .name = "zig_options", .module = stats_options }} },
+                .{ "src/zig/6model/repr_test.zig", "repr-test", &.{.{ .name = "zig_options", .module = stats_options }} },
             };
             for (roots) |root| {
                 if (!opts.zig_gc and std.mem.eql(u8, root[1], "gc-test")) continue;
