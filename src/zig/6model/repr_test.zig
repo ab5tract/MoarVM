@@ -5,4 +5,5 @@
 //! module's files must lie under its root file's directory.
 test {
     _ = @import("test/repr_ops_test.zig");
+    _ = @import("test/vmarray_storage_test.zig");
 }

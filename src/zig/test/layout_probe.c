@@ -19,3 +19,16 @@ size_t moar_probe_offsetof_debugserver_debugspam_protocol(void) { return offseto
 void moar_probe_worklist_add_include_gen2_nocheck(MVMThreadContext *tc, MVMGCWorklist *worklist, MVMCollectable **item) {
     MVM_gc_worklist_add_include_gen2_nocheck(tc, worklist, item);
 }
+/* The array body, object and REPR data (VMArray.h), whose layouts the Zig
+ * array's kind table and storage (src/zig/6model/reprs/vmarray) rely on. */
+size_t moar_probe_sizeof_array_body(void) { return sizeof(MVMArrayBody); }
+size_t moar_probe_sizeof_array(void) { return sizeof(MVMArray); }
+size_t moar_probe_sizeof_array_repr_data(void) { return sizeof(MVMArrayREPRData); }
+size_t moar_probe_offsetof_array_body_elems(void) { return offsetof(MVMArrayBody, elems); }
+size_t moar_probe_offsetof_array_body_start(void) { return offsetof(MVMArrayBody, start); }
+size_t moar_probe_offsetof_array_body_ssize(void) { return offsetof(MVMArrayBody, ssize); }
+size_t moar_probe_offsetof_array_body_slots(void) { return offsetof(MVMArrayBody, slots); }
+size_t moar_probe_offsetof_array_body(void) { return offsetof(MVMArray, body); }
+size_t moar_probe_offsetof_array_repr_data_elem_size(void) { return offsetof(MVMArrayREPRData, elem_size); }
+size_t moar_probe_offsetof_array_repr_data_slot_type(void) { return offsetof(MVMArrayREPRData, slot_type); }
+size_t moar_probe_offsetof_array_repr_data_elem_type(void) { return offsetof(MVMArrayREPRData, elem_type); }
