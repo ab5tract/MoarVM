@@ -24,11 +24,18 @@
 # (default $RAKUDO, else the in-tree
 # /home/longwalker/code/raku/x.core/zmoarz/rakudo/rakudo-m) with
 # RAKUDO_NO_PRECOMPILATION=1; both load libmoar from LD_LIBRARY_PATH first.
+# Every MVM_*, RAKUDO_*, NQP_*, RAKU_* and PERL6* variable and RAKULIB of the
+# caller's environment is removed from the runs before the setting's own are
+# set, so both sides see the same, known environment.
 # Every run is under `systemd-run --user --scope -q -p MemoryMax=8G` and
 # `timeout 900`, after the 1-minute load has dropped below 2.0 (polled every
 # 60 s; the value is logged in <DIR>/load.log). Output goes to
 #     <DIR>/<side>-<program>-<setting>-<i>.out     (stdout)
 #     <DIR>/<side>-<program>-<setting>-<i>.err     (stderr, must stay empty)
+# Before a side's runs, a probe through each runner prints the libmoar.so the
+# process has mapped (from /proc/self/maps) and the variables of those
+# families it sees; the library must lie under the side's prefix, else the
+# script stops with exit 4. The probes are logged in <DIR>/libmoar.log.
 # Then, per side, the serialization cross-read: the side deserializes what
 # the other side serialized,
 #     vmarray-serial.nqp --read=<DIR>/<other>-serial-<setting>-1.out
@@ -37,12 +44,20 @@
 # (<DIR>/<other>-serial-<setting>.expect).
 #
 # Checks, in this order:
-#   * a run that exits non-zero, times out or writes to stderr: exit 4;
+#   * a run that exits non-zero, times out or writes to stderr, or a probe
+#     that finds another libmoar: exit 4;
 #   * repeatability: the K outputs of a side, program and setting must be
 #     identical, else exit 2 "not repeatable" with the first differing line;
 #   * fidelity: base-...-1 against head-...-1 for every program and setting,
-#     and each cross-read against its expectation; exit 1 naming the first
-#     differing line otherwise;
+#     and each cross-read against its expectation. A difference in a line
+#     that undefined-lines.txt (beside this script) does not list, a
+#     different number of lines, or a cross-read that differs: exit 1 naming
+#     the first differing line;
+#   * if base and head differ, but only in lines listed in
+#     undefined-lines.txt (self-splices whose result in C is what memcpy over
+#     overlapping ranges leaves): exit 3 "differs only in undefined
+#     self-splice lines", with every differing line and both values. This is
+#     not a pass: it is recorded and put to the user;
 #   * exit 0 "identical" with the line counts.
 #
 # Usage: tools/bench/repr/diff.sh --base=PREFIX --head=PREFIX --out=DIR
@@ -55,9 +70,10 @@
 # PREFIX strings must be of equal length (the install path is baked into
 # libmoar and its length moves the heap, and a few cases print what a
 # memcpy over overlapping ranges leaves, which can follow the alignment of
-# the storage); an unequal pair is refused with exit 4 before anything runs.
+# the storage); an unequal pair is misuse and refused before anything runs.
 # Exit: 0 identical, 1 base and head differ, 2 a side not repeatable,
-# 4 a run failed or the prefixes differ in length, 64 misuse.
+# 3 base and head differ only in the listed undefined self-splice lines,
+# 4 a run failed or a side did not load its own libmoar, 64 misuse.
 set -e
 
 root=$(cd "$(dirname "$0")/../../.." && pwd)
@@ -93,11 +109,12 @@ else
     [ -x "$rakudo" ] || usage "$rakudo is not executable"
     [ -e "$out" ] && usage "$out exists; pick a fresh --out"
     if [ "${#base}" != "${#head}" ]; then
-        echo "diff.sh: --base and --head differ in length (base $base is ${#base} characters, head $head is ${#head}); use prefixes of equal length" >&2
-        exit 4
+        usage "--base and --head differ in length (base $base is ${#base} characters, head $head is ${#head}); use prefixes of equal length"
     fi
 fi
 
+undefined_list="$root/tools/bench/repr/undefined-lines.txt"
+[ -r "$undefined_list" ] || usage "$undefined_list missing"
 programs="diff-nqp diff-raku serial devirt"
 settings="spesh nospesh"
 max_load=2.0
@@ -131,6 +148,27 @@ wait_load() {
     done
 }
 
+# The variables of the caller's environment that could change what a run
+# does, as `-u NAME` arguments for env.
+scrub=$(env | sed -n 's/^\(\(MVM_\|RAKUDO_\|NQP_\|RAKU_\|PERL6\)[A-Za-z0-9_]*\|RAKULIB\)=.*/-u \1/p')
+
+# run_env LIBPREFIX SETTING COMMAND...: COMMAND with the side's library and
+# the setting's variables, and none of the caller's.
+run_env() {
+    re_prefix=$1 re_setting=$2
+    shift 2
+    if [ "$re_setting" = spesh ]; then
+        spesh_env="MVM_SPESH_BLOCKING=1"
+    else
+        spesh_env="MVM_SPESH_DISABLE=1"
+    fi
+    # shellcheck disable=SC2086
+    env $scrub \
+        LD_LIBRARY_PATH="$re_prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
+        RAKUDO_NO_PRECOMPILATION=1 "$spesh_env" \
+        systemd-run --user --scope -q -p MemoryMax=8G timeout 900 "$@"
+}
+
 # run_one LIBPREFIX SETTING STEM COMMAND...: one program run; stdout to
 # STEM.out, stderr to STEM.err. Exit 4 on failure or on any stderr output.
 run_one() {
@@ -138,17 +176,8 @@ run_one() {
     shift 3
     wait_load
     echo "$(basename "$stem") load $(cut -d' ' -f1 /proc/loadavg)" >> "$out/load.log"
-    if [ "$setting" = spesh ]; then
-        spesh_env="MVM_SPESH_BLOCKING=1"
-    else
-        spesh_env="MVM_SPESH_DISABLE=1"
-    fi
     status=0
-    env -u MVM_SPESH_DISABLE -u MVM_SPESH_BLOCKING -u MVM_JIT_DISABLE -u MVM_SPESH_NODELAY \
-        LD_LIBRARY_PATH="$prefix/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}" \
-        RAKUDO_NO_PRECOMPILATION=1 "$spesh_env" \
-        systemd-run --user --scope -q -p MemoryMax=8G timeout 900 "$@" \
-        > "$stem.out" 2> "$stem.err" || status=$?
+    run_env "$prefix" "$setting" "$@" > "$stem.out" 2> "$stem.err" || status=$?
     if [ "$status" != 0 ]; then
         echo "diff.sh: $(basename "$stem") failed with exit $status; see $stem.out and $stem.err" >&2
         exit 4
@@ -157,6 +186,32 @@ run_one() {
         echo "diff.sh: $(basename "$stem") wrote to stderr; see $stem.err" >&2
         exit 4
     fi
+}
+
+# probe SIDE LIBPREFIX: through each runner, which libmoar.so the process has
+# mapped and which variables of the scrubbed families it sees. The library
+# must lie under the prefix (symbolic links resolved), else exit 4: without
+# this a side that silently ran another library would pass as identical.
+nqp_probe='for nqp::split("\n", slurp("/proc/self/maps")) { if nqp::index($_, "libmoar") >= 0 { say(nqp::substr($_, nqp::index($_, "/"))); last } }; for nqp::getenvhash() { my $n := $_.key; say($n ~ "=" ~ $_.value) if nqp::eqat($n, "MVM_", 0) || nqp::eqat($n, "RAKU", 0) || nqp::eqat($n, "NQP_", 0) || nqp::eqat($n, "PERL6", 0) }'
+raku_probe='say "/proc/self/maps".IO.lines.first(*.contains("libmoar")).words[*-1]; .say for %*ENV.pairs.grep({ .key ~~ /^[MVM_|RAKU|NQP_|PERL6]/ }).map({ .key ~ "=" ~ .value })'
+probe() {
+    pr_side=$1 pr_prefix=$2
+    pr_real=$(cd "$pr_prefix" && pwd -P)
+    for pr_runner in nqp rakudo; do
+        if [ "$pr_runner" = nqp ]; then
+            pr_out=$(run_env "$pr_prefix" nospesh "$nqp" -e "$nqp_probe" 2>&1) || { echo "diff.sh: the $pr_runner probe of $pr_side failed: $pr_out" >&2; exit 4; }
+        else
+            pr_out=$(run_env "$pr_prefix" nospesh "$rakudo" -e "$raku_probe" 2>&1) || { echo "diff.sh: the $pr_runner probe of $pr_side failed: $pr_out" >&2; exit 4; }
+        fi
+        pr_lib=$(printf '%s\n' "$pr_out" | sed -n 1p)
+        pr_env=$(printf '%s\n' "$pr_out" | sed 1d | sort | tr '\n' ' ')
+        echo "$pr_side $pr_runner libmoar=$pr_lib env: $pr_env" >> "$out/libmoar.log"
+        echo "diff.sh: $pr_side through $pr_runner loads $pr_lib" >&2
+        case $pr_lib in
+            "$pr_real"/*) ;;
+            *) echo "diff.sh: $pr_side ($pr_runner) loaded $pr_lib, which is not under its prefix $pr_real" >&2; exit 4 ;;
+        esac
+    done
 }
 
 command_of() {
@@ -173,6 +228,7 @@ if [ -z "$compare_only" ]; then
     mkdir -p "$out"
     for side in base head; do
         if [ "$side" = base ]; then prefix=$base; else prefix=$head; fi
+        probe "$side" "$prefix"
         for program in $programs; do
             for setting in $settings; do
                 i=1
@@ -234,14 +290,39 @@ for setting in $settings; do
     done
 done
 
+# only_listed PROGRAM A B: succeeds when A and B have the same number of
+# lines and every line that differs has the same case name in both and that
+# name is listed for PROGRAM in undefined-lines.txt; it then prints those
+# lines with both values. Fails, printing nothing, otherwise.
+only_listed() {
+    awk -v P="$1" -v L="$undefined_list" -v A="$2" -v B="$3" '
+        function name(s,  i) { i = index(s, ": "); return i ? substr(s, 1, i - 1) : s }
+        function show(s) { return length(s) > 300 ? substr(s, 1, 300) "... (" length(s) " characters)" : s }
+        FILENAME == L { if ($0 !~ /^#/ && $1 == P) { sub(/^[^ ]+ /, ""); listed[$0] = 1 } next }
+        FILENAME == A { a[FNR] = $0; n = FNR; next }
+        { m = FNR
+          if (FNR > n) { bad = 1; exit }
+          if (a[FNR] != $0) {
+              if (name(a[FNR]) != name($0) || !(name($0) in listed)) { bad = 1; exit }
+              d[++k] = sprintf("  %s\n    base: %s\n    head: %s", name($0), show(substr(a[FNR], length(name($0)) + 3)), show(substr($0, length(name($0)) + 3)))
+          } }
+        END { if (bad || m != n) exit 1; for (i = 1; i <= k; i++) print d[i] }
+    ' "$undefined_list" "$2" "$3"
+}
+
 # Fidelity.
-differ=0
+differ=0 undefined=0
 for program in $programs; do
     for setting in $settings; do
         if ! cmp -s "$out/base-$program-$setting-1.out" "$out/head-$program-$setting-1.out"; then
-            echo "diff.sh: base and head differ ($program, $setting), first difference at" >&2
-            first_diff "$out/base-$program-$setting-1.out" "$out/head-$program-$setting-1.out" >&2
-            differ=1
+            if only_listed "$program" "$out/base-$program-$setting-1.out" "$out/head-$program-$setting-1.out" > "$out/undefined-$program-$setting.txt"; then
+                undefined=$((undefined + $(grep -c '^  [^ ]' "$out/undefined-$program-$setting.txt")))
+            else
+                rm -f "$out/undefined-$program-$setting.txt"
+                echo "diff.sh: base and head differ ($program, $setting), first difference at" >&2
+                first_diff "$out/base-$program-$setting-1.out" "$out/head-$program-$setting-1.out" >&2
+                differ=1
+            fi
         fi
     done
 done
@@ -256,6 +337,18 @@ for setting in $settings; do
     done
 done
 [ "$differ" = 0 ] || exit 1
+if [ "$undefined" != 0 ]; then
+    echo "diff.sh: differs only in undefined self-splice lines ($undefined differing lines over the programs and settings, all listed in tools/bench/repr/undefined-lines.txt; everything else and the cross-read identical). Record this and put it to the user:" >&2
+    for program in $programs; do
+        for setting in $settings; do
+            if [ -s "$out/undefined-$program-$setting.txt" ]; then
+                echo "$program, $setting:" >&2
+                cat "$out/undefined-$program-$setting.txt" >&2
+            fi
+        done
+    done
+    exit 3
+fi
 
 summary=
 for program in $programs; do

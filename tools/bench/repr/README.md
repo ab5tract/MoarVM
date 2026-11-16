@@ -15,7 +15,8 @@ coverage reached and the cases left out are recorded in
 | `vmarray-diff.raku` | The Raku half: what nqp cannot reach. `nqp::atposref_*` and `nqp::multidimref_*` (native references), the atomic operations on a position (`nqp::cas_i`, `nqp::atomicload_i`, ... and the `⚛` operators on an `atomicint` array), and the arrays as Rakudo uses them: `array[int8]` to `array[uint64]`, `array[num32]`, `array[num64]`, `array[str]`, `buf8` to `buf64`, `blob8` to `blob64` (with every `read-*`/`write-*` method), and the reified `IterationBuffer` inside an `Array`. About 2,500 lines. |
 | `vmarray-serial.nqp` | The serialization record: one serialization context per case, an empty, a 3-element, a shifted and a 10,000-element array of each of 16 kinds, printed as hex (`<case>.blob`), with the string heap (`<case>.strings`) and the array as deserialized in the same process (`<case>.roundtrip`). `--read=FILE` deserializes the blobs in another run's output and prints `<case>.read` lines; `sed -n 's/\.roundtrip: /.read: /p' FILE` is what a correct reader prints. |
 | `vmarray-devirt.nqp` | Ten lines of output for one purpose: the "Index out of bounds" errors of `vmarray_at_pos_int64` and `vmarray_bind_pos_int64`, the two functions the JIT calls directly. Only this program's shape was found to reach them (see its header); do not reshape it without measuring again. |
-| `diff.sh` | The runner: each program K times (default 3) per side and per spesh setting, repeatability of each side, base against head, and the serialization cross-read (each side deserializes what the other serialized). Exit 0 identical, 1 base and head differ (first differing line named), 2 a side is not repeatable, 4 a run failed, wrote to stderr or the prefixes differ in length, 64 misuse. `--compare-only --out=DIR` repeats the checks on outputs already there. `--help` prints the details. |
+| `undefined-lines.txt` | The 195 output lines (`<program> <case name>`) whose value in C is what `memcpy` over overlapping ranges leaves: self-splices of the eleven kinds copied with `memcpy`. Its header says how the list was derived. `diff.sh` reads it for exit 3. |
+| `diff.sh` | The runner: each program K times (default 3) per side and per spesh setting, repeatability of each side, base against head, and the serialization cross-read (each side deserializes what the other serialized). Exit 0 identical, 1 base and head differ (first differing line named), 2 a side is not repeatable, 3 base and head differ only in lines listed in `undefined-lines.txt` (every such line printed with both values), 4 a run failed, wrote to stderr or a side did not load the libmoar under its prefix, 64 misuse (including prefixes of unequal length). The caller's `MVM_*`, `RAKUDO_*`, `NQP_*`, `RAKU_*`, `PERL6*` variables and `RAKULIB` are removed from the runs. `--compare-only --out=DIR` repeats the checks on outputs already there. `--help` prints the details. |
 
 Every output line is `<case name>: <result>`; a caught exception prints
 `<case name>: DIED <message>`. The case name says which kind and which
@@ -36,7 +37,7 @@ unset, `MVM_SPESH_BLOCKING=1`) and `nospesh` (`MVM_SPESH_DISABLE=1`).
 `MVM_SPESH_BLOCKING=1` makes the program wait for the specializer, so that
 which code runs specialized and compiled is the same every run; the control's
 output was also the same without it. A full run of the control against itself
-takes about five minutes.
+takes a little over three minutes (189 s as recorded).
 
 One program by hand:
 
@@ -57,8 +58,12 @@ One program by hand:
   overlapping ranges, which is undefined; the control prints what its `memcpy`
   leaves, which is neither a forward nor a backward copy for some cases
   (`va-differential.md` lists them). STR arrays, and OBJ arrays that have been
-  promoted, are copied element by element and print a forward copy. A
-  difference confined to these cases needs a decision, not a bug hunt.
+  promoted, are copied element by element and print a forward copy. The
+  decision taken: the Zig array copies overlapping ranges with memmove
+  semantics, so it is expected to differ from the control in exactly the
+  lines of `undefined-lines.txt`. `diff.sh` then exits 3, not 0: that result
+  is recorded with the lines it printed and put to the user, never passed as
+  "identical". A difference in any other line is exit 1.
 - `*.limit.*`: the message carries the slot count the growth policy computed,
   so a different number is a different policy.
 - `*.mega.*` lines list every distinct result a megamorphic sub gave, in

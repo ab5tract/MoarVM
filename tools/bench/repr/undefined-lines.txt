@@ -1,0 +1,232 @@
+# The output lines of the differential programs whose value is undefined in C.
+#
+# asplice ends with copy_elements(from, root, 0, offset, elems1). When the
+# array is spliced from itself and 0 < offset < elems1, source and target
+# ranges overlap, and for every slot kind but STR (and OBJ once the array has
+# been promoted) copy_elements copies them with memcpy (VMArray.c:951), which
+# is undefined for overlapping ranges. The control prints what its memcpy
+# leaves: a forward copy for some cases, a block pattern for others, never
+# what memmove gives. The Zig array copies overlapping ranges with memmove
+# semantics (the controller's ruling), so it is expected to differ from the
+# control in these lines and in no others.
+#
+# diff.sh reads this file: when base and head differ only in lines listed
+# here (same line count on both sides, same case name on each differing
+# line), it exits 3 and prints the differing lines with both values; a head
+# that reaches exit 3 is recorded and put to the user, not passed silently.
+# Any difference outside the list is exit 1. Each side must still repeat
+# these lines run to run (exit 2).
+#
+# One entry per line: <program> <case name>, the case name being the text
+# before the first ": " of the output line. An entry covers both settings.
+#
+# How it was derived (traces/llm/bench/va-differential.md, section 5):
+#   * the diff-nqp `<kind>.selfsplice.<case>` entries are printed by
+#       python3 traces/llm/bench/va-differential-raw/selfsplice.py --list \
+#           traces/llm/bench/va-differential-raw/diff-nqp-spesh.out
+#     which models asplice twice, with a memmove and with a forward copy as
+#     its last step, and lists the cases of the eleven memcpy kinds where the
+#     two models differ (15 cases x 11 kinds; the model's forward copy is
+#     what the STR kind prints in every one of them);
+#   * `<kind>.selfsplice.twice` (two such splices in a row) and the diff-raku
+#     entries are listed by the same rule, by hand: each is an nqp::splice of
+#     an array of a memcpy kind from itself at an offset inside it.
+# Not listed, because the C defines the result: every STR case, the
+# `gc.*.promoted` cases (element by element; checked with a breakpoint for
+# OBJ), self-splices at offset 0 or at the end, and Rakudo's own
+# .splice(..., @self), which copies the replacement first.
+diff-nqp obj.selfsplice.middle
+diff-nqp i64.selfsplice.middle
+diff-nqp i32.selfsplice.middle
+diff-nqp i16.selfsplice.middle
+diff-nqp i8.selfsplice.middle
+diff-nqp u64.selfsplice.middle
+diff-nqp u32.selfsplice.middle
+diff-nqp u16.selfsplice.middle
+diff-nqp u8.selfsplice.middle
+diff-nqp n64.selfsplice.middle
+diff-nqp n32.selfsplice.middle
+diff-nqp obj.selfsplice.middle1
+diff-nqp i64.selfsplice.middle1
+diff-nqp i32.selfsplice.middle1
+diff-nqp i16.selfsplice.middle1
+diff-nqp i8.selfsplice.middle1
+diff-nqp u64.selfsplice.middle1
+diff-nqp u32.selfsplice.middle1
+diff-nqp u16.selfsplice.middle1
+diff-nqp u8.selfsplice.middle1
+diff-nqp n64.selfsplice.middle1
+diff-nqp n32.selfsplice.middle1
+diff-nqp obj.selfsplice.middle9
+diff-nqp i64.selfsplice.middle9
+diff-nqp i32.selfsplice.middle9
+diff-nqp i16.selfsplice.middle9
+diff-nqp i8.selfsplice.middle9
+diff-nqp u64.selfsplice.middle9
+diff-nqp u32.selfsplice.middle9
+diff-nqp u16.selfsplice.middle9
+diff-nqp u8.selfsplice.middle9
+diff-nqp n64.selfsplice.middle9
+diff-nqp n32.selfsplice.middle9
+diff-nqp obj.selfsplice.replace.2.3
+diff-nqp i64.selfsplice.replace.2.3
+diff-nqp i32.selfsplice.replace.2.3
+diff-nqp i16.selfsplice.replace.2.3
+diff-nqp i8.selfsplice.replace.2.3
+diff-nqp u64.selfsplice.replace.2.3
+diff-nqp u32.selfsplice.replace.2.3
+diff-nqp u16.selfsplice.replace.2.3
+diff-nqp u8.selfsplice.replace.2.3
+diff-nqp n64.selfsplice.replace.2.3
+diff-nqp n32.selfsplice.replace.2.3
+diff-nqp obj.selfsplice.replace.tail
+diff-nqp i64.selfsplice.replace.tail
+diff-nqp i32.selfsplice.replace.tail
+diff-nqp i16.selfsplice.replace.tail
+diff-nqp i8.selfsplice.replace.tail
+diff-nqp u64.selfsplice.replace.tail
+diff-nqp u32.selfsplice.replace.tail
+diff-nqp u16.selfsplice.replace.tail
+diff-nqp u8.selfsplice.replace.tail
+diff-nqp n64.selfsplice.replace.tail
+diff-nqp n32.selfsplice.replace.tail
+diff-nqp obj.selfsplice.replace.5.5
+diff-nqp i64.selfsplice.replace.5.5
+diff-nqp i32.selfsplice.replace.5.5
+diff-nqp i16.selfsplice.replace.5.5
+diff-nqp i8.selfsplice.replace.5.5
+diff-nqp u64.selfsplice.replace.5.5
+diff-nqp u32.selfsplice.replace.5.5
+diff-nqp u16.selfsplice.replace.5.5
+diff-nqp u8.selfsplice.replace.5.5
+diff-nqp n64.selfsplice.replace.5.5
+diff-nqp n32.selfsplice.replace.5.5
+diff-nqp obj.selfsplice.replace.1.9
+diff-nqp i64.selfsplice.replace.1.9
+diff-nqp i32.selfsplice.replace.1.9
+diff-nqp i16.selfsplice.replace.1.9
+diff-nqp i8.selfsplice.replace.1.9
+diff-nqp u64.selfsplice.replace.1.9
+diff-nqp u32.selfsplice.replace.1.9
+diff-nqp u16.selfsplice.replace.1.9
+diff-nqp u8.selfsplice.replace.1.9
+diff-nqp n64.selfsplice.replace.1.9
+diff-nqp n32.selfsplice.replace.1.9
+diff-nqp obj.selfsplice.replace.1.20
+diff-nqp i64.selfsplice.replace.1.20
+diff-nqp i32.selfsplice.replace.1.20
+diff-nqp i16.selfsplice.replace.1.20
+diff-nqp i8.selfsplice.replace.1.20
+diff-nqp u64.selfsplice.replace.1.20
+diff-nqp u32.selfsplice.replace.1.20
+diff-nqp u16.selfsplice.replace.1.20
+diff-nqp u8.selfsplice.replace.1.20
+diff-nqp n64.selfsplice.replace.1.20
+diff-nqp n32.selfsplice.replace.1.20
+diff-nqp obj.selfsplice.neg
+diff-nqp i64.selfsplice.neg
+diff-nqp i32.selfsplice.neg
+diff-nqp i16.selfsplice.neg
+diff-nqp i8.selfsplice.neg
+diff-nqp u64.selfsplice.neg
+diff-nqp u32.selfsplice.neg
+diff-nqp u16.selfsplice.neg
+diff-nqp u8.selfsplice.neg
+diff-nqp n64.selfsplice.neg
+diff-nqp n32.selfsplice.neg
+diff-nqp obj.selfsplice.shifted.middle
+diff-nqp i64.selfsplice.shifted.middle
+diff-nqp i32.selfsplice.shifted.middle
+diff-nqp i16.selfsplice.shifted.middle
+diff-nqp i8.selfsplice.shifted.middle
+diff-nqp u64.selfsplice.shifted.middle
+diff-nqp u32.selfsplice.shifted.middle
+diff-nqp u16.selfsplice.shifted.middle
+diff-nqp u8.selfsplice.shifted.middle
+diff-nqp n64.selfsplice.shifted.middle
+diff-nqp n32.selfsplice.shifted.middle
+diff-nqp obj.selfsplice.shifted.replace.2.3
+diff-nqp i64.selfsplice.shifted.replace.2.3
+diff-nqp i32.selfsplice.shifted.replace.2.3
+diff-nqp i16.selfsplice.shifted.replace.2.3
+diff-nqp i8.selfsplice.shifted.replace.2.3
+diff-nqp u64.selfsplice.shifted.replace.2.3
+diff-nqp u32.selfsplice.shifted.replace.2.3
+diff-nqp u16.selfsplice.shifted.replace.2.3
+diff-nqp u8.selfsplice.shifted.replace.2.3
+diff-nqp n64.selfsplice.shifted.replace.2.3
+diff-nqp n32.selfsplice.shifted.replace.2.3
+diff-nqp obj.selfsplice.big.middle
+diff-nqp i64.selfsplice.big.middle
+diff-nqp i32.selfsplice.big.middle
+diff-nqp i16.selfsplice.big.middle
+diff-nqp i8.selfsplice.big.middle
+diff-nqp u64.selfsplice.big.middle
+diff-nqp u32.selfsplice.big.middle
+diff-nqp u16.selfsplice.big.middle
+diff-nqp u8.selfsplice.big.middle
+diff-nqp n64.selfsplice.big.middle
+diff-nqp n32.selfsplice.big.middle
+diff-nqp obj.selfsplice.big.1
+diff-nqp i64.selfsplice.big.1
+diff-nqp i32.selfsplice.big.1
+diff-nqp i16.selfsplice.big.1
+diff-nqp i8.selfsplice.big.1
+diff-nqp u64.selfsplice.big.1
+diff-nqp u32.selfsplice.big.1
+diff-nqp u16.selfsplice.big.1
+diff-nqp u8.selfsplice.big.1
+diff-nqp n64.selfsplice.big.1
+diff-nqp n32.selfsplice.big.1
+diff-nqp obj.selfsplice.big.replace
+diff-nqp i64.selfsplice.big.replace
+diff-nqp i32.selfsplice.big.replace
+diff-nqp i16.selfsplice.big.replace
+diff-nqp i8.selfsplice.big.replace
+diff-nqp u64.selfsplice.big.replace
+diff-nqp u32.selfsplice.big.replace
+diff-nqp u16.selfsplice.big.replace
+diff-nqp u8.selfsplice.big.replace
+diff-nqp n64.selfsplice.big.replace
+diff-nqp n32.selfsplice.big.replace
+diff-nqp obj.selfsplice.big.shifted
+diff-nqp i64.selfsplice.big.shifted
+diff-nqp i32.selfsplice.big.shifted
+diff-nqp i16.selfsplice.big.shifted
+diff-nqp i8.selfsplice.big.shifted
+diff-nqp u64.selfsplice.big.shifted
+diff-nqp u32.selfsplice.big.shifted
+diff-nqp u16.selfsplice.big.shifted
+diff-nqp u8.selfsplice.big.shifted
+diff-nqp n64.selfsplice.big.shifted
+diff-nqp n32.selfsplice.big.shifted
+diff-nqp obj.selfsplice.twice
+diff-nqp i64.selfsplice.twice
+diff-nqp i32.selfsplice.twice
+diff-nqp i16.selfsplice.twice
+diff-nqp i8.selfsplice.twice
+diff-nqp u64.selfsplice.twice
+diff-nqp u32.selfsplice.twice
+diff-nqp u16.selfsplice.twice
+diff-nqp u8.selfsplice.twice
+diff-nqp n64.selfsplice.twice
+diff-nqp n32.selfsplice.twice
+diff-raku int8.nqp.splice.self
+diff-raku int16.nqp.splice.self
+diff-raku int32.nqp.splice.self
+diff-raku int64.nqp.splice.self
+diff-raku uint8.nqp.splice.self
+diff-raku uint16.nqp.splice.self
+diff-raku uint32.nqp.splice.self
+diff-raku uint64.nqp.splice.self
+diff-raku num32.splice.self
+diff-raku num64.splice.self
+diff-raku Buf[uint8].splice.self
+diff-raku Buf[uint16].splice.self
+diff-raku Buf[uint32].splice.self
+diff-raku Buf[uint64].splice.self
+diff-raku Blob[uint8].splice.self
+diff-raku Blob[uint16].splice.self
+diff-raku Blob[uint32].splice.self
+diff-raku Blob[uint64].splice.self
+diff-raku array.reified.splice
