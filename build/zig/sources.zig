@@ -8,6 +8,8 @@
 //! replaces those C files when the Zig implementations are built.
 //! The `[zig-gc]` section has the same line grammar and holds the garbage
 //! collector's files, applied only when `-Dzig-gc` is on as well.
+//! The `[zig-reprs]` section, same grammar again, holds the REPRs' files,
+//! applied only when `-Dzig-reprs` is on as well.
 const std = @import("std");
 const root_files = @import("root_files.zig");
 
@@ -25,6 +27,7 @@ pub const Lists = struct {
     main: []const []const u8 = &.{},
     zig: []const ZigEntry = &.{},
     zig_gc: []const ZigEntry = &.{},
+    zig_reprs: []const ZigEntry = &.{},
 };
 
 pub const Error = error{
@@ -36,7 +39,7 @@ pub const Error = error{
     OutOfMemory,
 };
 
-const Section = enum { core, platform_posix, jit, jit_x64, jit_stub, main, zig, zig_gc };
+const Section = enum { core, platform_posix, jit, jit_x64, jit_stub, main, zig, zig_gc, zig_reprs };
 
 const section_names = std.StaticStringMap(Section).initComptime(.{
     .{ "core", .core },
@@ -47,6 +50,7 @@ const section_names = std.StaticStringMap(Section).initComptime(.{
     .{ "main", .main },
     .{ "zig", .zig },
     .{ "zig-gc", .zig_gc },
+    .{ "zig-reprs", .zig_reprs },
 });
 
 const c_sections = [_]Section{ .core, .platform_posix, .jit, .jit_x64, .jit_stub, .main };
@@ -55,6 +59,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!Lists {
     var buckets = [_]std.ArrayList([]const u8){ .empty, .empty, .empty, .empty, .empty, .empty };
     var zig_entries: std.ArrayList(ZigEntry) = .empty;
     var zig_gc_entries: std.ArrayList(ZigEntry) = .empty;
+    var zig_reprs_entries: std.ArrayList(ZigEntry) = .empty;
     var current: ?Section = null;
 
     var it = std.mem.splitScalar(u8, text, '\n');
@@ -70,6 +75,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!Lists {
         switch (section) {
             .zig => try zig_entries.append(allocator, try parseZigLine(allocator, line)),
             .zig_gc => try zig_gc_entries.append(allocator, try parseZigLine(allocator, line)),
+            .zig_reprs => try zig_reprs_entries.append(allocator, try parseZigLine(allocator, line)),
             else => try buckets[@backingInt(section)].append(allocator, line),
         }
     }
@@ -83,6 +89,7 @@ pub fn parse(allocator: std.mem.Allocator, text: []const u8) Error!Lists {
         .main = try buckets[@backingInt(Section.main)].toOwnedSlice(allocator),
         .zig = try zig_entries.toOwnedSlice(allocator),
         .zig_gc = try zig_gc_entries.toOwnedSlice(allocator),
+        .zig_reprs = try zig_reprs_entries.toOwnedSlice(allocator),
     };
     try validateZig(lists);
     return lists;
@@ -107,7 +114,7 @@ fn cList(lists: Lists, section: Section) []const []const u8 {
         .jit_x64 => lists.jit_x64,
         .jit_stub => lists.jit_stub,
         .main => lists.main,
-        .zig, .zig_gc => unreachable,
+        .zig, .zig_gc, .zig_reprs => unreachable,
     };
 }
 
@@ -117,9 +124,9 @@ fn contains(list: []const []const u8, file: []const u8) bool {
 }
 
 /// Every replaced C file must be listed in some C section, and only once
-/// across all [zig] and [zig-gc] lines together.
+/// across all [zig], [zig-gc] and [zig-reprs] lines together.
 fn validateZig(lists: Lists) Error!void {
-    for (0..lists.zig.len + lists.zig_gc.len) |i| {
+    for (0..lists.zig.len + lists.zig_gc.len + lists.zig_reprs.len) |i| {
         const entry = zigEntry(lists, i);
         for (entry.replaces) |file| {
             var found = false;
@@ -140,14 +147,17 @@ fn validateZig(lists: Lists) Error!void {
     }
 }
 
-/// The `i`th entry of [zig] followed by [zig-gc].
+/// The `i`th entry of [zig] followed by [zig-gc] followed by [zig-reprs].
 fn zigEntry(lists: Lists, i: usize) ZigEntry {
-    return if (i < lists.zig.len) lists.zig[i] else lists.zig_gc[i - lists.zig.len];
+    if (i < lists.zig.len) return lists.zig[i];
+    const j = i - lists.zig.len;
+    return if (j < lists.zig_gc.len) lists.zig_gc[j] else lists.zig_reprs[j - lists.zig_gc.len];
 }
 
 fn isReplaced(lists: Lists, file: []const u8) bool {
     for (lists.zig) |entry| if (contains(entry.replaces, file)) return true;
     for (lists.zig_gc) |entry| if (contains(entry.replaces, file)) return true;
+    for (lists.zig_reprs) |entry| if (contains(entry.replaces, file)) return true;
     return false;
 }
 
@@ -160,10 +170,12 @@ fn without(allocator: std.mem.Allocator, lists: Lists, list: []const []const u8)
 /// The lists as the build compiles them when the Zig implementations are
 /// on: every C file named on a [zig] line is dropped from its section, and
 /// with `zig_gc` every C file named on a [zig-gc] line too. Without
-/// `zig_gc` the [zig-gc] entries are neither applied nor returned.
-pub fn applyZig(allocator: std.mem.Allocator, raw: Lists, zig_gc: bool) Error!Lists {
+/// `zig_gc` the [zig-gc] entries are neither applied nor returned. The
+/// same holds for `zig_reprs` and the [zig-reprs] lines.
+pub fn applyZig(allocator: std.mem.Allocator, raw: Lists, zig_gc: bool, zig_reprs: bool) Error!Lists {
     var lists = raw;
     if (!zig_gc) lists.zig_gc = &.{};
+    if (!zig_reprs) lists.zig_reprs = &.{};
     return .{
         .core = try without(allocator, lists, lists.core),
         .platform_posix = try without(allocator, lists, lists.platform_posix),
@@ -173,6 +185,7 @@ pub fn applyZig(allocator: std.mem.Allocator, raw: Lists, zig_gc: bool) Error!Li
         .main = try without(allocator, lists, lists.main),
         .zig = lists.zig,
         .zig_gc = lists.zig_gc,
+        .zig_reprs = lists.zig_reprs,
     };
 }
 
@@ -243,7 +256,7 @@ test "parse: [zig] lines name a zig file and the C files it replaces" {
     try std.testing.expectEqual(@as(usize, 2), lists.core.len);
     try std.testing.expectEqual(@as(usize, 1), lists.platform_posix.len);
 
-    const applied = try applyZig(arena.allocator(), lists, true);
+    const applied = try applyZig(arena.allocator(), lists, true, true);
     try std.testing.expectEqual(@as(usize, 1), applied.core.len);
     try std.testing.expectEqualStrings("src/core/a.c", applied.core[0]);
     try std.testing.expectEqual(@as(usize, 0), applied.platform_posix.len);
@@ -303,13 +316,13 @@ test "applyZig without gc keeps the gc C files" {
         \\[zig-gc]
         \\src/zig/gc/x.zig: src/gc/x.c
     );
-    const without_gc = try applyZig(arena.allocator(), lists, false);
+    const without_gc = try applyZig(arena.allocator(), lists, false, false);
     try std.testing.expectEqual(@as(usize, 1), without_gc.core.len);
     try std.testing.expectEqualStrings("src/gc/x.c", without_gc.core[0]);
     try std.testing.expectEqual(@as(usize, 1), without_gc.zig.len);
     try std.testing.expectEqual(@as(usize, 0), without_gc.zig_gc.len);
 
-    const with_gc = try applyZig(arena.allocator(), lists, true);
+    const with_gc = try applyZig(arena.allocator(), lists, true, true);
     try std.testing.expectEqual(@as(usize, 0), with_gc.core.len);
     try std.testing.expectEqual(@as(usize, 1), with_gc.zig.len);
     try std.testing.expectEqual(@as(usize, 1), with_gc.zig_gc.len);
@@ -319,4 +332,60 @@ test "validate: a C file replaced in both sections is ZigReplacesTwice" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     try std.testing.expectError(error.ZigReplacesTwice, parse(arena.allocator(), "[core]\nsrc/gc/x.c\n[main]\nsrc/main.c\n[zig]\nsrc/zig/x.zig: src/gc/x.c\n[zig-gc]\nsrc/zig/gc/x.zig: src/gc/x.c\n"));
+}
+
+test "parse: [zig-reprs] lines are ZigEntry and separate from [zig] and [zig-gc]" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const lists = try parse(arena.allocator(),
+        \\[core]
+        \\src/core/a.c
+        \\src/gc/x.c
+        \\src/6model/reprs/X.c
+        \\[main]
+        \\src/main.c
+        \\[zig]
+        \\src/zig/core/a.zig: src/core/a.c
+        \\[zig-gc]
+        \\src/zig/gc/x.zig: src/gc/x.c
+        \\[zig-reprs]
+        \\src/zig/6model/reprs/X.zig: src/6model/reprs/X.c
+    );
+    try std.testing.expectEqual(@as(usize, 1), lists.zig.len);
+    try std.testing.expectEqual(@as(usize, 1), lists.zig_gc.len);
+    try std.testing.expectEqual(@as(usize, 1), lists.zig_reprs.len);
+    try std.testing.expectEqualStrings("src/zig/6model/reprs/X.zig", lists.zig_reprs[0].zig);
+    try std.testing.expectEqualStrings("src/6model/reprs/X.c", lists.zig_reprs[0].replaces[0]);
+}
+
+test "applyZig without reprs keeps the REPR C files" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const lists = try parse(arena.allocator(),
+        \\[core]
+        \\src/gc/x.c
+        \\src/6model/reprs/X.c
+        \\[main]
+        \\src/main.c
+        \\[zig-gc]
+        \\src/zig/gc/x.zig: src/gc/x.c
+        \\[zig-reprs]
+        \\src/zig/6model/reprs/X.zig: src/6model/reprs/X.c
+    );
+    const without_reprs = try applyZig(arena.allocator(), lists, true, false);
+    try std.testing.expectEqual(@as(usize, 1), without_reprs.core.len);
+    try std.testing.expectEqualStrings("src/6model/reprs/X.c", without_reprs.core[0]);
+    try std.testing.expectEqual(@as(usize, 1), without_reprs.zig_gc.len);
+    try std.testing.expectEqual(@as(usize, 0), without_reprs.zig_reprs.len);
+
+    const with_reprs = try applyZig(arena.allocator(), lists, true, true);
+    try std.testing.expectEqual(@as(usize, 0), with_reprs.core.len);
+    try std.testing.expectEqual(@as(usize, 1), with_reprs.zig_reprs.len);
+    try std.testing.expectEqualStrings("src/zig/6model/reprs/X.zig", with_reprs.zig_reprs[0].zig);
+}
+
+test "validate: a C file replaced in [zig-gc] and [zig-reprs] is ZigReplacesTwice" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.ZigReplacesTwice, parse(arena.allocator(), "[core]\nsrc/gc/x.c\n[main]\nsrc/main.c\n[zig-gc]\nsrc/zig/gc/x.zig: src/gc/x.c\n[zig-reprs]\nsrc/zig/6model/reprs/X.zig: src/gc/x.c\n"));
 }

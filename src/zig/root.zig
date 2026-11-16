@@ -2,6 +2,8 @@
 //! [zig] section of build/sources.list must be referenced here so that its
 //! `export fn`s are emitted; the build checks this. The [zig-gc] files are
 //! imported only with -Dzig-gc (the default); without it src/gc stays C.
+//! The [zig-reprs] files are imported only with -Dzig-reprs (the default
+//! with the Zig collector); without it those REPRs stay C.
 comptime {
     _ = @import("platform/time.zig");
     _ = @import("core/intcache.zig");
@@ -22,4 +24,5 @@ comptime {
         _ = @import("gc/debug.zig");
         _ = @import("gc/orchestrate.zig");
     }
+    if (@import("zig_options").zig_reprs) {}
 }

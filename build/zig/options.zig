@@ -14,6 +14,10 @@ pub const Options = struct {
     /// section and drop src/gc's C files; false is the C-collector control
     /// (the other Zig implementations stay on). Needs `zig_impl`.
     zig_gc: bool,
+    /// Also compile the Zig REPRs from the [zig-reprs] section and drop the
+    /// C files they replace; false is the C-REPR control (the collector and
+    /// the other Zig implementations stay on). Needs `zig_impl` and `zig_gc`.
+    zig_reprs: bool,
     /// Use an existing <dir>/gen/config.h (the Perl build's) instead of the
     /// generated one. Only the `zig-objects` step is supported in this mode.
     config_h: ?[]const u8,
@@ -67,6 +71,18 @@ pub fn zigGc(zig_impl: bool, given: ?bool) error{ZigGcNeedsZigImpl}!bool {
     return false;
 }
 
+pub const zig_reprs_needs_zig_gc_message = "-Dzig-reprs needs -Dzig-impl=true and -Dzig-gc=true (the Zig REPRs call the Zig collector)";
+
+/// The -Dzig-reprs value: defaults to true with the Zig implementations
+/// and the Zig collector both on, and to false with either off; asking for
+/// the Zig REPRs with either off is an error (they call the Zig collector's
+/// worklist directly). An explicit false is always accepted.
+pub fn zigReprs(zig_impl: bool, zig_gc: bool, given: ?bool) error{ZigReprsNeedsZigGc}!bool {
+    if (zig_impl and zig_gc) return given orelse true;
+    if (given orelse false) return error.ZigReprsNeedsZigGc;
+    return false;
+}
+
 /// The -Dnursery-size value, defaulted.
 pub fn nurserySize(raw: ?u32) u32 {
     return raw orelse nursery_size_default;
@@ -115,6 +131,8 @@ pub fn parse(b: *std.Build) Options {
     const zig_impl = b.option(bool, "zig-impl", "Build the Zig implementations from the [zig] section of build/sources.list in place of the C files they replace (default true)") orelse true;
     const zig_gc = zigGc(zig_impl, b.option(bool, "zig-gc", "Build the Zig garbage collector from the [zig-gc] section of build/sources.list (default true); false keeps src/gc in C while the other Zig implementations stay Zig: the control of every GC comparison. Needs -Dzig-impl=true")) catch
         std.process.fatal("{s}", .{zig_gc_needs_zig_impl_message});
+    const zig_reprs = zigReprs(zig_impl, zig_gc, b.option(bool, "zig-reprs", "Build the Zig REPRs from the [zig-reprs] section of build/sources.list (default true with the Zig collector); false keeps those REPRs in C while the collector and the other Zig implementations stay Zig: the control of every REPR comparison. Needs -Dzig-impl=true and -Dzig-gc=true")) catch
+        std.process.fatal("{s}", .{zig_reprs_needs_zig_gc_message});
 
     return .{
         .target = target,
@@ -125,6 +143,7 @@ pub fn parse(b: *std.Build) Options {
         .zstd = b.option(bool, "zstd", "Link the system libzstd and use heap snapshot format 3 (default true)") orelse true,
         .zig_impl = zig_impl,
         .zig_gc = zig_gc,
+        .zig_reprs = zig_reprs,
         .config_h = config_h,
         .hash_stats = hash_stats,
         .uni_swiss = uni_swiss,
@@ -152,4 +171,14 @@ test "zig-gc needs zig-impl" {
     try std.testing.expectEqual(false, try zigGc(false, null));
     try std.testing.expectError(error.ZigGcNeedsZigImpl, zigGc(false, true));
     try std.testing.expectError(error.ZigGcNeedsZigImpl, zigGc(false, false));
+}
+
+test "zig-reprs needs the Zig collector" {
+    try std.testing.expectEqual(true, try zigReprs(true, true, null));
+    try std.testing.expectEqual(false, try zigReprs(true, true, false));
+    try std.testing.expectEqual(false, try zigReprs(true, false, null));
+    try std.testing.expectEqual(false, try zigReprs(false, false, null));
+    try std.testing.expectError(error.ZigReprsNeedsZigGc, zigReprs(true, false, true));
+    try std.testing.expectError(error.ZigReprsNeedsZigGc, zigReprs(false, false, true));
+    try std.testing.expectEqualStrings("-Dzig-reprs needs -Dzig-impl=true and -Dzig-gc=true (the Zig REPRs call the Zig collector)", zig_reprs_needs_zig_gc_message);
 }

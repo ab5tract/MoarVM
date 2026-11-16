@@ -1131,7 +1131,8 @@ sub configure {
 # C files named there are removed from their sections and the Zig files
 # are returned under the 'zig_files' key. Without it the section is
 # validated and dropped. The [zig-gc] section (the collector) is read as
-# part of [zig]: the Perl build has no -Dzig-gc=false control.
+# part of [zig]: the Perl build has no -Dzig-gc=false control. So is the
+# [zig-reprs] section (the REPRs): no -Dzig-reprs=false control either.
 # Mirrors build/zig/sources.zig.
 sub read_sources_list {
     my ($file, $apply_zig) = @_;
@@ -1146,7 +1147,7 @@ sub read_sources_list {
             next;
         }
         hardfail("$file: entry '$line' before any [section]") unless defined $current;
-        if ($current eq 'zig' || $current eq 'zig-gc') {
+        if ($current eq 'zig' || $current eq 'zig-gc' || $current eq 'zig-reprs') {
             my ($zig_file, $rest) = $line =~ /^([^:]+):(.*)$/
                 or hardfail("$file: [$current] line '$line' must read '<zig file>: <c file> ...'");
             $zig_file =~ s/\s+$//;
@@ -1158,7 +1159,7 @@ sub read_sources_list {
         push @{ $sections{$current} }, $line;
     }
     close $fh;
-    delete @sections{qw(zig zig-gc)};
+    delete @sections{qw(zig zig-gc zig-reprs)};
     my %known = map { $_ => 1 } qw(core platform-posix jit jit-x64 jit-stub main);
     for my $name (sort keys %sections) {
         hardfail("$file: unknown section [$name]") unless $known{$name};

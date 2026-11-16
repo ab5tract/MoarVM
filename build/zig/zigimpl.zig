@@ -68,6 +68,8 @@ pub fn add(b: *std.Build, opts: Options, config: ConfigSource) Impl {
     zig_opts.addOption(bool, "uni_swiss", opts.uni_swiss);
     // Read by src/zig/root.zig: the gc/ files are imported only with -Dzig-gc.
     zig_opts.addOption(bool, "zig_gc", opts.zig_gc);
+    // Likewise: the 6model/reprs/ files are imported only with -Dzig-reprs.
+    zig_opts.addOption(bool, "zig_reprs", opts.zig_reprs);
     const root_mod = b.createModule(.{
         .root_source_file = b.path("src/zig/root.zig"),
         .target = opts.target,
@@ -96,14 +98,16 @@ pub fn addObjectsStep(b: *std.Build, impl: Impl) *std.Build.Step {
     return step;
 }
 
-/// Every [zig] file, and with `zig_gc` every [zig-gc] file, must be
-/// imported by src/zig/root.zig, or its exports are never emitted and the
-/// link fails with undefined symbols later.
-pub fn checkRootImports(b: *std.Build, lists: sources.Lists, zig_gc: bool) void {
+/// Every [zig] file, with `zig_gc` every [zig-gc] file and with
+/// `zig_reprs` every [zig-reprs] file, must be imported by
+/// src/zig/root.zig, or its exports are never emitted and the link fails
+/// with undefined symbols later.
+pub fn checkRootImports(b: *std.Build, lists: sources.Lists, zig_gc: bool, zig_reprs: bool) void {
     const root = root_files.readRootFile(b, "src/zig/root.zig") orelse
         std.process.fatal("cannot read src/zig/root.zig: FileNotFound", .{});
     checkImports(b, root, "zig", lists.zig);
     if (zig_gc) checkImports(b, root, "zig-gc", lists.zig_gc);
+    if (zig_reprs) checkImports(b, root, "zig-reprs", lists.zig_reprs);
 }
 
 fn checkImports(b: *std.Build, root: []const u8, section: []const u8, entries: []const sources.ZigEntry) void {

@@ -30,9 +30,9 @@ pub fn build(b: *std.Build) void {
     const facts = platform.facts(&opts.target.result);
     const ver = version.detect(b);
     const raw_lists = sources.load(b, "build/sources.list");
-    const lists = if (opts.zig_impl) sources.applyZig(b.allocator, raw_lists, opts.zig_gc) catch |err|
+    const lists = if (opts.zig_impl) sources.applyZig(b.allocator, raw_lists, opts.zig_gc, opts.zig_reprs) catch |err|
         std.process.fatal("cannot apply the [zig] section: {t}", .{err}) else raw_lists;
-    if (opts.zig_impl) zigimpl.checkRootImports(b, lists, opts.zig_gc);
+    if (opts.zig_impl) zigimpl.checkRootImports(b, lists, opts.zig_gc, opts.zig_reprs);
 
     const config_h = config.configHeader(b, .{ .opts = opts, .facts = facts, .version = ver });
 

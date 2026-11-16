@@ -31,6 +31,7 @@ Options (`zig build --help` lists them):
 | `-Dnursery-size=` | `16777216` | `MVM_NURSERY_SIZE`, the maximum nursery size in bytes; small values stress the collector |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dzig-gc=` | `true` | also compile the Zig garbage collector from the `[zig-gc]` section; `false` keeps `src/gc` in C while the other Zig implementations stay Zig (the control of every GC comparison); needs `-Dzig-impl=true`, and giving it with `-Dzig-impl=false` is a configure error (see "Garbage collector") |
+| `-Dzig-reprs=` | `true` with the Zig collector | also compile the Zig REPRs from the `[zig-reprs]` section of `build/sources.list` instead of the C files they replace; `false` keeps those REPRs in C while the collector and the other Zig implementations stay Zig (the control of every REPR comparison). It defaults to `false` when `-Dzig-impl` or `-Dzig-gc` is `false`, and `-Dzig-reprs=true` with either of them off is a configure error: the Zig REPRs call the Zig collector directly. The section is empty for now, so both values build the same library |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
 Always pass an absolute `--prefix`: it is baked into the binary's RUNPATH,
