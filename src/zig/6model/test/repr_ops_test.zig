@@ -222,6 +222,8 @@ test "a slot declared null is null although it has a default" {
             try std.testing.expectEqualStrings("ass_funcs.get_value_storage_spec\tnull", y);
         }
     }
+    // Both dumps are exhausted together: the loop was driven by `la` alone.
+    try std.testing.expect(lb.next() == null);
     try std.testing.expectEqual(@as(usize, 2), differing);
 
     // A required slot cannot be null.
@@ -234,6 +236,76 @@ test "a slot declared null is null although it has a default" {
         pub const compose = null;
     };
     try std.testing.expectEqualStrings(@typeName(NullCompose) ++ ": required 'compose' cannot be null", comptime repr.declError(NullCompose).?);
+}
+
+test "declError names a mistyped nested slot, a non-struct nested table and a non-struct R" {
+    const NestedMistyped = struct {
+        pub const name = "NestedMistyped";
+        pub const ID = 99;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = allocateStub;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = composeStub;
+        pub const pos_funcs = struct {
+            pub const push = composeStub;
+        };
+    };
+    const NotATable = struct {
+        pub const name = "NotATable";
+        pub const ID = 99;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = allocateStub;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = composeStub;
+        pub const pos_funcs = pushStub;
+    };
+    const NotAStruct = enum { a };
+    const positional = @typeName(@FieldType(c.MVMREPROps, "pos_funcs"));
+    try expectError(NestedMistyped, ": 'pos_funcs.push' has the wrong type; the field is " ++
+        @typeName(@FieldType(c.MVMREPROps_Positional, "push")));
+    try expectError(NotATable, ": 'pos_funcs' has the wrong type; the field is a struct of " ++
+        positional ++ "'s functions");
+    try expectError(NotAStruct, ": a REPR is declared as a struct type, not enum");
+    try expectError(u8, ": a REPR is declared as a struct type, not int");
+}
+
+/// Expects `declError(R)` to be `@typeName(R) ++ rest`.
+fn expectError(comptime R: type, comptime rest: []const u8) !void {
+    try std.testing.expectEqualStrings(@typeName(R) ++ rest, comptime repr.declError(R).?);
+}
+
+test "a null name or ID is reported as the wrong type, not as a null required slot" {
+    // `fits` refuses null for the string and the integer field, and the
+    // wrong-type check runs before the required-slot check: only the four
+    // required function slots can give "cannot be null".
+    const NullName = struct {
+        pub const name = null;
+        pub const ID = 99;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = allocateStub;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = composeStub;
+    };
+    const NullId = struct {
+        pub const name = "NullId";
+        pub const ID = null;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = allocateStub;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = composeStub;
+    };
+    const NullAllocate = struct {
+        pub const name = "NullAllocate";
+        pub const ID = 99;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = null;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = composeStub;
+    };
+    try expectError(NullName, ": 'name' has the wrong type; the field is [:0]const u8");
+    try expectError(NullId, ": 'ID' has the wrong type; the field is " ++
+        @typeName(@FieldType(c.MVMREPROps, "ID")));
+    try expectError(NullAllocate, ": required 'allocate' cannot be null");
 }
 
 test "a C function can fill a slot" {

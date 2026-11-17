@@ -296,6 +296,12 @@ inline fn checkKind(comptime op: Op, comptime k: Kind, tc: Tc, kind: u16) void {
 /// The arms of the indexed and stack operations, for `op`'s register-kind
 /// check and text: `Arm(op).read`, `.store` and `.load`, each generic over
 /// the kind and instantiated twelve times by the `dispatch` that calls it.
+/// Only the pairs a `dispatch` names are generated: `Arm(.atpos).read`
+/// (`atPos`), `Arm(.bindpos).store`, `Arm(.push).store`,
+/// `Arm(.unshift).store` (`bindPos`, `push`, `unshift`), `Arm(.pop).load`
+/// and `Arm(.shift).load` (`pop`, `shift`). Zig analyses a function of the
+/// returned struct only when it is referenced, so a pair no operation names
+/// (`Arm(.atpos).store`, `Arm(.pop).read`, ...) is never compiled.
 /// `Arm(.bindpos).store(.u16, ...)` is the C's `case MVM_ARRAY_U16:` of
 /// bind_pos: the check against { uint64, int64 } with "MVMArray: bindpos
 /// U16 expected int register", then `slots.u16[slot] = (MVMuint16)value`.
@@ -573,7 +579,9 @@ pub fn Elements(comptime S: type) type {
         ///   (rule of row 22c); a non-VMArray source with elements (or a
         ///   VMArray one whose stubbed STable has no REPR data yet) makes
         ///   the C read its REPR data through NULL and fault, which
-        ///   `moar.nullDeref` reproduces (Task 2 §6). Both REPR data
+        ///   `moar.nullDeref` reproduces (a C crash no differential case
+        ///   drives: traces/llm/bench/va-differential.md section 6). Both
+        ///   REPR data
         ///   pointers are loaded first and read only after `n <= 0`, as the
         ///   C (936-944).
         fn copyElements(tc: Tc, src: Obj, dest: Obj, s_offset: i64, d_offset: i64, n: i64) void {
@@ -602,7 +610,8 @@ pub fn Elements(comptime S: type) type {
             const target_kind = slotTypeToKind(need(d_repr_data).slot_type);
             // A non-VMArray source with elements: the C reads
             // `s_repr_data->slot_type` through NULL (VMArray.c:958) and
-            // faults; this faults at the same offset (Task 2 §6).
+            // faults; this faults at the same offset (va-differential.md
+            // section 6: no case drives it).
             const s_rd = s_repr_data orelse moar.nullDeref(@offsetOf(c.MVMArrayREPRData, "slot_type"));
             const source_kind = slotTypeToKind(s_rd.slot_type);
             const at_pos = reprFn(src.*.st.*.REPR.*.pos_funcs.at_pos);
@@ -752,7 +761,9 @@ pub fn Elements(comptime S: type) type {
         /// element `offset`. The kind gate is `slot_type < MVM_ARRAY_I64`,
         /// so the nums and the six kinds without storage pass (row 24;
         /// kept); the growth is to `offset + count` elements, `count` being
-        /// bytes (Task 2 §4; kept). `@memmove`, defined where the C's
+        /// bytes (an 8-byte write at element 1 of a 3-element U16 array
+        /// grows it to 9 elements, va-differential.md section 4; kept).
+        /// `@memmove`, defined where the C's
         /// memcpy is, so no caller's buffer can make it illegal.
         pub fn writeBuf(tc: Tc, st: St, root: Obj, data: ?*anyopaque, from: [*c]u8, offset: i64, count: u64) callconv(.c) void {
             _ = root;
@@ -778,7 +789,9 @@ pub fn Elements(comptime S: type) type {
         /// end on a big-endian target, the C's `MVM_BIGENDIAN`, which
         /// the config derives from the target). The bounds check adds
         /// `start` to `elems`, so with `start > 0` it lets reads past the
-        /// last element through (row 25, Task 2 §4, §6; kept). The callers
+        /// last element through: within the storage they read the slots
+        /// past the window, beyond it past the allocation (row 25;
+        /// va-differential.md sections 4 and 6; kept). The callers
         /// pass at most 8 bytes; more would overrun `result`, as in the C.
         pub fn readBuf(tc: Tc, st: St, root: Obj, data: ?*anyopaque, offset: i64, count: u64) callconv(.c) i64 {
             _ = root;
@@ -843,10 +856,13 @@ pub fn Elements(comptime S: type) type {
         }
 
         /// The read entry points specialised for kind `k`, generated per
-        /// kind (Task 7 exports `.str`, `.i64`, `.u64`, `.n64`, `.obj` of
-        /// them as `MVM_VMArray_at_pos_s/_i/_u/_n/_o` and `.i64`'s `jit` as
-        /// `vmarray_at_pos_int64`). Both take no register kind and read as
-        /// `readElem` after the negative-index fix-up:
+        /// kind. VMArray.zig exports the `withRoot` of `.str`, `.i64`,
+        /// `.u64`, `.n64` and `.obj` as `MVM_VMArray_at_pos_s/_i/_u/_n/_o`;
+        /// `.i64`'s `jit` is not exported: it is the function
+        /// spesh.zig's `findFastImplForJit` hands the JIT for `atpos_i` and
+        /// `atpos_u`, in place of the C's static `vmarray_at_pos_int64`
+        /// (VMArray.c:1584), and has no symbol name. Both take no register
+        /// kind and read as `readElem` after the negative-index fix-up:
         /// - for `.str` and `.obj` the slot type is checked first, with the
         ///   C's own texts (rows 7, 11);
         /// - for every other kind nothing is checked: the caller guarantees
@@ -878,10 +894,12 @@ pub fn Elements(comptime S: type) type {
             };
         }
 
-        /// The JIT's bind entry point specialised for kind `k` (Task 7
-        /// takes `.i64`'s as `vmarray_bind_pos_int64`, which also serves
-        /// U64, row 40): `bindIndex`, then a plain store of the narrowed
-        /// register, no kind check. Only for kinds without references: the
+        /// The JIT's bind entry point specialised for kind `k`. `.i64`'s
+        /// `jit` is what spesh.zig's `findFastImplForJit` returns for
+        /// `bindpos_i` and `bindpos_u`, in place of the C's static
+        /// `vmarray_bind_pos_int64` (VMArray.c:1559; it serves U64 too,
+        /// row 40); it is not exported. It does `bindIndex`, then a plain
+        /// store of the narrowed register, no kind check. Only for kinds without references: the
         /// JIT signature has no root for a write barrier.
         pub fn bindPosKind(comptime k: Kind) type {
             if (kinds.info(k).holds_refs) @compileError("bindPosKind: " ++ @tagName(k) ++ " needs the root for its write barrier");

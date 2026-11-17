@@ -211,17 +211,45 @@ test "dispatch calls the instantiation for the runtime kind and the stated fallb
     try expectEqual(@as(usize, 8 + 8 + 8 + 4 + 2 + 1 + 8 + 4 + 8 + 4 + 2 + 1), total);
 }
 
+/// The sizes `growth follows the C policy` grows an empty array to, and the
+/// `ssize` set_size_internal (VMArray.c:441-448) gives after each, worked
+/// out by hand from the C, independently of `cGrowth`:
+///
+///     n      old ssize  rule                                   ssize
+///     1      0          < 8192: max(0 * 2, 1) = 1, then at least 8     8
+///     8      8          n <= ssize: no growth                          8
+///     9      8          < 8192: max(8 * 2, 9)                         16
+///     17     16         < 8192: max(16 * 2, 17)                       32
+///     8191   32         < 8192: max(32 * 2, 8191)                   8191
+///     8192   8191       < 8192: max(8191 * 2, 8192)                16382
+///     8193   16382      n <= ssize: no growth                      16382
+///     20000  16382      >= 8192: (20000 + 0x1000) & ~0xfff         20480
+///
+/// (24096 & ~4095 = 5 * 4096 = 20480.) `start` stays 0 throughout: the
+/// array is never shifted.
+const growth_steps = [_]u64{ 1, 8, 9, 17, 8191, 8192, 8193, 20000 };
+const growth_ssizes = [_]u64{ 8, 8, 16, 32, 8191, 16382, 16382, 20480 };
+
 test "growth follows the C policy" {
+    // The transcription agrees with the hand-worked sequence.
+    {
+        var ssize: u64 = 0;
+        for (growth_steps, growth_ssizes) |n, want| {
+            ssize = cGrowth(ssize, n);
+            try expectEqual(want, ssize);
+        }
+    }
     inline for (kinds.kinds) |k| {
         const rd = reprData(k.kind);
         var body = std.mem.zeroes(c.MVMArrayBody);
         var ssize: u64 = 0;
         var elems: u64 = 0;
-        for ([_]u64{ 1, 8, 9, 17, 8191, 8192, 8193, 20000 }) |n| {
+        for (growth_steps, growth_ssizes) |n, want| {
             // Mark the live elements so the test sees whether they move.
             if (elems > 0) @memset(bytesOf(&body, k.elem_size)[0 .. elems * k.elem_size], 0xa5);
             Testing.setSize(no_tc, &body, n, &rd);
             ssize = cGrowth(ssize, n);
+            try expectEqual(want, body.ssize);
             try expectEqual(ssize, body.ssize);
             try expectEqual(n, body.elems);
             try expectEqual(@as(u64, 0), body.start);

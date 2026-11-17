@@ -20,6 +20,8 @@
 //! during nested deserialization, a REPR's NULL function slot) are kept
 //! optional until the C dereferences them and then fault as the C does
 //! (`storage.derefReprData`, `moar.nullDeref`).
+//!
+//! "Row N" below is a row of traces/llm/bench/va-kind-differences.md.
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;

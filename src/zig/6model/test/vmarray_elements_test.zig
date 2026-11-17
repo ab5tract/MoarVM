@@ -1223,3 +1223,102 @@ test "on a stubbed STable without REPR data an empty array is left alone where t
     try expectEqual(@as(u64, 0), a.elems());
     try expect(a.body().slots.any == null);
 }
+
+/// One step of the twin-array test: what to do to an array, through either
+/// the linked library's REPR functions or `E`.
+const TwinStep = union(enum) {
+    push: usize, // this many samples pushed
+    unshift: usize,
+    shift: usize,
+    pop: usize,
+    set_elems: u64,
+    bind: i64, // a sample bound at this index
+    splice: struct { offset: i64, count: u64 }, // from the 3-sample `from`
+};
+
+const twin_steps = [_]TwinStep{
+    .{ .push = 10 },
+    .{ .unshift = 3 }, // start == 0: front room made
+    .{ .shift = 2 },
+    .{ .unshift = 1 }, // start > 0: no room made
+    .{ .pop = 1 },
+    .{ .set_elems = 40 }, // start > 0 and past ssize: moved to the front
+    .{ .set_elems = 5 },
+    .{ .bind = 100 },
+    .{ .shift = 4 },
+    .{ .splice = .{ .offset = 0, .count = 1 } }, // offset 0 with start > 0
+    .{ .splice = .{ .offset = 3, .count = 50 } },
+    .{ .push = 9000 }, // across 8,192: both growth branches
+    .{ .set_elems = 0 },
+};
+
+/// Applies `step` to `a`, through the library's table (`lib`) or `E`:
+/// the same calls, with the function pointers taken from one or the other
+/// (each `E` function has its slot's exact type).
+fn twinApply(vm: *Vm, a: A, from: A, comptime k: Kind, step: TwinStep, lib: bool) void {
+    const tc = vm.tc;
+    const pf = a.st().*.REPR.*.pos_funcs;
+    const push = if (lib) pf.push.? else &E.push;
+    const unshift = if (lib) pf.unshift.? else &E.unshift;
+    const shift = if (lib) pf.shift.? else &E.shift;
+    const pop = if (lib) pf.pop.? else &E.pop;
+    const set_elems = if (lib) pf.set_elems.? else &E.setElems;
+    const bind_pos = if (lib) pf.bind_pos.? else &E.bindPos;
+    const splice = if (lib) pf.splice.? else &E.asplice;
+    const stack_kind = kinds.info(k).stack_reg_kinds[0];
+    const st = a.st();
+    const body = a.body();
+    var r: Reg = undefined;
+    switch (step) {
+        .push => |n| for (0..n) |i| {
+            push(tc, st, a.o, body, sample(vm, k, i % n_samples), stack_kind);
+        },
+        .unshift => |n| for (0..n) |i| {
+            unshift(tc, st, a.o, body, sample(vm, k, i % n_samples), stack_kind);
+        },
+        .shift => |n| for (0..n) |_| shift(tc, st, a.o, body, &r, stack_kind),
+        .pop => |n| for (0..n) |_| pop(tc, st, a.o, body, &r, stack_kind),
+        .set_elems => |n| set_elems(tc, st, a.o, body, n),
+        .bind => |i| bind_pos(tc, st, a.o, body, i, sample(vm, k, 7), kinds.info(k).reg_kind),
+        .splice => |sp| splice(tc, st, a.o, body, from.o, sp.offset, sp.count),
+    }
+}
+
+test "the linked library's array and E keep elems, start and ssize alike, step by step" {
+    // With -Dzig-reprs=false the library's array is the C one, so this
+    // compares the C's growth, shifting and splicing with the Zig's on two
+    // arrays given the same steps; in the default build the library's
+    // array is this Zig array and the comparison is Zig against Zig.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    inline for (kinds.kinds) |ki| {
+        const k = ki.kind;
+        var lib = vm.new(k);
+        var zig = vm.new(k);
+        var from = filled(&vm, k, &.{ 20, 21, 22 });
+        const r = moar.rootN(tc, .{ &lib.o, &zig.o, &from.o });
+        defer r.pop(tc);
+        for (twin_steps, 0..) |step, i| {
+            twinApply(&vm, lib, from, k, step, true);
+            twinApply(&vm, zig, from, k, step, false);
+            const want = lib.body();
+            const got = zig.body();
+            if (want.elems != got.elems or want.start != got.start or want.ssize != got.ssize) {
+                std.debug.print("{s} step {d}: library (elems, start, ssize) {d} {d} {d}", .{
+                    @tagName(k), i, want.elems, want.start, want.ssize,
+                });
+                std.debug.print(", E {d} {d} {d}\n", .{ got.elems, got.start, got.ssize });
+                return error.TwinsDiffer;
+            }
+            // And the live windows hold the same bytes.
+            if (want.elems > 0) {
+                const n = want.elems * ki.elem_size;
+                const wp: [*]const u8 = @ptrCast(kinds.slots(k, want) + want.start);
+                const gp: [*]const u8 = @ptrCast(kinds.slots(k, got) + got.start);
+                try std.testing.expectEqualSlices(u8, wp[0..n], gp[0..n]);
+            }
+        }
+    }
+}

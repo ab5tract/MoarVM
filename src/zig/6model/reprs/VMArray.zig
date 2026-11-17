@@ -66,6 +66,12 @@ const Ser = serial.Serial(S);
 const VMArray = struct {
     pub const name = "VMArray";
     pub const ID = c.MVM_REPR_ID_VMArray;
+    // `table` below is built from this struct, and this slot refers to
+    // `table`: a cycle that compiles because the slot needs only `&table`,
+    // the address of a container-level constant, which Zig knows without
+    // evaluating the constant's initializer. A slot whose value used a
+    // value of `table` (`table.name`) would be a dependency loop, since
+    // `repr.Ops` reads every slot's value to build `table`.
     pub const type_object_for = Ser.typeObjectFor(&table);
     /// The C function itself: serialization.c compares against it.
     pub const allocate = &c.MVM_gc_allocate_object;
@@ -108,6 +114,7 @@ const VMArray = struct {
 };
 
 /// The array's vtable, with static storage as the C's `VMArray_this_repr`.
+/// `VMArray.type_object_for` holds its address (see there).
 const table: c.MVMREPROps = repr.Ops(VMArray);
 
 /// `MVMArray_initialize`: the table's address, as the C returns

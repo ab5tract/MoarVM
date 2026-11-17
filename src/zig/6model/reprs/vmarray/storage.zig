@@ -51,7 +51,8 @@ pub fn Storage(comptime Source: type) type {
         /// (no slots, or a kind without storage). Out of memory panics, as
         /// the C allocator does. The byte count wraps as the C's
         /// `ssize * elem_size` does (a deserialized count is not checked
-        /// against any limit, row 34b).
+        /// against any limit: traces/llm/bench/va-kind-differences.md
+        /// row 34b).
         pub fn alloc(n_slots: u64, elem_size: usize) ?[*]u8 {
             const len = n_slots *% elem_size;
             if (len == 0) return null;
@@ -70,7 +71,10 @@ pub fn Storage(comptime Source: type) type {
         /// allocator ignores the length, as the top of this file requires.
         pub fn free(body: *c.MVMArrayBody, elem_size: usize) void {
             const p: [*]u8 = @ptrCast(body.slots.any orelse return);
-            Source.get().rawFree(p[0 .. body.ssize * elem_size], slot_alignment, @returnAddress());
+            // The C frees without a length; `ssize` may be any count a
+            // deserialize or an adopting site stored, so the product wraps
+            // rather than trap (the allocator ignores it).
+            Source.get().rawFree(p[0 .. body.ssize *% elem_size], slot_alignment, @returnAddress());
         }
 
         /// Gives the body `n` elements, as `set_size_internal` does, step
@@ -172,10 +176,14 @@ pub fn Storage(comptime Source: type) type {
             if (ssize > (@as(u64, 1) << budget_bits))
                 c.MVM_exception_throw_adhoc(tc, "Unable to allocate an array of %" ++ c.PRIu64 ++ " elements", ssize);
 
-            const len = ssize * elem_size;
+            // The C's `ssize * repr_data->elem_size` (size_t, wrapping).
+            const len = ssize *% elem_size;
             if (len > 0) {
                 if (body.slots.any) |old| {
-                    body.slots.any = reallocate(@ptrCast(old), old_ssize * elem_size, len);
+                    // The old length, which the C never computes (its realloc
+                    // takes none): `old_ssize` may come from another kind's
+                    // budget (a recompose) or a deserialized count, so wrap.
+                    body.slots.any = reallocate(@ptrCast(old), old_ssize *% elem_size, len);
                 } else {
                     body.slots.any = alloc(ssize, elem_size);
                 }
@@ -219,11 +227,11 @@ pub fn Storage(comptime Source: type) type {
             if (dest.elems == 0) return;
             const elem_size = derefReprData(repr_data).elem_size;
             const p = alloc(dest.ssize, elem_size) orelse return;
-            const len = dest.ssize * elem_size;
+            const len = dest.ssize *% elem_size; // the C's size_t product, as `alloc`'s
             // NULL only for a source a recompose left without storage: the
             // C's memcpy reads through NULL.
             const from: [*]const u8 = @ptrCast(src.slots.any orelse moar.nullDeref(0));
-            @memcpy(p[0..len], from[src.start * elem_size ..][0..len]);
+            @memcpy(p[0..len], from[src.start *% elem_size ..][0..len]);
             dest.slots.any = p;
         }
 

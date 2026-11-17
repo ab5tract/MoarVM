@@ -27,6 +27,7 @@
 //!   functions are referenced, not reimplemented), or null for a field
 //!   with no default function. `name`, `ID`, `type_object_for`, `allocate`,
 //!   `get_storage_spec` and `compose` have no default and are required.
+//!   `R` itself must be a struct type.
 //! - A declaration that is not `pub` is not part of the interface and is
 //!   ignored, so `R` may keep private helpers. A public declaration whose
 //!   name matches no field, or whose type does not match its field, is a
@@ -43,7 +44,10 @@ const c = @import("moar").c;
 
 /// The fields a REPR must declare, in the order `declError` reports them
 /// missing: they have no default function and no C REPR leaves them NULL.
-const required = [_][]const u8{ "name", "ID", "type_object_for", "allocate", "get_storage_spec", "compose" };
+const required = [_][]const u8{
+    "name",     "ID",               "type_object_for",
+    "allocate", "get_storage_spec", "compose",
+};
 
 /// The default function of each field that has one, keyed by the field's
 /// path (`<table>.<field>` for the nested tables): the expansion of
@@ -98,7 +102,9 @@ const default_functions = .{
 };
 
 /// The compile-time branch budget of the walks below: generous enough for
-/// the 60 leaf fields against the 38 defaults and any REPR's declarations.
+/// the leaf fields of `c.MVMREPROps` (60 today, the lines `dumpOps` prints:
+/// 38 with a default function, 20 without, `name` and `ID`) against the 38
+/// defaults and any REPR's declarations.
 const eval_quota = 100_000;
 
 // Generates nothing: each entry of `default_functions` must name a leaf
@@ -130,11 +136,12 @@ fn defaultFor(comptime path: []const u8, comptime F: type) F {
 ///
 /// The result has one value per leaf field of `c.MVMREPROps`, chosen in
 /// this order: `R`'s public declaration of that name (for a nested table,
-/// `R.<table>`'s; a declared `null` gives null), else the field's `MVM_REPR_DEFAULT_*` function from
-/// `default_functions`, else null. `name` becomes a pointer to `R.name`'s
-/// bytes, `ID` the integer. If `declError(R)` reports a problem, that
-/// message is the compile error. Bind the result to a container-level
-/// `const` to give it static storage, as the C table has.
+/// `R.<table>`'s; a declared `null` gives null), else the field's
+/// `MVM_REPR_DEFAULT_*` function from `default_functions`, else null.
+/// `name` becomes a pointer to `R.name`'s bytes, `ID` the integer. If
+/// `declError(R)` reports a problem, that message is the compile error.
+/// Bind the result to a container-level `const` to give it static storage,
+/// as the C table has.
 ///
 /// Expansion for the minimal REPR, which declares only what is required:
 ///
@@ -224,24 +231,37 @@ fn declares(comptime D: type, comptime name: []const u8) bool {
 /// - `"<R>: unknown REPR function '<name>'"`: a public declaration of `R`
 ///   (or of one of its nested tables) that names no field, in declaration
 ///   order;
+/// - `"<R>: a REPR is declared as a struct type, not <kind>"`: `R` itself
+///   is not a struct (an enum, a union, `u8`, ...);
 /// - `"<R>: '<name>' has the wrong type; the field is <type>"`: a
 ///   declaration that `Ops` could not store in its field, in field order
-///   (for `name` the type given is `[:0]const u8`, what to declare);
+///   (for `name` the type given is `[:0]const u8`, what to declare); a
+///   nested table declared as anything but a struct type gives
+///   `"... the field is a struct of <table type>'s functions"`;
 /// - `"<R>: missing required '<name>'"`: the first name of `required` that
 ///   `R` does not declare;
-/// - `"<R>: required '<name>' cannot be null"`: the first name of
-///   `required` that `R` declares as `null`.
+/// - `"<R>: required '<name>' cannot be null"`: the first of the four
+///   required function slots (`type_object_for`, `allocate`,
+///   `get_storage_spec`, `compose`) that `R` declares as `null`. A `null`
+///   `name` or `ID` never gets this message: null does not fit a string or
+///   an integer field, so the wrong-type check reports it first
+///   (`"'name' has the wrong type; the field is [:0]const u8"`).
 pub fn declError(comptime R: type) ?[]const u8 {
     // The checks compare field and declaration names byte by byte at compile
     // time, which takes more than the default 1000 backward branches.
     @setEvalBranchQuota(eval_quota);
+    if (@typeInfo(R) != .@"struct")
+        return @typeName(R) ++ ": a REPR is declared as a struct type, not " ++
+            @tagName(@typeInfo(R));
     if (unknownDecl(c.MVMREPROps, R, "")) |path|
         return @typeName(R) ++ ": unknown REPR function '" ++ path ++ "'";
     if (mistypedDecl(c.MVMREPROps, R, "")) |m|
-        return @typeName(R) ++ ": '" ++ m.path ++ "' has the wrong type; the field is " ++ m.field_type;
+        return @typeName(R) ++ ": '" ++ m.path ++ "' has the wrong type; the field is " ++
+            m.field_type;
     for (required) |name| {
         if (!declares(R, name)) return @typeName(R) ++ ": missing required '" ++ name ++ "'";
-        if (@TypeOf(@field(R, name)) == @TypeOf(null)) return @typeName(R) ++ ": required '" ++ name ++ "' cannot be null";
+        if (@TypeOf(@field(R, name)) == @TypeOf(null))
+            return @typeName(R) ++ ": required '" ++ name ++ "' cannot be null";
     }
     return null;
 }
@@ -275,10 +295,13 @@ fn mistypedDecl(comptime T: type, comptime D: type, comptime prefix: []const u8)
         const path = prefix ++ field;
         const v = @field(D, field);
         if (@typeInfo(F) == .@"struct") {
-            if (!isStructType(v)) return .{ .path = path, .field_type = "a struct of " ++ @typeName(F) ++ "'s functions" };
+            if (!isStructType(v))
+                return .{ .path = path, .field_type = "a struct of " ++ @typeName(F) ++
+                    "'s functions" };
             if (mistypedDecl(F, v, path ++ ".")) |m| return m;
         } else if (!fits(F, v)) {
-            return .{ .path = path, .field_type = if (F == [*c]const u8) "[:0]const u8" else @typeName(F) };
+            const want = if (F == [*c]const u8) "[:0]const u8" else @typeName(F);
+            return .{ .path = path, .field_type = want };
         }
     }
     return null;
@@ -337,7 +360,12 @@ pub fn dumpOps(ops: *const c.MVMREPROps, writer: anytype) !void {
 /// The lines of `dumpOps` for one table `T` (the top one or a nested one,
 /// whose paths start with `prefix`): the `inline for` emits, per field of
 /// `T`, either the nested table's lines or one `print` of the leaf.
-fn dumpTable(comptime T: type, table: *const T, comptime prefix: []const u8, writer: anytype) !void {
+fn dumpTable(
+    comptime T: type,
+    table: *const T,
+    comptime prefix: []const u8,
+    writer: anytype,
+) !void {
     inline for (@typeInfo(T).@"struct".field_names) |field| {
         const F = @FieldType(T, field);
         const path = prefix ++ field;
@@ -346,10 +374,18 @@ fn dumpTable(comptime T: type, table: *const T, comptime prefix: []const u8, wri
             .@"struct" => try dumpTable(F, &@field(table.*, field), path ++ ".", writer),
             .optional => {
                 const default = comptime defaultFor(path, F);
-                const class = if (v == null) "null" else if (default != null and v == default) "default" else "own";
+                const class = if (v == null)
+                    "null"
+                else if (default != null and v == default)
+                    "default"
+                else
+                    "own";
                 try writer.print("{s}\t{s}\n", .{ path, class });
             },
-            .pointer => try writer.print("{s}\t{s}\n", .{ path, if (v == null) "null" else std.mem.span(v) }),
+            .pointer => {
+                const text = if (v == null) "null" else std.mem.span(v);
+                try writer.print("{s}\t{s}\n", .{ path, text });
+            },
             .int => try writer.print("{s}\t{d}\n", .{ path, v }),
             else => @compileError("repr.zig: no rule to dump a field of type " ++ @typeName(F)),
         }

@@ -26,6 +26,48 @@
 //! the caller of `dispatch` in its last argument, so it is visible where the
 //! operation is written. Their constants and widths are listed once, in
 //! `unstored`, for the one place that creates them (`spec_to_repr_data`).
+//!
+//! Adding a stored kind (docs/zig-build.md, "The slot kinds, and how to add
+//! one", says the same at more length):
+//!
+//! 1. The stored kinds are a dense prefix of the `MVM_ARRAY_*` values
+//!    (`dispatch`'s arms are `0...kinds.len - 1`, and the checks below
+//!    require it), so the new kind takes value 12 and the six without
+//!    storage move up to 13 ... 18, in src/6model/reprs/VMArray.h, which
+//!    also gets the new member of `MVMArrayBody.slots`. The header is
+//!    shared: the C array (VMArray.c, the `-Dzig-reprs=false` control) needs
+//!    the kind's arm in each of its switches too.
+//! 2. Here: the tag in `Kind` with value 12 and its row in `kinds`. The
+//!    comptime block after the table checks the row against the header.
+//!    `unstored` names the six by their constants and follows the
+//!    renumbering by itself.
+//! 3. A kind whose slots hold collectable references: `holds_refs` is not a
+//!    column but is computed in `entry` as `.obj` or `.str`, so widen it
+//!    there; and these places tell the reference kinds apart by name or
+//!    treat every pointer kind other than OBJ as STR, so each needs a
+//!    decision for the new kind:
+//!    - elements.zig `readElem`: only `.obj` turns an out-of-range index or
+//!      a NULL slot into VMNull; any other kind reads NULL there.
+//!    - elements.zig `kindMessage`: a pointer kind other than `.obj` is
+//!      worded "string".
+//!    - elements.zig `elemSpec`: a pointer kind other than `.obj` gets the
+//!      STR storage spec (`BP_STR`, `CAN_BOX_STR`).
+//!    - elements.zig `copyElements`: the block copy is refused by constant
+//!      (`MVM_ARRAY_STR` always, `MVM_ARRAY_OBJ` into a gen2 target), so a
+//!      new reference kind would be copied with `@memmove`, past the
+//!      write barrier.
+//!    - serial.zig `specToReprData`: the kind is chosen from the storage
+//!      spec's box kind, `BP_STR` naming `.str`; a kind that is neither an
+//!      integer nor a num needs its own branch there to be created at all
+//!      (integer and num kinds are found by walking this table).
+//!    The register member (`reg`), the element type and the serialization
+//!    reader and writer are checked by the compiler where they are used
+//!    (`fromReg`, `toWire`, `fromWire`). The rest follows `holds_refs`
+//!    (the write barrier in elements.zig and serial.zig, the mark and the
+//!    heap snapshot in mark.zig, `bindPosKind`'s refusal).
+//! 4. The tests that pin twelve kinds and the six at 12 ... 17
+//!    (test/vmarray_storage_test.zig) and that pick an element type per
+//!    kind (test/vmarray_elements_test.zig `elemType`, `sample`).
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
@@ -96,23 +138,40 @@ pub const KindInfo = struct {
     writer: [:0]const u8,
 };
 
-/// Builds one table entry; `Elem` and `member` are checked against the C
-/// union below, so a wrong type here fails the build. `wire` is the suffix
-/// of the kind's serialization reader and writer (`"int"` gives
-/// `MVM_serialization_read_int` and `MVM_serialization_write_int`).
-fn entry(kind: Kind, comptime E: type, member: [:0]const u8, reg: [:0]const u8, reg_kinds: []const u16, stack_reg_kinds: []const u16, wire: [:0]const u8) KindInfo {
+/// One row of `kinds` as written: the facts of `KindInfo` that are stated,
+/// by name, so that two columns of the same type (`member` and `reg`,
+/// `reg_kinds` and `stack_reg_kinds`) cannot be swapped unseen. `entry`
+/// derives the rest.
+const Row = struct {
+    kind: Kind,
+    Elem: type,
+    member: [:0]const u8,
+    reg: [:0]const u8,
+    /// `reg_kinds`; its first element is the kind's own `reg_kind`.
+    reg_kinds: []const u16,
+    stack_reg_kinds: []const u16,
+    /// The suffix of the kind's serialization reader and writer (`"int"`
+    /// gives `MVM_serialization_read_int` and `MVM_serialization_write_int`).
+    wire: [:0]const u8,
+};
+
+/// Builds one table entry from its row. Callable only at compile time: it
+/// concatenates strings with `++`, and its result holds a `type` (`Elem`),
+/// so a `KindInfo` exists only at compile time. `Elem` and `member` are
+/// checked against the C union below, so a wrong type here fails the build.
+fn entry(comptime r: Row) KindInfo {
     return .{
-        .reader = "MVM_serialization_read_" ++ wire,
-        .writer = "MVM_serialization_write_" ++ wire,
-        .kind = kind,
-        .Elem = E,
-        .member = member,
-        .reg = reg,
-        .reg_kind = reg_kinds[0],
-        .reg_kinds = reg_kinds,
-        .stack_reg_kinds = stack_reg_kinds,
-        .holds_refs = kind == .obj or kind == .str,
-        .elem_size = @sizeOf(E),
+        .reader = "MVM_serialization_read_" ++ r.wire,
+        .writer = "MVM_serialization_write_" ++ r.wire,
+        .kind = r.kind,
+        .Elem = r.Elem,
+        .member = r.member,
+        .reg = r.reg,
+        .reg_kind = r.reg_kinds[0],
+        .reg_kinds = r.reg_kinds,
+        .stack_reg_kinds = r.stack_reg_kinds,
+        .holds_refs = r.kind == .obj or r.kind == .str,
+        .elem_size = @sizeOf(r.Elem),
     };
 }
 
@@ -127,18 +186,114 @@ const reg_num = [_]u16{c.MVM_reg_num64};
 /// It is comptime-only (an entry holds a type) and is read in `inline for`
 /// loops, through `info(k)`, and by `dispatch`.
 pub const kinds = [_]KindInfo{
-    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj, &reg_obj, "ref"),
-    entry(.str, [*c]c.MVMString, "s", "s", &reg_str, &reg_str, "str"),
-    entry(.i64, c.MVMint64, "i64", "i64", &reg_int, &reg_int, "int"),
-    entry(.i32, c.MVMint32, "i32", "i64", &reg_int, &reg_int, "int"),
-    entry(.i16, c.MVMint16, "i16", "i64", &reg_int, &reg_int, "int"),
-    entry(.i8, c.MVMint8, "i8", "i64", &reg_int, &reg_int, "int"),
-    entry(.n64, c.MVMnum64, "n64", "n64", &reg_num, &reg_num, "num"),
-    entry(.n32, c.MVMnum32, "n32", "n64", &reg_num, &reg_num, "num"),
-    entry(.u64, c.MVMuint64, "u64", "u64", &reg_uint, &reg_int, "int"),
-    entry(.u32, c.MVMuint32, "u32", "u64", &reg_uint, &reg_int, "int"),
-    entry(.u16, c.MVMuint16, "u16", "u64", &reg_uint, &reg_int, "int"),
-    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint, &reg_int, "int"),
+    entry(.{
+        .kind = .obj,
+        .Elem = [*c]c.MVMObject,
+        .member = "o",
+        .reg = "o",
+        .reg_kinds = &reg_obj,
+        .stack_reg_kinds = &reg_obj,
+        .wire = "ref",
+    }),
+    entry(.{
+        .kind = .str,
+        .Elem = [*c]c.MVMString,
+        .member = "s",
+        .reg = "s",
+        .reg_kinds = &reg_str,
+        .stack_reg_kinds = &reg_str,
+        .wire = "str",
+    }),
+    entry(.{
+        .kind = .i64,
+        .Elem = c.MVMint64,
+        .member = "i64",
+        .reg = "i64",
+        .reg_kinds = &reg_int,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .i32,
+        .Elem = c.MVMint32,
+        .member = "i32",
+        .reg = "i64",
+        .reg_kinds = &reg_int,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .i16,
+        .Elem = c.MVMint16,
+        .member = "i16",
+        .reg = "i64",
+        .reg_kinds = &reg_int,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .i8,
+        .Elem = c.MVMint8,
+        .member = "i8",
+        .reg = "i64",
+        .reg_kinds = &reg_int,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .n64,
+        .Elem = c.MVMnum64,
+        .member = "n64",
+        .reg = "n64",
+        .reg_kinds = &reg_num,
+        .stack_reg_kinds = &reg_num,
+        .wire = "num",
+    }),
+    entry(.{
+        .kind = .n32,
+        .Elem = c.MVMnum32,
+        .member = "n32",
+        .reg = "n64",
+        .reg_kinds = &reg_num,
+        .stack_reg_kinds = &reg_num,
+        .wire = "num",
+    }),
+    entry(.{
+        .kind = .u64,
+        .Elem = c.MVMuint64,
+        .member = "u64",
+        .reg = "u64",
+        .reg_kinds = &reg_uint,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .u32,
+        .Elem = c.MVMuint32,
+        .member = "u32",
+        .reg = "u64",
+        .reg_kinds = &reg_uint,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .u16,
+        .Elem = c.MVMuint16,
+        .member = "u16",
+        .reg = "u64",
+        .reg_kinds = &reg_uint,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
+    entry(.{
+        .kind = .u8,
+        .Elem = c.MVMuint8,
+        .member = "u8",
+        .reg = "u64",
+        .reg_kinds = &reg_uint,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
 };
 
 /// One of the six kinds without storage, as `spec_to_repr_data` creates it
@@ -172,7 +327,10 @@ const SlotsUnion = @FieldType(c.MVMArrayBody, "slots");
 comptime {
     if (kinds.len != std.enums.values(Kind).len) @compileError("kinds: one entry per Kind");
     for (kinds, 0..) |k, i| {
-        if (@backingInt(k.kind) != i) @compileError("kinds: entries out of value order at " ++ @tagName(k.kind));
+        if (@backingInt(k.kind) != i) @compileError("kinds: entries out of value order at " ++
+            @tagName(k.kind) ++ ": row i must be the kind of value i, the stored kinds" ++
+            " being the dense prefix 0 ... kinds.len - 1 of the MVM_ARRAY_* values" ++
+            " (dispatch's arms)");
         const Member = @FieldType(SlotsUnion, k.member);
         if (@typeInfo(Member).pointer.child != k.Elem)
             @compileError("kinds: slots." ++ k.member ++ " does not point at " ++ @typeName(k.Elem));
@@ -230,7 +388,8 @@ pub fn slots(comptime k: Kind, body: *c.MVMArrayBody) [*]Elem(k) {
 pub const Otherwise = union(enum) {
     /// `MVM_exception_throw_adhoc(tc, message)`, the C's `default:` arm.
     /// The first of `dispatch`'s `args` must be the thread context. The
-    /// message is passed as the format, so it must not contain `%`.
+    /// message is passed as the format with no arguments, so it must not
+    /// contain `%`; `dispatch` refuses one that does at compile time.
     throw: [:0]const u8,
     /// `abort()`, as `slot_type_to_kind` does.
     abort,
@@ -274,7 +433,16 @@ pub inline fn dispatch(slot_type: u8, comptime f: anytype, args: anytype, compti
         else => if (comptime @typeInfo(@TypeOf(otherwise)) == .@"fn") {
             return @call(.auto, otherwise, .{slot_type} ++ args);
         } else switch (comptime @as(Otherwise, otherwise)) {
-            .throw => |message| c.MVM_exception_throw_adhoc(args[0], message.ptr),
+            .throw => |message| {
+                // The message is the printf format of the throw, with no
+                // arguments: a `%` in it would read an argument that is not
+                // there. Checked here, where the text becomes a format.
+                if (comptime std.mem.findScalar(u8, message, '%') != null)
+                    @compileError("dispatch: the Otherwise.throw message \"" ++ message ++
+                        "\" contains '%', but it is passed as a printf format with no arguments;" ++
+                        " write a function for `otherwise` that passes the text as an argument");
+                c.MVM_exception_throw_adhoc(args[0], message.ptr);
+            },
             .abort => std.c.abort(),
             .nothing => {
                 if (ReturnOf(f) != void) @compileError("dispatch: .nothing needs f to return void");
