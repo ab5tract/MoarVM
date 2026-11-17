@@ -88,6 +88,25 @@ pub inline fn assertNotFromspace(check_tc: *ThreadContext, p: ?*anyopaque) void 
     }
 }
 
+// ---- a C read through NULL ----------------------------------------------
+
+/// What a C read through a NULL pointer does on the platforms MoarVM runs
+/// on: a fault (SIGSEGV) in the unmapped low page. A port calls this where
+/// the C dereferences a pointer that can be NULL on a path the C reaches,
+/// instead of unwrapping it (`.?`, a `[*c]` to `[*]` conversion), which in
+/// Zig is illegal behaviour the optimiser may build on. It reads, volatile,
+/// the byte at `offset` (the offset the C reads at, or 0 where that varies):
+/// the same fault at the same kind of address. Where the C's own address
+/// would lie beyond the low page its access is undefined, and this fault is
+/// the port's defined choice. If the read does not fault (a mapped page 0),
+/// `abort()` (SIGABRT).
+pub noinline fn nullDeref(offset: usize) noreturn {
+    @branchHint(.cold);
+    const p: *allowzero const volatile u8 = @ptrFromInt(offset);
+    _ = p.*;
+    std.c.abort();
+}
+
 // ---- MVM_ASSIGN_REF from src/gc/wb.h ------------------------------------
 
 /// MVM_ASSIGN_REF(tc, update_root, update_addr, referenced) (wb.h:22-38):

@@ -49,20 +49,54 @@ const kinds = @import("kinds.zig");
 const storage = @import("storage.zig");
 
 const Kind = kinds.Kind;
+// Pointers the VM passes in and the C dereferences without a check, which
+// are never NULL on any path: the thread context, the STable, the `data`
+// body (`OBJECT_BODY` of an object, so an address inside it), the root
+// object (the caller reached this function through its STable), the
+// register and index pointers. Pointers that can be NULL on a path the C
+// reaches go through `moar.nullDeref` instead (the slots, the REPR data,
+// another REPR's functions, a splice's `from`).
 const Tc = [*c]c.MVMThreadContext;
 const St = [*c]c.MVMSTable;
 const Obj = [*c]c.MVMObject;
 const Reg = c.MVMRegister;
 const Body = c.MVMArrayBody;
 
-/// The body behind a REPR function's `data` (the C's `(MVMArrayBody *)data`).
+/// The body behind a REPR function's `data` (the C's `(MVMArrayBody *)data`),
+/// never NULL (see above).
 pub inline fn bodyOf(data: ?*anyopaque) *Body {
     return @ptrCast(@alignCast(data));
 }
 
 /// The STable's array REPR data (the C's `(MVMArrayREPRData *)st->REPR_data`).
+/// Set by `type_object_for` and `deserialize_repr_data` before any object
+/// exists; were it NULL the C's next field read faults, and so does this
+/// (`moar.nullDeref`).
 pub inline fn reprDataOf(st: St) *c.MVMArrayREPRData {
-    return @ptrCast(@alignCast(st.*.REPR_data));
+    return @ptrCast(@alignCast(st.*.REPR_data orelse moar.nullDeref(0)));
+}
+
+/// The slots of `body` as bytes, for the byte copies. NULL only where a
+/// recompose to a kind without storage left the array without storage
+/// while the C goes on to copy through it (undefined or a fault in the C,
+/// va-kind-differences.md section 3): a fault at the null page here.
+inline fn slotBytes(body: *Body) [*]u8 {
+    return @ptrCast(body.slots.any orelse moar.nullDeref(0));
+}
+
+/// `o`, an object the C dereferences without a check that the VM may pass
+/// as NULL (a splice's `from` is a raw register): the C's `REPR(o)` then
+/// reads `o->st` and faults, and so does this, at the same offset.
+inline fn objectOrFault(o: Obj) *c.MVMObject {
+    if (o == null) moar.nullDeref(@offsetOf(c.MVMObject, "st"));
+    return o;
+}
+
+/// Another REPR's function `f`, which the C calls without a check: a REPR
+/// may leave a slot NULL (MVMContinuation's `elems`), and the C's call then
+/// jumps to address 0 and faults; this faults at the null page too.
+inline fn reprFn(f: anytype) @typeInfo(@TypeOf(f)).optional.child {
+    return f orelse moar.nullDeref(0);
 }
 
 /// The body of an array object (`OBJECT_BODY(o)`).
@@ -85,7 +119,10 @@ inline fn s(x: u64) i64 {
 
 /// `enter_single_user`: with `MVM_ARRAY_CONC_DEBUG` (VMArray.h) at 0, as it
 /// is, the branch is comptime-false and nothing is emitted, so "Array may
-/// not be used concurrently" is compiled out as in the C.
+/// not be used concurrently" is compiled out as in the C. The non-zero
+/// branch is a transcription of the C's that has never been compiled
+/// (Zig does not analyse a comptime-false branch) or run; a build that
+/// sets the flag must check it first.
 inline fn enterSingleUser(tc: Tc, body: *Body) void {
     if (comptime c.MVM_ARRAY_CONC_DEBUG != 0) {
         if (!moar.trycas(&body.in_use, @as(c.AO_t, 0), @as(c.AO_t, 1))) {
@@ -95,8 +132,8 @@ inline fn enterSingleUser(tc: Tc, body: *Body) void {
     }
 }
 
-/// `exit_single_user`: empty at `MVM_ARRAY_CONC_DEBUG == 0`, as
-/// `enterSingleUser`.
+/// `exit_single_user`: empty at `MVM_ARRAY_CONC_DEBUG == 0`; the non-zero
+/// branch is unanalysed, as `enterSingleUser`'s.
 inline fn exitSingleUser(body: *Body) void {
     if (comptime c.MVM_ARRAY_CONC_DEBUG != 0) body.in_use = 0;
 }
@@ -306,7 +343,7 @@ fn ownRegKind(comptime k: Kind) u16 {
 /// (the C's 0-byte memmove, where `slots` may be NULL).
 inline fn moveBytes(body: *Body, to: u64, from: u64, len: u64) void {
     if (len == 0) return;
-    const p: [*]u8 = @ptrCast(body.slots.any.?);
+    const p = slotBytes(body);
     @memmove(p[to..][0..len], p[from..][0..len]);
 }
 
@@ -524,8 +561,9 @@ pub fn Elements(comptime S: type) type {
         ///   22b). Nothing converts across kinds but the register's own
         ///   widening and narrowing (row 22c). A kind without storage on
         ///   either side aborts in `slotTypeToKind`, the target's first
-        ///   (rule of row 22c); a non-VMArray source with elements reads
-        ///   its REPR data through NULL and crashes, as the C (Task 2 §6).
+        ///   (rule of row 22c); a non-VMArray source with elements makes
+        ///   the C read its REPR data through NULL and fault, which
+        ///   `moar.nullDeref` reproduces (Task 2 §6).
         fn copyElements(tc: Tc, src: Obj, dest: Obj, s_offset: i64, d_offset: i64, n: i64) void {
             const s_body = objectBodyOf(src);
             const d_body = objectBodyOf(dest);
@@ -541,8 +579,8 @@ pub fn Elements(comptime S: type) type {
                 {
                     const len = d_repr_data.elem_size *% u(n);
                     if (len == 0) return;
-                    const d: [*]u8 = @ptrCast(d_body.slots.any.?);
-                    const sp: [*]u8 = @ptrCast(s_body.slots.any.?);
+                    const d = slotBytes(d_body);
+                    const sp = slotBytes(s_body);
                     const d_at = u(s(d_body.start) +% d_offset) *% d_repr_data.elem_size;
                     const s_at = u(s(s_body.start) +% s_offset) *% s_rd.elem_size;
                     @memmove(d[d_at..][0..len], sp[s_at..][0..len]);
@@ -550,8 +588,12 @@ pub fn Elements(comptime S: type) type {
                 }
             }
             const target_kind = slotTypeToKind(d_repr_data.slot_type);
-            const source_kind = slotTypeToKind(s_repr_data.?.slot_type);
-            const at_pos = src.*.st.*.REPR.*.pos_funcs.at_pos.?;
+            // A non-VMArray source with elements: the C reads
+            // `s_repr_data->slot_type` through NULL (VMArray.c:958) and
+            // faults; this faults at the same offset (Task 2 §6).
+            const s_rd = s_repr_data orelse moar.nullDeref(@offsetOf(c.MVMArrayREPRData, "slot_type"));
+            const source_kind = slotTypeToKind(s_rd.slot_type);
+            const at_pos = reprFn(src.*.st.*.REPR.*.pos_funcs.at_pos);
             var i: i64 = 0;
             while (i < n) : (i += 1) {
                 var to_copy: Reg = undefined;
@@ -566,7 +608,7 @@ pub fn Elements(comptime S: type) type {
             const s_body = bodyOf(data);
             const d_body = objectBodyOf(dest);
             const d_repr_data = reprDataOf(dest.*.st);
-            const total = s(src.*.st.*.REPR.*.elems.?(tc, st, src, s_body));
+            const total = s(reprFn(src.*.st.*.REPR.*.elems)(tc, st, src, s_body));
             const from = if (start < 0) total +% start else start;
             const to = if (end < 0) total +% end else end;
             if (to < from or from < 0 or to < 0 or total <= from or total <= to)
@@ -586,7 +628,8 @@ pub fn Elements(comptime S: type) type {
             const body = bodyOf(data);
             const es = repr_data.elem_size;
             var elems0: u64 = body.elems;
-            const elems1: u64 = from.*.st.*.REPR.*.elems.?(tc, from.*.st, from, moar.objectBody(from));
+            const from_obj = objectOrFault(from);
+            const elems1: u64 = reprFn(from_obj.st.*.REPR.*.elems)(tc, from_obj.st, from, moar.objectBody(from_obj));
             var offset = offset_in;
             var count = count_in;
 
@@ -712,7 +755,8 @@ pub fn Elements(comptime S: type) type {
                 start = body.start;
             }
             if (count == 0) return; // the C's 0-byte memcpy
-            const p: [*]u8 = @ptrCast(body.slots.any.?);
+            // `from` is the caller's buffer of `count` bytes, never NULL.
+            const p = slotBytes(body);
             @memmove(p[(start +% u(offset)) *% es ..][0..count], from[0..count]);
         }
 
@@ -736,7 +780,7 @@ pub fn Elements(comptime S: type) type {
             if (count == 0) return result; // the C's 0-byte memcpy
             const to: [*]u8 = @ptrCast(&result);
             const at: u64 = if (comptime builtin.cpu.arch.endian() == .big) 8 -% count else 0;
-            const p: [*]const u8 = @ptrCast(body.slots.any.?);
+            const p = slotBytes(body);
             @memcpy((to + at)[0..count], p[u(start +% offset) *% es ..][0..count]);
             return result;
         }
@@ -764,11 +808,17 @@ pub fn Elements(comptime S: type) type {
         }
 
         /// `gc_free` (VMArray.c:112-115): frees the slots. Like the C it
-        /// reads only the object, not its STable's REPR data, so the length
-        /// handed to the allocator's free is 0: the length is unknown here,
-        /// and the storage's allocator ignores it (storage.zig's contract).
+        /// reads only the object, not its STable's REPR data: whether that
+        /// is still live when the collector frees an object is not
+        /// something the C depends on, so neither does this. The length
+        /// handed to the allocator's free is therefore 0, which works only
+        /// because `S.free` calls `rawFree` directly and the allocator
+        /// ignores the length (storage.zig's contract; `moar.mvm_allocator`
+        /// is the C allocator's free). A length-sensitive allocator must
+        /// change this.
         pub fn gcFree(tc: Tc, obj: Obj) callconv(.c) void {
             _ = tc;
+            // The collector passes the object it frees, never NULL.
             const arr: *c.MVMArray = @ptrCast(@alignCast(obj));
             S.free(&arr.body, 0);
         }

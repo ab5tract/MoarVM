@@ -883,7 +883,9 @@ test "describeRefs reports each object and string element with its index" {
 
 test "the register-kind messages are the C's, byte for byte" {
     const M = struct { op: elements.Op, k: Kind, text: []const u8 };
-    // Copied from src/6model/reprs/VMArray.c, one line per arm.
+    // Copied from src/6model/reprs/VMArray.c, one line per arm (the
+    // push, pop, unshift and shift lines extracted from its source in
+    // that order).
     const table = [_]M{
         .{ .op = .atpos, .k = .obj, .text = "MVMArray: atpos expected object register" },
         .{ .op = .atpos, .k = .str, .text = "MVMArray: atpos expected string register" },
@@ -909,20 +911,58 @@ test "the register-kind messages are the C's, byte for byte" {
         .{ .op = .bindpos, .k = .u32, .text = "MVMArray: bindpos U32 expected int register" },
         .{ .op = .bindpos, .k = .u16, .text = "MVMArray: bindpos U16 expected int register" },
         .{ .op = .bindpos, .k = .u8, .text = "MVMArray: bindpos U8 expected int register" },
+        .{ .op = .push, .k = .obj, .text = "MVMArray: push expected object register" },
+        .{ .op = .push, .k = .str, .text = "MVMArray: push expected string register" },
+        .{ .op = .push, .k = .i64, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .i32, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .i16, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .i8, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .n64, .text = "MVMArray: push expected num register" },
+        .{ .op = .push, .k = .n32, .text = "MVMArray: push expected num register" },
+        .{ .op = .push, .k = .u64, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .u32, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .u16, .text = "MVMArray: push expected int register" },
+        .{ .op = .push, .k = .u8, .text = "MVMArray: push expected int register" },
+        .{ .op = .pop, .k = .obj, .text = "MVMArray: pop expected object register" },
+        .{ .op = .pop, .k = .str, .text = "MVMArray: pop expected string register" },
+        .{ .op = .pop, .k = .i64, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .i32, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .i16, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .i8, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .n64, .text = "MVMArray: pop expected num register" },
+        .{ .op = .pop, .k = .n32, .text = "MVMArray: pop expected num register" },
+        .{ .op = .pop, .k = .u64, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .u32, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .u16, .text = "MVMArray: pop expected int register" },
+        .{ .op = .pop, .k = .u8, .text = "MVMArray: pop expected int register" },
+        .{ .op = .unshift, .k = .obj, .text = "MVMArray: unshift expected object register" },
+        .{ .op = .unshift, .k = .str, .text = "MVMArray: unshift expected string register" },
+        .{ .op = .unshift, .k = .i64, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .i32, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .i16, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .i8, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .n64, .text = "MVMArray: unshift expected num register" },
+        .{ .op = .unshift, .k = .n32, .text = "MVMArray: unshift expected num register" },
+        .{ .op = .unshift, .k = .u64, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .u32, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .u16, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .unshift, .k = .u8, .text = "MVMArray: unshift expected int register" },
+        .{ .op = .shift, .k = .obj, .text = "MVMArray: shift expected object register" },
+        .{ .op = .shift, .k = .str, .text = "MVMArray: shift expected string register" },
+        .{ .op = .shift, .k = .i64, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .i32, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .i16, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .i8, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .n64, .text = "MVMArray: shift expected num register" },
+        .{ .op = .shift, .k = .n32, .text = "MVMArray: shift expected num register" },
+        .{ .op = .shift, .k = .u64, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .u32, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .u16, .text = "MVMArray: shift expected int register" },
+        .{ .op = .shift, .k = .u8, .text = "MVMArray: shift expected int register" },
     };
     inline for (table) |m| try std.testing.expectEqualStrings(m.text, comptime elements.kindMessage(m.op, m.k));
-    // push, pop, shift and unshift: one text per group, no kind name.
-    inline for (.{ elements.Op.push, elements.Op.pop, elements.Op.shift, elements.Op.unshift }) |op| {
-        inline for (kinds.kinds) |ki| {
-            const word = switch (@typeInfo(ki.Elem)) {
-                .pointer => if (ki.kind == .obj) "object" else "string",
-                .int => "int",
-                .float => "num",
-                else => comptime unreachable,
-            };
-            try std.testing.expectEqualStrings("MVMArray: " ++ @tagName(op) ++ " expected " ++ word ++ " register", comptime elements.kindMessage(op, ki.kind));
-        }
-    }
+    // One entry per operation and kind: 6 x 12.
+    try expectEqual(@as(usize, 6 * kinds.kinds.len), table.len);
 }
 
 test "the per-kind entry points read without a register kind; the JIT bind grows" {
@@ -1084,4 +1124,49 @@ test "the kinds without storage: what does not throw does nothing and keeps slot
 comptime {
     // The tests above assume a little-endian target for readBuf's values.
     std.debug.assert(builtin.cpu.arch.endian() == .little);
+}
+
+extern "c" fn fork() c_int;
+extern "c" fn signal(sig: c_int, handler: ?*anyopaque) ?*anyopaque;
+
+/// Runs `f(args...)` in a forked child with the default SIGSEGV action
+/// and returns the signal the child died of, or null if it exited. The
+/// child never returns to the test runner.
+fn childSignal(comptime f: anytype, args: anytype) !?std.c.SIG {
+    const pid = fork();
+    if (pid == 0) {
+        _ = signal(@backingInt(std.c.SIG.SEGV), null);
+        @call(.auto, f, args);
+        std.c._exit(0);
+    }
+    try expect(pid > 0);
+    var status: c_int = 0;
+    try expectEqual(pid, std.c.waitpid(pid, &status, 0));
+    const w: u32 = @bitCast(status);
+    return if (std.c.W.IFSIGNALED(w)) std.c.W.TERMSIG(w) else null;
+}
+
+fn spliceInto(tc: *c.MVMThreadContext, a: A, from: [*c]Object) void {
+    E.asplice(tc, a.st(), a.o, a.body(), from, 0, 0);
+}
+
+test "where the C reads through NULL the Zig array faults with SIGSEGV too" {
+    // The helper itself, at the offset of a field.
+    try expectEqual(@as(?std.c.SIG, .SEGV), try childSignal(moar.nullDeref, .{@as(usize, 8)}));
+
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    var a = filled(&vm, .obj, &.{ 0, 1 });
+    var hash: ?*Object = c.MVM_repr_alloc_init(tc, vm.instance.boot_types.BOOTHash);
+    const r = moar.rootN(tc, .{ &a.o, &hash });
+    defer r.pop(tc);
+    c.MVM_repr_bind_key_o(tc, hash, vm.strs[0], vm.objs[0]);
+    // A splice from a non-VMArray with elements (VMArray.c:958) and from a
+    // NULL object (`REPR(from)`).
+    try expectEqual(@as(?std.c.SIG, .SEGV), try childSignal(spliceInto, .{ tc, a, hash }));
+    try expectEqual(@as(?std.c.SIG, .SEGV), try childSignal(spliceInto, .{ tc, a, @as([*c]Object, null) }));
+    // The parent's array is untouched; an empty hash only deletes (no copy).
+    try expectSamples(&vm, a, .obj, &.{ 0, 1 });
 }

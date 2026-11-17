@@ -34,7 +34,8 @@
 //! write and copy by the length and skip a zero-length buffer, which here
 //! would leak a received non-NULL buffer with `ssize == 0`.
 const std = @import("std");
-const c = @import("moar").c;
+const moar = @import("moar");
+const c = moar.c;
 const kinds = @import("kinds.zig");
 
 const slot_alignment = kinds.slot_alignment;
@@ -59,7 +60,12 @@ pub fn Storage(comptime Source: type) type {
         /// Frees the body's slots, as `gc_free` does; nothing when there
         /// are none. A non-NULL buffer is freed even when
         /// `ssize * elem_size` is zero (a buffer received that way). The
-        /// fields are left as they are.
+        /// fields are left as they are. The length given to the allocator
+        /// is `ssize * elem_size`, which callers may not know: the REPR's
+        /// `gc_free` passes `elem_size = 0` (elements.zig `gcFree`). That
+        /// is sound only because this calls `rawFree` directly (not
+        /// `Allocator.free`, which skips a zero-length slice) and the
+        /// allocator ignores the length, as the top of this file requires.
         pub fn free(body: *c.MVMArrayBody, elem_size: usize) void {
             const p: [*]u8 = @ptrCast(body.slots.any orelse return);
             Source.get().rawFree(p[0 .. body.ssize * elem_size], slot_alignment, @returnAddress());
@@ -89,7 +95,11 @@ pub fn Storage(comptime Source: type) type {
             if (start > 0 and n +% start > ssize) {
                 const live = elems * elem_size;
                 if (live > 0) {
-                    const p: [*]u8 = @ptrCast(body.slots.any.?);
+                    // live > 0 with start > 0: storage was made by the
+                    // shift or unshift that moved start, unless a
+                    // recompose left it NULL; then the C's memmove reads
+                    // through NULL, and so does this.
+                    const p: [*]u8 = @ptrCast(body.slots.any orelse moar.nullDeref(0));
                     @memmove(p[0..live], p[start * elem_size ..][0..live]);
                 }
                 body.start = 0;
@@ -195,7 +205,9 @@ pub fn Storage(comptime Source: type) type {
             if (dest.elems == 0) return;
             const p = alloc(dest.ssize, elem_size) orelse return;
             const len = dest.ssize * elem_size;
-            const from: [*]const u8 = @ptrCast(src.slots.any.?);
+            // NULL only for a source a recompose left without storage: the
+            // C's memcpy reads through NULL.
+            const from: [*]const u8 = @ptrCast(src.slots.any orelse moar.nullDeref(0));
             @memcpy(p[0..len], from[src.start * elem_size ..][0..len]);
             dest.slots.any = p;
         }

@@ -26,7 +26,8 @@
 //! the caller of `dispatch` in its last argument, so it is visible where the
 //! operation is written.
 const std = @import("std");
-const c = @import("moar").c;
+const moar = @import("moar");
+const c = moar.c;
 
 /// The twelve stored kinds, each at the value of its `MVM_ARRAY_*`
 /// constant, named as the constant in lower case (`.obj` = `MVM_ARRAY_OBJ`
@@ -166,10 +167,15 @@ comptime {
 
 /// The slots of `body` as kind `k`'s elements: `body.slots.<member>` as a
 /// many-item pointer, indexed by slot (an element `i` of the array is at
-/// `[body.start + i]`). The body must have storage (`slots.any` not null).
-/// `slots(.i32, body)` is `body.slots.i32` as a `[*]c.MVMint32`.
+/// `[body.start + i]`). `slots(.i32, body)` is `body.slots.i32` as a
+/// `[*]c.MVMint32`. Every caller is about to read or write a slot; where
+/// the C does that through NULL slots (an array whose storage a recompose
+/// to a kind without storage left NULL, `moar.nullDeref`'s case) this
+/// faults at the null page instead of forming a NULL `[*]`.
 pub fn slots(comptime k: Kind, body: *c.MVMArrayBody) [*]Elem(k) {
-    return @field(body.slots, info(k).member);
+    const p = @field(body.slots, info(k).member);
+    if (p == null) moar.nullDeref(0);
+    return p;
 }
 
 /// What `dispatch` does for a slot type that is not a stored kind (one of
