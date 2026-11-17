@@ -24,7 +24,8 @@
 //! them, and what each C operation does with them instead (throw, abort, or
 //! nothing; traces/llm/bench/va-kind-differences.md section 3) is stated by
 //! the caller of `dispatch` in its last argument, so it is visible where the
-//! operation is written.
+//! operation is written. Their constants and widths are listed once, in
+//! `unstored`, for the one place that creates them (`spec_to_repr_data`).
 const std = @import("std");
 const moar = @import("moar");
 const c = moar.c;
@@ -83,12 +84,26 @@ pub const KindInfo = struct {
     holds_refs: bool,
     /// `@sizeOf(Elem)`, the `elem_size` the REPR data records for the kind.
     elem_size: usize,
+    /// The serialization reader the array's `deserialize` reads one element
+    /// with, named as the C function (`"MVM_serialization_read_int"`), and
+    /// the writer `serialize` writes one with (`..._write_int`): `ref` for
+    /// OBJ, `str` for STR, `int` for the eight integer kinds, `num` for the
+    /// two nums (va-kind-differences.md rows 34a, 35). What travels is the
+    /// reader's result and the writer's argument (`MVMObject *`,
+    /// `MVMString *`, `MVMint64`, `MVMnum64`); serial.zig converts to and
+    /// from `Elem` as the C's casts do.
+    reader: [:0]const u8,
+    writer: [:0]const u8,
 };
 
 /// Builds one table entry; `Elem` and `member` are checked against the C
-/// union below, so a wrong type here fails the build.
-fn entry(kind: Kind, comptime E: type, member: [:0]const u8, reg: [:0]const u8, reg_kinds: []const u16, stack_reg_kinds: []const u16) KindInfo {
+/// union below, so a wrong type here fails the build. `wire` is the suffix
+/// of the kind's serialization reader and writer (`"int"` gives
+/// `MVM_serialization_read_int` and `MVM_serialization_write_int`).
+fn entry(kind: Kind, comptime E: type, member: [:0]const u8, reg: [:0]const u8, reg_kinds: []const u16, stack_reg_kinds: []const u16, wire: [:0]const u8) KindInfo {
     return .{
+        .reader = "MVM_serialization_read_" ++ wire,
+        .writer = "MVM_serialization_write_" ++ wire,
         .kind = kind,
         .Elem = E,
         .member = member,
@@ -112,18 +127,40 @@ const reg_num = [_]u16{c.MVM_reg_num64};
 /// It is comptime-only (an entry holds a type) and is read in `inline for`
 /// loops, through `info(k)`, and by `dispatch`.
 pub const kinds = [_]KindInfo{
-    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj, &reg_obj),
-    entry(.str, [*c]c.MVMString, "s", "s", &reg_str, &reg_str),
-    entry(.i64, c.MVMint64, "i64", "i64", &reg_int, &reg_int),
-    entry(.i32, c.MVMint32, "i32", "i64", &reg_int, &reg_int),
-    entry(.i16, c.MVMint16, "i16", "i64", &reg_int, &reg_int),
-    entry(.i8, c.MVMint8, "i8", "i64", &reg_int, &reg_int),
-    entry(.n64, c.MVMnum64, "n64", "n64", &reg_num, &reg_num),
-    entry(.n32, c.MVMnum32, "n32", "n64", &reg_num, &reg_num),
-    entry(.u64, c.MVMuint64, "u64", "u64", &reg_uint, &reg_int),
-    entry(.u32, c.MVMuint32, "u32", "u64", &reg_uint, &reg_int),
-    entry(.u16, c.MVMuint16, "u16", "u64", &reg_uint, &reg_int),
-    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint, &reg_int),
+    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj, &reg_obj, "ref"),
+    entry(.str, [*c]c.MVMString, "s", "s", &reg_str, &reg_str, "str"),
+    entry(.i64, c.MVMint64, "i64", "i64", &reg_int, &reg_int, "int"),
+    entry(.i32, c.MVMint32, "i32", "i64", &reg_int, &reg_int, "int"),
+    entry(.i16, c.MVMint16, "i16", "i64", &reg_int, &reg_int, "int"),
+    entry(.i8, c.MVMint8, "i8", "i64", &reg_int, &reg_int, "int"),
+    entry(.n64, c.MVMnum64, "n64", "n64", &reg_num, &reg_num, "num"),
+    entry(.n32, c.MVMnum32, "n32", "n64", &reg_num, &reg_num, "num"),
+    entry(.u64, c.MVMuint64, "u64", "u64", &reg_uint, &reg_int, "int"),
+    entry(.u32, c.MVMuint32, "u32", "u64", &reg_uint, &reg_int, "int"),
+    entry(.u16, c.MVMuint16, "u16", "u64", &reg_uint, &reg_int, "int"),
+    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint, &reg_int, "int"),
+};
+
+/// One of the six kinds without storage, as `spec_to_repr_data` creates it
+/// from an integer element type of 4, 2 or 1 bits (row 31a): its
+/// `MVM_ARRAY_*` constant, the width and the signedness it comes from. It
+/// has no `Kind` and no element operation (see the top of this file); its
+/// `elem_size` is 0.
+pub const Unstored = struct {
+    slot_type: u8,
+    bits: u16,
+    signedness: std.builtin.Signedness,
+};
+
+/// The six kinds without storage, the single place their constants and
+/// widths are stated.
+pub const unstored = [_]Unstored{
+    .{ .slot_type = c.MVM_ARRAY_U4, .bits = 4, .signedness = .unsigned },
+    .{ .slot_type = c.MVM_ARRAY_U2, .bits = 2, .signedness = .unsigned },
+    .{ .slot_type = c.MVM_ARRAY_U1, .bits = 1, .signedness = .unsigned },
+    .{ .slot_type = c.MVM_ARRAY_I4, .bits = 4, .signedness = .signed },
+    .{ .slot_type = c.MVM_ARRAY_I2, .bits = 2, .signedness = .signed },
+    .{ .slot_type = c.MVM_ARRAY_I1, .bits = 1, .signedness = .signed },
 };
 
 /// The `body.slots` union type of the C header.
@@ -140,6 +177,14 @@ comptime {
         if (@typeInfo(Member).pointer.child != k.Elem)
             @compileError("kinds: slots." ++ k.member ++ " does not point at " ++ @typeName(k.Elem));
         if (!@hasField(c.MVMRegister, k.reg)) @compileError("kinds: MVMRegister has no member " ++ k.reg);
+        if (!@hasDecl(c, k.reader) or !@hasDecl(c, k.writer)) @compileError("kinds: no " ++ k.reader ++ " or " ++ k.writer);
+    }
+    // The six are the constants after the stored kinds, each once.
+    for (unstored, 0..) |u, i| {
+        if (u.slot_type < kinds.len) @compileError("kinds: an unstored kind overlaps a stored one");
+        for (unstored[0..i]) |v| {
+            if (v.slot_type == u.slot_type) @compileError("kinds: an unstored kind twice");
+        }
     }
 }
 

@@ -7,4 +7,5 @@ test {
     _ = @import("test/repr_ops_test.zig");
     _ = @import("test/vmarray_storage_test.zig");
     _ = @import("test/vmarray_elements_test.zig");
+    _ = @import("test/vmarray_serial_test.zig");
 }

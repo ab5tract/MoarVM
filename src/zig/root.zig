@@ -24,5 +24,7 @@ comptime {
         _ = @import("gc/debug.zig");
         _ = @import("gc/orchestrate.zig");
     }
-    if (@import("zig_options").zig_reprs) {}
+    if (@import("zig_options").zig_reprs) {
+        _ = @import("6model/reprs/VMArray.zig");
+    }
 }

@@ -1,9 +1,11 @@
 //! Tests of the array's element operations (`reprs/vmarray/elements.zig`)
 //! and its collector hooks (`reprs/vmarray/mark.zig`) on a booted VM. The
 //! arrays are allocated by the linked library (`MVM_repr_alloc_init`), whose
-//! VMArray is still the C one; the Zig functions are called directly on
-//! them, with the storage over `moar.mvm_allocator`, so the library frees
-//! what the Zig code allocated. Only paths that do not throw are tested
+//! VMArray is the C one or, with `-Dzig-reprs` (the default), the Zig one;
+//! the Zig functions are called directly on them, with the storage over
+//! `moar.mvm_allocator`, so the library frees what the Zig code allocated.
+//! `Vm`, `A`, `E`, `sample` and `filled` are public for
+//! vmarray_serial_test.zig. Only paths that do not throw are tested
 //! here (spec 7.1): a throw longjmps out of the test. The throwing paths
 //! and their messages are covered by the differential programs.
 const std = @import("std");
@@ -23,7 +25,7 @@ const Reg = c.MVMRegister;
 const Object = c.MVMObject;
 
 /// The element operations over the production allocator.
-const E = elements.Elements(storage.Storage(struct {
+pub const E = elements.Elements(storage.Storage(struct {
     pub fn get() std.mem.Allocator {
         return moar.mvm_allocator;
     }
@@ -34,14 +36,14 @@ const n_samples = 32;
 /// A booted VM with an array type per kind and gen2 sample values. The
 /// types and samples are permanent roots, so the struct must stay where
 /// `boot` was called on it until `deinit`.
-const Vm = struct {
+pub const Vm = struct {
     instance: *c.MVMInstance,
     tc: *c.MVMThreadContext,
     types: [kinds.kinds.len]?*Object,
     objs: [n_samples]?*Object,
     strs: [n_samples]?*c.MVMString,
 
-    fn boot(vm: *Vm) void {
+    pub fn boot(vm: *Vm) void {
         vm.instance = c.MVM_vm_create_instance();
         vm.tc = vm.instance.main_thread;
         const tc = vm.tc;
@@ -70,17 +72,17 @@ const Vm = struct {
         for (vm.types, 0..) |t, i| std.debug.assert(reprData(t.?).slot_type == i);
     }
 
-    fn deinit(vm: *Vm) void {
+    pub fn deinit(vm: *Vm) void {
         c.MVM_vm_destroy_instance(vm.instance);
     }
 
     /// A fresh, empty nursery array of kind `k`.
-    fn new(vm: *Vm, k: Kind) A {
+    pub fn new(vm: *Vm, k: Kind) A {
         return .{ .o = c.MVM_repr_alloc_init(vm.tc, vm.types[@backingInt(k)]) };
     }
 
     /// A fresh, empty gen2 array of kind `k`.
-    fn newGen2(vm: *Vm, k: Kind) A {
+    pub fn newGen2(vm: *Vm, k: Kind) A {
         c.MVM_gc_allocate_gen2_default_set(vm.tc);
         defer c.MVM_gc_allocate_gen2_default_clear(vm.tc);
         return vm.new(k);
@@ -136,44 +138,44 @@ fn elemType(tc: *c.MVMThreadContext, comptime k: Kind) ?*Object {
 /// An array object and the calls the tests make on it. Each operation
 /// passes the kind's own register kind (`reg_kind`, or the one
 /// `stack_reg_kinds` accepts for push, pop, shift and unshift).
-const A = struct {
+pub const A = struct {
     o: ?*Object,
 
-    fn st(a: A) [*c]c.MVMSTable {
+    pub fn st(a: A) [*c]c.MVMSTable {
         return a.o.?.st;
     }
-    fn body(a: A) *c.MVMArrayBody {
+    pub fn body(a: A) *c.MVMArrayBody {
         return &@as(*c.MVMArray, @ptrCast(@alignCast(a.o.?))).body;
     }
-    fn elems(a: A) u64 {
+    pub fn elems(a: A) u64 {
         return a.body().elems;
     }
-    fn push(a: A, tc: *c.MVMThreadContext, comptime k: Kind, v: Reg) void {
+    pub fn push(a: A, tc: *c.MVMThreadContext, comptime k: Kind, v: Reg) void {
         E.push(tc, a.st(), a.o, a.body(), v, kinds.info(k).stack_reg_kinds[0]);
     }
-    fn unshift(a: A, tc: *c.MVMThreadContext, comptime k: Kind, v: Reg) void {
+    pub fn unshift(a: A, tc: *c.MVMThreadContext, comptime k: Kind, v: Reg) void {
         E.unshift(tc, a.st(), a.o, a.body(), v, kinds.info(k).stack_reg_kinds[0]);
     }
-    fn pop(a: A, tc: *c.MVMThreadContext, comptime k: Kind) Reg {
+    pub fn pop(a: A, tc: *c.MVMThreadContext, comptime k: Kind) Reg {
         var r: Reg = undefined;
         E.pop(tc, a.st(), a.o, a.body(), &r, kinds.info(k).stack_reg_kinds[0]);
         return r;
     }
-    fn shift(a: A, tc: *c.MVMThreadContext, comptime k: Kind) Reg {
+    pub fn shift(a: A, tc: *c.MVMThreadContext, comptime k: Kind) Reg {
         var r: Reg = undefined;
         E.shift(tc, a.st(), a.o, a.body(), &r, kinds.info(k).stack_reg_kinds[0]);
         return r;
     }
-    fn at(a: A, tc: *c.MVMThreadContext, comptime k: Kind, i: i64) Reg {
+    pub fn at(a: A, tc: *c.MVMThreadContext, comptime k: Kind, i: i64) Reg {
         var r: Reg = undefined;
         E.atPos(tc, a.st(), a.o, a.body(), i, &r, kinds.info(k).reg_kind);
         return r;
     }
-    fn bind(a: A, tc: *c.MVMThreadContext, comptime k: Kind, i: i64, v: Reg) void {
+    pub fn bind(a: A, tc: *c.MVMThreadContext, comptime k: Kind, i: i64, v: Reg) void {
         E.bindPos(tc, a.st(), a.o, a.body(), i, v, kinds.info(k).reg_kind);
     }
     /// The raw slot `i` (start not added) as bytes.
-    fn slotBytes(a: A, comptime k: Kind, i: u64) []const u8 {
+    pub fn slotBytes(a: A, comptime k: Kind, i: u64) []const u8 {
         return std.mem.asBytes(&kinds.slots(k, a.body())[i]);
     }
 };
@@ -181,7 +183,7 @@ const A = struct {
 /// Sample value `i` of kind `k` in its register member: a gen2 object or
 /// string of the VM, `3i + 1` for the integers (exact in every width) and
 /// `i + 0.5` for the nums (exact in f32).
-fn sample(vm: *const Vm, comptime k: Kind, i: usize) Reg {
+pub fn sample(vm: *const Vm, comptime k: Kind, i: usize) Reg {
     var r = std.mem.zeroes(Reg);
     switch (@typeInfo(kinds.Elem(k))) {
         .pointer => if (k == .obj) {
@@ -220,7 +222,7 @@ fn expectSamples(vm: *Vm, a: A, comptime k: Kind, want: []const usize) !void {
 }
 
 /// An array of kind `k` holding the samples `which`.
-fn filled(vm: *Vm, comptime k: Kind, which: []const usize) A {
+pub fn filled(vm: *Vm, comptime k: Kind, which: []const usize) A {
     const a = vm.new(k);
     for (which) |w| a.push(vm.tc, k, sample(vm, k, w));
     return a;

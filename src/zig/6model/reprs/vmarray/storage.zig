@@ -49,9 +49,11 @@ pub fn Storage(comptime Source: type) type {
         /// A new buffer for `n_slots` slots of `elem_size` bytes, at
         /// `slot_alignment`, uninitialized; null when that is zero bytes
         /// (no slots, or a kind without storage). Out of memory panics, as
-        /// the C allocator does.
+        /// the C allocator does. The byte count wraps as the C's
+        /// `ssize * elem_size` does (a deserialized count is not checked
+        /// against any limit, row 34b).
         pub fn alloc(n_slots: u64, elem_size: usize) ?[*]u8 {
-            const len = n_slots * elem_size;
+            const len = n_slots *% elem_size;
             if (len == 0) return null;
             return Source.get().rawAlloc(len, slot_alignment, @returnAddress()) orelse
                 c.MVM_panic_allocation_failed(len);

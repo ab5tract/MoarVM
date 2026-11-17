@@ -32,3 +32,8 @@ size_t moar_probe_offsetof_array_body(void) { return offsetof(MVMArray, body); }
 size_t moar_probe_offsetof_array_repr_data_elem_size(void) { return offsetof(MVMArrayREPRData, elem_size); }
 size_t moar_probe_offsetof_array_repr_data_slot_type(void) { return offsetof(MVMArrayREPRData, slot_type); }
 size_t moar_probe_offsetof_array_repr_data_elem_type(void) { return offsetof(MVMArrayREPRData, elem_type); }
+/* MVMOpInfo is opaque to translate-c (bit-fields); the Zig array's spesh
+ * hook (src/zig/6model/reprs/vmarray/spesh.zig) reads only its leading
+ * opcode through a mirror and checks these against it. */
+size_t moar_probe_offsetof_opinfo_opcode(void) { return offsetof(MVMOpInfo, opcode); }
+size_t moar_probe_sizeof_opinfo_opcode(void) { return sizeof(((MVMOpInfo *)0)->opcode); }

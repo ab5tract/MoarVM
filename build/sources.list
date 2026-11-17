@@ -230,4 +230,5 @@ src/zig/gc/orchestrate.zig: src/gc/orchestrate.c
 # The REPRs' Zig files, same line grammar as [zig]: applied with the Zig
 # implementations and the Zig collector when -Dzig-reprs=true (the
 # default); with zig build -Dzig-reprs=false these REPRs stay C while the
-# [zig] and [zig-gc] files stay Zig. Empty until the first REPR is ported.
+# [zig] and [zig-gc] files stay Zig.
+src/zig/6model/reprs/VMArray.zig: src/6model/reprs/VMArray.c
