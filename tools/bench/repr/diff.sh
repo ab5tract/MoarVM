@@ -56,11 +56,12 @@
 #   * if base and head differ, but only in lines listed in
 #     undefined-lines.txt (self-splices whose result in C is what memcpy over
 #     overlapping ranges leaves), each such line of the head must print what
-#     memmove gives: memmove-model.py (beside this script) models it for the
-#     diff-nqp `<kind>.selfsplice.*` lines, and a head value that differs
-#     from the model is exit 1 like any other difference. The lines the model
-#     does not cover (the diff-raku entries) are named in the output as
-#     "accepted without a model check". Then exit 3 "differs only in
+#     memmove gives: memmove-model.py (beside this script) models it for
+#     every listed line (the diff-nqp `<kind>.selfsplice.*` lines and the
+#     diff-raku self-splices), and a head value that differs from the model
+#     is exit 1 like any other difference. A listed line the model does not
+#     cover would be named in the output as "accepted without a model
+#     check"; none is at present. Then exit 3 "differs only in
 #     undefined self-splice lines, and equals memmove there", with every
 #     differing line, both values and the model's verdict. This is not a
 #     pass: it is recorded and put to the user;
@@ -72,7 +73,9 @@
 #        tools/bench/repr/diff.sh --help
 # PREFIX is an install (<prefix>/lib/libmoar.so). DIR must not exist, except
 # with --compare-only, which runs nothing and repeats the checks on the
-# outputs already in DIR (K as in the run that made them). The two
+# outputs already in DIR (K as in the run that made them; it first deletes
+# the undefined-*.txt and model-*.txt files an earlier pass left there, so
+# its verdict rests on this pass alone). The two
 # PREFIX strings must be of equal length (the install path is baked into
 # libmoar and its length moves the heap, and a few cases print what a
 # memcpy over overlapping ranges leaves, which can follow the alignment of
@@ -277,6 +280,9 @@ if [ -z "$compare_only" ]; then
         done
     done
 else
+    # The undefined-* and model-* files are this pass's findings: one left by
+    # an earlier pass would be read below as if this pass had written it.
+    rm -f "$out"/undefined-*.txt "$out"/model-*.txt
     for side in base head; do
         for program in $programs; do
             for setting in $settings; do

@@ -14,12 +14,21 @@
 #   diff-nqp <kind>.selfsplice.<case>  the cases of selfsp() in vmarray-diff.nqp
 #   diff-nqp <kind>.selfsplice.twice   splice($a, $a, 2, 1) then splice($a, $a, 3, 0)
 #                                      on fill($k, 4)
-# and nothing else: every other NAME (the diff-raku entries) is reported as
-# "accepted without a model check", by name.
+#   diff-raku <type>.nqp.splice.self   nqp::splice($a, $a, 3, 0) on the six values
+#   diff-raku <type>.splice.self       of the type's section of vmarray-diff.raku
+#                                      (0..5 for the int types, 0.5..5.5 for
+#                                      num32/num64, 1..6 for the Buf/Blob types)
+#   diff-raku array.reified.splice     nqp::splice(b, nqp::list(7, 8), 1, 2), then
+#                                      nqp::splice(b, b, 2, 0), on an Array's
+#                                      reified buffer of 1 2 3 4 5
+# and nothing else: any other NAME is reported as "accepted without a model
+# check", by name (no line undefined-lines.txt lists is left so).
 #
 # Prints one line per NAME ("memmove: NAME", "MISMATCH: NAME" with the
 # expected and printed values, "accepted without a model check: NAME") and
-# exits 0 when no covered NAME mismatches, 1 otherwise, 64 on misuse.
+# exits 0 when no covered NAME mismatches, 1 otherwise, 64 on misuse. A case
+# name printed twice in OUTPUT, or given twice as a NAME, is misuse (64): the
+# check would otherwise compare against whichever line came last.
 import hashlib, re, sys
 
 
@@ -50,17 +59,30 @@ def val(kind, j):
     return str(ival(j, k[0], k[1]))
 
 
+def unique(pairs, what):
+    """A dict of `pairs`, refusing a key given twice (a dict literal would
+    keep the last silently)."""
+    d = {}
+    for k, v in pairs:
+        if k in d:
+            raise SystemExit('memmove-model.py: %s %s given twice' % (what, k))
+        d[k] = v
+    return d
+
+
 # selfsp($name, $len, $extra, $off, $cnt) of vmarray-diff.nqp.
-CASES = {
-    'prepend': (10, 0, 0, 0), 'append': (10, 0, 10, 0), 'middle': (10, 0, 5, 0), 'middle1': (10, 0, 1, 0),
-    'middle9': (10, 0, 9, 0), 'replace.2.3': (10, 0, 2, 3), 'replace.0.3': (10, 0, 0, 3),
-    'replace.all': (10, 0, 0, 10), 'replace.over': (10, 0, 0, 20), 'replace.tail': (10, 0, 7, 3),
-    'replace.5.5': (10, 0, 5, 5), 'replace.1.9': (10, 0, 1, 9), 'replace.1.20': (10, 0, 1, 20),
-    'neg': (10, 0, -3, 1), 'past': (10, 0, 12, 0), 'shifted.prepend': (10, 4, 0, 0),
-    'shifted.prepend20': (10, 20, 0, 0), 'shifted.middle': (10, 4, 5, 0), 'shifted.replace': (10, 4, 0, 4),
-    'shifted.replace.2.3': (10, 4, 2, 3), 'shifted.append': (10, 4, 10, 0), 'one': (1, 0, 0, 0),
-    'one.replace': (1, 0, 0, 1), 'empty': (0, 0, 0, 0), 'big.middle': (9000, 0, 4500, 0),
-    'big.1': (9000, 0, 1, 0), 'big.replace': (9000, 0, 100, 5000), 'big.shifted': (9000, 50, 3, 7)}
+CASES = unique([
+    ('prepend', (10, 0, 0, 0)), ('append', (10, 0, 10, 0)), ('middle', (10, 0, 5, 0)),
+    ('middle1', (10, 0, 1, 0)), ('middle9', (10, 0, 9, 0)), ('replace.2.3', (10, 0, 2, 3)),
+    ('replace.0.3', (10, 0, 0, 3)), ('replace.all', (10, 0, 0, 10)), ('replace.over', (10, 0, 0, 20)),
+    ('replace.tail', (10, 0, 7, 3)), ('replace.5.5', (10, 0, 5, 5)), ('replace.1.9', (10, 0, 1, 9)),
+    ('replace.1.20', (10, 0, 1, 20)), ('neg', (10, 0, -3, 1)), ('past', (10, 0, 12, 0)),
+    ('shifted.prepend', (10, 4, 0, 0)), ('shifted.prepend20', (10, 20, 0, 0)),
+    ('shifted.middle', (10, 4, 5, 0)), ('shifted.replace', (10, 4, 0, 4)),
+    ('shifted.replace.2.3', (10, 4, 2, 3)), ('shifted.append', (10, 4, 10, 0)), ('one', (1, 0, 0, 0)),
+    ('one.replace', (1, 0, 0, 1)), ('empty', (0, 0, 0, 0)), ('big.middle', (9000, 0, 4500, 0)),
+    ('big.1', (9000, 0, 1, 0)), ('big.replace', (9000, 0, 100, 5000)), ('big.shifted', (9000, 50, 3, 7)),
+], 'case')
 
 
 def splice(kind, slots, start, offset, count):
@@ -113,8 +135,37 @@ def rendered(v):
     return 'elems=%d sha1=%s head=[%s] tail=[%s]' % (len(v), sha, ' '.join(v[:3]), ' '.join(v[-3:]))
 
 
+# The diff-raku self-splices: the six values each type's section of
+# vmarray-diff.raku starts from (fresh(^6), fresh(@v), fresh(1, 2, 3, 4, 5,
+# 6)), as d() prints them, and the case names that splice them with
+# nqp::splice($a, $a, 3, 0).
+RAKU_INTS = ['int8', 'int16', 'int32', 'int64', 'uint8', 'uint16', 'uint32', 'uint64']
+RAKU_BUFS = ['%s[uint%d]' % (t, b) for t in ('Buf', 'Blob') for b in (8, 16, 32, 64)]
+RAKU_SIX = unique([('%s.nqp.splice.self' % t, [str(j) for j in range(6)]) for t in RAKU_INTS]
+                  + [('%s.splice.self' % t, ['%g' % (j + 0.5) for j in range(6)]) for t in ('num32', 'num64')]
+                  + [('%s.splice.self' % t, [str(j + 1) for j in range(6)]) for t in RAKU_BUFS], 'diff-raku case')
+
+
+def expected_raku(name):
+    """The memmove model's line for a diff-raku `name`, or None."""
+    if name in RAKU_SIX:
+        slots, start = splice('i64', RAKU_SIX[name], 0, 3, 0)
+        return rendered(slots[start:])
+    if name == 'array.reified.splice':
+        # The first splice takes its elements from another list, so its
+        # result is defined: 1 2 3 4 5 with 2 3 replaced by 7 8. The second
+        # is the self-splice. od() prints the same 'elems=N [...]' as d().
+        v = ['1', '2', '3', '4', '5']
+        v = v[:1] + ['7', '8'] + v[3:]
+        slots, start = splice('obj', v, 0, 2, 0)
+        return rendered(slots[start:])
+    return None
+
+
 def expected(program, name):
     """The memmove model's line for `name`, or None when it covers none."""
+    if program == 'diff-raku':
+        return expected_raku(name)
     if program != 'diff-nqp':
         return None
     m = re.fullmatch(r'(\w+)\.selfsplice\.([\w.]+)', name)
@@ -145,7 +196,14 @@ def main(argv):
         line = line.rstrip('\n')
         i = line.find(': ')
         if i > 0:
+            if line[:i] in printed:
+                print('memmove-model.py: %s prints the case %s twice' % (output, line[:i]), file=sys.stderr)
+                return 64
             printed[line[:i]] = line[i + 2:]
+    if len(set(names)) != len(names):
+        twice = sorted(n for n in set(names) if names.count(n) > 1)
+        print('memmove-model.py: NAME given twice: %s' % ' '.join(twice), file=sys.stderr)
+        return 64
     bad = 0
     for name in names:
         want = expected(program, name)
