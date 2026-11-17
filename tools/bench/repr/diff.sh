@@ -55,9 +55,15 @@
 #     the first differing line;
 #   * if base and head differ, but only in lines listed in
 #     undefined-lines.txt (self-splices whose result in C is what memcpy over
-#     overlapping ranges leaves): exit 3 "differs only in undefined
-#     self-splice lines", with every differing line and both values. This is
-#     not a pass: it is recorded and put to the user;
+#     overlapping ranges leaves), each such line of the head must print what
+#     memmove gives: memmove-model.py (beside this script) models it for the
+#     diff-nqp `<kind>.selfsplice.*` lines, and a head value that differs
+#     from the model is exit 1 like any other difference. The lines the model
+#     does not cover (the diff-raku entries) are named in the output as
+#     "accepted without a model check". Then exit 3 "differs only in
+#     undefined self-splice lines, and equals memmove there", with every
+#     differing line, both values and the model's verdict. This is not a
+#     pass: it is recorded and put to the user;
 #   * exit 0 "identical" with the line counts.
 #
 # Usage: tools/bench/repr/diff.sh --base=PREFIX --head=PREFIX --out=DIR
@@ -72,7 +78,8 @@
 # memcpy over overlapping ranges leaves, which can follow the alignment of
 # the storage); an unequal pair is misuse and refused before anything runs.
 # Exit: 0 identical, 1 base and head differ, 2 a side not repeatable,
-# 3 base and head differ only in the listed undefined self-splice lines,
+# 3 base and head differ only in the listed undefined self-splice lines and
+# the head equals memmove there (or the line is named as not model-checked),
 # 4 a run failed or a side did not load its own libmoar, 64 misuse.
 set -e
 
@@ -115,13 +122,41 @@ fi
 
 undefined_list="$root/tools/bench/repr/undefined-lines.txt"
 [ -r "$undefined_list" ] || usage "$undefined_list missing"
+memmove_model="$root/tools/bench/repr/memmove-model.py"
+[ -r "$memmove_model" ] || usage "$memmove_model missing"
 programs="diff-nqp diff-raku serial devirt"
 settings="spesh nospesh"
 max_load=2.0
 
-# first_diff A B: the first line where files A and B differ, or nothing.
-# Lines are cut at 300 characters for the report (a serialized blob is long).
+# first_diff A B: the first line where files A and B differ. Lines are cut
+# at 300 characters for the report (a serialized blob is long). When no line
+# differs but the bytes do (awk reads a last line without its newline as a
+# whole line), it says which file ends without a newline.
 first_diff() {
+    fd_lines=$(first_line_diff "$1" "$2")
+    if [ -n "$fd_lines" ]; then
+        printf '%s\n' "$fd_lines"
+    elif ! cmp -s "$1" "$2"; then
+        fd_ends=
+        for fd_f in "$1" "$2"; do
+            if [ ! -s "$fd_f" ]; then
+                fd_end="is empty"
+            elif [ "$(tail -c 1 "$fd_f" | od -An -c | tr -d ' ')" = '\n' ]; then
+                fd_end="ends with a newline"
+            else
+                fd_end="does not end with a newline"
+            fi
+            echo "  $fd_f $fd_end"
+            fd_ends="$fd_ends|$fd_end"
+        done
+        case $fd_ends in
+            "|ends with a newline|does not end with a newline"|"|does not end with a newline|ends with a newline")
+                echo "  (no line differs; the files differ only in their final newline)" ;;
+            *)  echo "  (no line differs as awk reads them; cmp: $(cmp "$1" "$2" 2>&1 || :))" ;;
+        esac
+    fi
+}
+first_line_diff() {
     awk -v A="$1" -v B="$2" '
         function show(s) { return length(s) > 300 ? substr(s, 1, 300) "... (" length(s) " characters)" : s }
         FILENAME == A { a[FNR] = $0; n = FNR; next }
@@ -291,9 +326,11 @@ for setting in $settings; do
 done
 
 # only_listed PROGRAM A B: succeeds when A and B have the same number of
-# lines and every line that differs has the same case name in both and that
-# name is listed for PROGRAM in undefined-lines.txt; it then prints those
-# lines with both values. Fails, printing nothing, otherwise.
+# lines, at least one line differs, and every line that differs has the same
+# case name in both and that name is listed for PROGRAM in
+# undefined-lines.txt; it then prints those lines with both values. Fails,
+# printing nothing, otherwise (also when no line differs although the bytes
+# do: a missing final newline).
 only_listed() {
     awk -v P="$1" -v L="$undefined_list" -v A="$2" -v B="$3" '
         function name(s,  i) { i = index(s, ": "); return i ? substr(s, 1, i - 1) : s }
@@ -306,7 +343,7 @@ only_listed() {
               if (name(a[FNR]) != name($0) || !(name($0) in listed)) { bad = 1; exit }
               d[++k] = sprintf("  %s\n    base: %s\n    head: %s", name($0), show(substr(a[FNR], length(name($0)) + 3)), show(substr($0, length(name($0)) + 3)))
           } }
-        END { if (bad || m != n) exit 1; for (i = 1; i <= k; i++) print d[i] }
+        END { if (bad || m != n || k == 0) exit 1; for (i = 1; i <= k; i++) print d[i] }
     ' "$undefined_list" "$2" "$3"
 }
 
@@ -316,7 +353,14 @@ for program in $programs; do
     for setting in $settings; do
         if ! cmp -s "$out/base-$program-$setting-1.out" "$out/head-$program-$setting-1.out"; then
             if only_listed "$program" "$out/base-$program-$setting-1.out" "$out/head-$program-$setting-1.out" > "$out/undefined-$program-$setting.txt"; then
-                undefined=$((undefined + $(grep -c '^  [^ ]' "$out/undefined-$program-$setting.txt")))
+                undefined=$((undefined + $(grep -c '^  [^ ]' "$out/undefined-$program-$setting.txt" || :)))
+                # The head's value on each such line against the memmove model.
+                if ! sed -n 's/^  \([^ ].*\)$/\1/p' "$out/undefined-$program-$setting.txt" |
+                    xargs -d '\n' python3 "$memmove_model" "$program" "$out/head-$program-$setting-1.out" > "$out/model-$program-$setting.txt"; then
+                    echo "diff.sh: base and head differ ($program, $setting) only in listed lines, but the head does not print what memmove gives on all of them:" >&2
+                    grep -A2 '^MISMATCH' "$out/model-$program-$setting.txt" >&2 || cat "$out/model-$program-$setting.txt" >&2
+                    differ=1
+                fi
             else
                 rm -f "$out/undefined-$program-$setting.txt"
                 echo "diff.sh: base and head differ ($program, $setting), first difference at" >&2
@@ -338,12 +382,15 @@ for setting in $settings; do
 done
 [ "$differ" = 0 ] || exit 1
 if [ "$undefined" != 0 ]; then
-    echo "diff.sh: differs only in undefined self-splice lines ($undefined differing lines over the programs and settings, all listed in tools/bench/repr/undefined-lines.txt; everything else and the cross-read identical). Record this and put it to the user:" >&2
+    accepted=$(cat "$out"/model-*.txt | grep -c '^accepted without a model check' || :)
+    echo "diff.sh: differs only in undefined self-splice lines, and equals memmove there ($undefined differing lines over the programs and settings, all listed in tools/bench/repr/undefined-lines.txt; $((undefined - accepted)) of them equal to memmove-model.py's memmove result, $accepted accepted without a model check, named below; everything else and the cross-read identical). Record this and put it to the user:" >&2
     for program in $programs; do
         for setting in $settings; do
             if [ -s "$out/undefined-$program-$setting.txt" ]; then
                 echo "$program, $setting:" >&2
                 cat "$out/undefined-$program-$setting.txt" >&2
+                echo "$program, $setting, the head against the memmove model:" >&2
+                sed 's/^/  /' "$out/model-$program-$setting.txt" >&2
             fi
         done
     done

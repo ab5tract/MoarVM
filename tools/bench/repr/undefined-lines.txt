@@ -12,8 +12,12 @@
 #
 # diff.sh reads this file: when base and head differ only in lines listed
 # here (same line count on both sides, same case name on each differing
-# line), it exits 3 and prints the differing lines with both values; a head
-# that reaches exit 3 is recorded and put to the user, not passed silently.
+# line), and the head prints on each of them what memmove-model.py computes
+# (the diff-raku entries, which it does not model, are named as accepted
+# without a model check), it exits 3 and prints the differing lines with
+# both values; a head that reaches exit 3 is recorded and put to the user,
+# not passed silently. A listed line whose head value is not the model's is
+# exit 1.
 # Any difference outside the list is exit 1. Each side must still repeat
 # these lines run to run (exit 2).
 #
