@@ -820,11 +820,14 @@ their defaults (P6int declares four of the nine box slots and gets
 `null` empties a slot that has a default, as MVMContinuation.c's `elems`
 and P6opaque.c's `ass_funcs.get_value_storage_spec` are NULL in C.
 
-`declError(R)` stops the build when a public declaration names no field
-(`"<R>: unknown REPR function 'pos_funcs.pussh'"`), has the wrong type
-(`"'allocate' has the wrong type; the field is ..."`), or one of
-`type_object_for`, `allocate`, `get_storage_spec`, `compose` is missing or
-null: a misspelt hook never silently becomes a default.
+`declError(R)` stops the build when `R` is not a struct type, when a public
+declaration names no field (`"<R>: unknown REPR function
+'pos_funcs.pussh'"`) or has the wrong type (`"'allocate' has the wrong
+type; the field is ..."`), or when one of the required `name`, `ID`,
+`type_object_for`, `allocate`, `get_storage_spec`, `compose` is missing; a
+required function slot may not be null either (a null `name` or `ID` is
+reported as the wrong type): a misspelt hook never silently becomes a
+default.
 
 `repr.dumpOps` prints a table one leaf per line (`pos_funcs.push\tdefault`;
 the classes are `own`, `default`, `null`). `repr-test` compares the linked
@@ -840,19 +843,35 @@ per `MVM_ARRAY_*` constant that has storage:
 
 ```zig
 pub const kinds = [_]KindInfo{
-    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj, &reg_obj, "ref"),
-    entry(.str, [*c]c.MVMString, "s", "s", &reg_str, &reg_str, "str"),
-    entry(.i64, c.MVMint64, "i64", "i64", &reg_int, &reg_int, "int"),
-    // ...
-    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint, &reg_int, "int"),
+    entry(.{
+        .kind = .obj,
+        .Elem = [*c]c.MVMObject,
+        .member = "o",
+        .reg = "o",
+        .reg_kinds = &reg_obj,
+        .stack_reg_kinds = &reg_obj,
+        .wire = "ref",
+    }),
+    // ... the other ten ...
+    entry(.{
+        .kind = .u8,
+        .Elem = c.MVMuint8,
+        .member = "u8",
+        .reg = "u64",
+        .reg_kinds = &reg_uint,
+        .stack_reg_kinds = &reg_int,
+        .wire = "int",
+    }),
 };
 ```
 
-The columns: the kind, the element type, the `body.slots` union member, the
+The fields: the kind, the element type, the `body.slots` union member, the
 `MVMRegister` member the value travels in, the register kinds `at_pos` and
 `bind_pos` accept, those `push`/`pop`/`shift`/`unshift` accept, and the
-serialization reader/writer suffix. Every operation is written once,
-generic over `comptime k: Kind`, and reached through the one runtime switch:
+serialization reader/writer suffix. `entry` (comptime only) derives the
+rest: `reg_kind`, `elem_size`, the reader and writer names, `holds_refs`.
+Every operation is written once, generic over `comptime k: Kind`, and
+reached through the one runtime switch:
 
 ```zig
 pub inline fn dispatch(slot_type: u8, comptime f: anytype, args: anytype, comptime otherwise: anytype) ReturnOf(f) {
@@ -861,7 +880,11 @@ pub inline fn dispatch(slot_type: u8, comptime f: anytype, args: anytype, compti
         else => if (comptime @typeInfo(@TypeOf(otherwise)) == .@"fn") {
             return @call(.auto, otherwise, .{slot_type} ++ args);
         } else switch (comptime @as(Otherwise, otherwise)) {
-            .throw => |message| c.MVM_exception_throw_adhoc(args[0], message.ptr),
+            .throw => |message| {
+                // ... a compile error if `message` contains '%' (it is the
+                // printf format of the throw, with no arguments) ...
+                c.MVM_exception_throw_adhoc(args[0], message.ptr);
+            },
             .abort => std.c.abort(),
             .nothing => {
                 if (ReturnOf(f) != void) @compileError("dispatch: .nothing needs f to return void");
@@ -890,11 +913,26 @@ value, 18; it goes in as 12 and the six move up by one. In order:
    array (`VMArray.c`, the `-Dzig-reprs=false` control) needs the new kind's
    arm in each of its switches too, or the control and the Zig array part.
 2. `vmarray/kinds.zig`: the new tag in `enum Kind` with value 12, and an
-   `entry(...)` row as the thirteenth row of `kinds`. `unstored` names the
-   six by their constants, so it follows the renumbering by itself.
-3. A reference kind (one the collector must mark) also needs `entry`'s
-   `holds_refs = kind == .obj or kind == .str` widened; for any other kind
-   the row is all there is. Every `dispatch` gets the new arm by itself.
+   `entry(.{ ... })` row as the thirteenth row of `kinds`. `unstored` names
+   the six by their constants, so it follows the renumbering by itself.
+   Every `dispatch` gets the new arm by itself.
+3. A reference kind (one the collector must mark) needs more than the row.
+   `holds_refs` is computed in `entry` as `kind == .obj or kind == .str`,
+   so widen it there (the write barrier, the mark, the heap snapshot and
+   `bindPosKind`'s refusal follow it). And these places name OBJ or STR, or
+   treat every pointer kind other than OBJ as STR, so each needs a decision
+   for the new kind:
+   - `elements.zig` `readElem`: only `.obj` turns an out-of-range index or
+     a NULL slot into VMNull; any other kind reads NULL.
+   - `elements.zig` `kindMessage`: a pointer kind other than `.obj` is
+     worded "string" in the register-kind errors.
+   - `elements.zig` `elemSpec`: a pointer kind other than `.obj` gets the
+     STR storage spec.
+   - `elements.zig` `copyElements`: the block copy is refused by constant
+     (`MVM_ARRAY_STR` always, `MVM_ARRAY_OBJ` into a gen2 target), so a new
+     reference kind would be block-copied past the write barrier.
+   - `serial.zig` `specToReprData`: see step 4.
+   A number kind needs none of these: its row is all there is.
 4. Creating it: an integer or num kind needs nothing more, because
    `serial.zig`'s `specToReprData` finds the kind for a storage spec by
    walking the table (`setInt`/`setNum` compare each row's `Elem` width and
@@ -909,12 +947,15 @@ constants (`MultiDimArray.c`, `debugserver.c`, `strings/ops.c`, `io/*.c`,
 the ones that touch the body) use them by name and pick up new values on a
 rebuild, but `debugserver.c`'s switches over the kinds need a case for the
 new one, and `MultiDimArray.c`, which uses the same constants for its own
-slots, switches over them too (decide whether it gets the kind); and the two messages that print a slot type
-(`"... but %u is not MVM_ARRAY_STR"`, `"... array type %u is not
-MVM_ARRAY_OBJ"`) print the renumbered values for the six. The comptime
-block after the table then checks each row against the header (union
-member type, register member, serializer names, value order), so a row
-that does not match fails the build.
+slots, switches over them too (decide whether it gets the kind); and the two
+messages that print a slot type (`"... but %u is not MVM_ARRAY_STR"`,
+`"... array type %u is not MVM_ARRAY_OBJ"`) print the renumbered values
+for the six. The comptime block after the table then checks each row
+against the header (union member type, register member, serializer names,
+value order), so a row that does not match fails the build. The tests that
+pin twelve kinds and the six at 12 ... 17 (`vmarray_storage_test.zig`) and
+pick an element type per kind (`vmarray_elements_test.zig` `elemType`,
+`sample`) change with it.
 
 ### The allocator, and how to change it
 
@@ -958,9 +999,14 @@ Write `src/zig/6model/reprs/<Name>.zig` with the declaration struct, the
 export-free directory beside it so `repr-test` can test it against the
 linked library; add the `[zig-reprs]` line and the import in `root.zig`;
 record the C table with `dumpOps` from a `-Dzig-reprs=false` build and
-assert the Zig table dumps the same. The layouts stay in the C headers;
-pin the sizes and offsets you rely on with comptime asserts, as
-`vmarray/kinds.zig` does for the union.
+assert the Zig table dumps the same. The layouts stay in the C headers.
+Pin what the Zig relies on: member types at compile time, as
+`vmarray/kinds.zig` checks that each `slots` union member points at its
+row's element type; sizes and offsets against the C compiler's layout, as
+the `repr-test` test "the kind table matches the C header"
+(`vmarray_storage_test.zig`) compares `@sizeOf`/`@offsetOf` with the
+probe functions of `src/zig/test/layout_probe.c`, compiled by the C
+compiler.
 
 ## Not yet supported
 
