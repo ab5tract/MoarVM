@@ -82,38 +82,50 @@ pub fn Storage(comptime Source: type) type {
         /// - else `grow`.
         /// The zeroing throws "MVMArray: Unhandled slot type" for a kind
         /// without storage, as `zero_slots` does.
-        pub fn setSize(tc: *c.MVMThreadContext, body: *c.MVMArrayBody, n: u64, repr_data: *const c.MVMArrayREPRData) void {
+        ///
+        /// `repr_data` is the STable's pointer as loaded, possibly NULL (a
+        /// stubbed STable, `derefReprData`), and is dereferenced exactly
+        /// where the C dereferences it (VMArray.c:418-419 when there are
+        /// elements to move, 423 and 428 for the slot type, 454 in
+        /// `grow`): `n == elems`, and `n <= ssize` with neither branch
+        /// taken, return without touching it, as in the C.
+        pub fn setSize(tc: *c.MVMThreadContext, body: *c.MVMArrayBody, n: u64, repr_data: ?*const c.MVMArrayREPRData) void {
             const elems = body.elems;
             const start = body.start;
             const ssize = body.ssize;
-            const elem_size = repr_data.elem_size;
             if (n == elems) return;
 
             // The slot `grow` zeroes from: past the elements, or past the
             // old storage once a shift has zeroed the slots it vacated.
             var clear_from = elems;
             if (start > 0 and n +% start > ssize) {
-                const live = elems * elem_size;
-                if (live > 0) {
+                if (elems > 0) {
+                    const elem_size = derefReprData(repr_data).elem_size;
+                    const live = elems *% elem_size;
                     // live > 0 with start > 0: storage was made by the
                     // shift or unshift that moved start, unless a
                     // recompose left it NULL; then the C's memmove reads
                     // through NULL, and so does this.
-                    const p: [*]u8 = @ptrCast(body.slots.any orelse moar.nullDeref(0));
-                    @memmove(p[0..live], p[start * elem_size ..][0..live]);
+                    // (A 0-byte memmove, a kind without storage, touches
+                    // nothing, NULL slots included.)
+                    if (live > 0) {
+                        const p: [*]u8 = @ptrCast(body.slots.any orelse moar.nullDeref(0));
+                        @memmove(p[0..live], p[start *% elem_size ..][0..live]);
+                    }
                 }
+                // Before the slot-type read, as the C (421, 423).
                 body.start = 0;
-                zeroSlots(tc, body, elems, start +% elems, repr_data.slot_type);
+                zeroSlots(tc, body, elems, start +% elems, derefReprData(repr_data).slot_type);
                 clear_from = ssize;
             } else if (n < elems) {
-                zeroSlots(tc, body, n +% start, start +% elems, repr_data.slot_type);
+                zeroSlots(tc, body, n +% start, start +% elems, derefReprData(repr_data).slot_type);
             }
 
             if (n <= ssize) {
                 body.elems = n;
                 return;
             }
-            grow(tc, body, n, clear_from, repr_data);
+            grow(tc, body, n, clear_from, derefReprData(repr_data));
         }
 
         /// The reallocation of `setSize`, out of line as the slow path. The
@@ -195,14 +207,15 @@ pub fn Storage(comptime Source: type) type {
         /// is a fresh object, no write barrier). No elements: `slots` NULL.
         /// For a kind without storage with elements (after a recompose) the
         /// C keeps a zero-byte buffer; here `slots` is NULL, with the same
-        /// `ssize = elems`.
-        pub fn copyTo(src: *const c.MVMArrayBody, dest: *c.MVMArrayBody, repr_data: *const c.MVMArrayREPRData) void {
-            const elem_size = repr_data.elem_size;
+        /// `ssize = elems`. `repr_data` may be NULL (`derefReprData`): it
+        /// is dereferenced only when there are elements (VMArray.c:56).
+        pub fn copyTo(src: *const c.MVMArrayBody, dest: *c.MVMArrayBody, repr_data: ?*const c.MVMArrayREPRData) void {
             dest.elems = src.elems;
             dest.ssize = src.elems;
             dest.start = 0;
             dest.slots.any = null;
             if (dest.elems == 0) return;
+            const elem_size = derefReprData(repr_data).elem_size;
             const p = alloc(dest.ssize, elem_size) orelse return;
             const len = dest.ssize * elem_size;
             // NULL only for a source a recompose left without storage: the
@@ -232,6 +245,19 @@ pub fn Storage(comptime Source: type) type {
             Source.get().destroy(repr_data);
         }
     };
+}
+
+/// The C's dereference of an array STable's REPR data pointer, which is
+/// loaded at the top of most functions and may be NULL: an STable that a
+/// nested `MVM_serialization_demand_stable` only stubbed (serialization.c,
+/// `stub_stable`) can already have zeroed array objects (elems 0) before
+/// `deserialize_repr_data` sets it, and the collector marks them. Callers
+/// keep the pointer optional and call this exactly where the C reads a
+/// field through it, so a function the C leaves early (an empty array, a
+/// throw, a no-op resize) is left early here too; at the read, NULL faults
+/// as the C's read does (`moar.nullDeref`).
+pub inline fn derefReprData(repr_data: ?*const c.MVMArrayREPRData) *const c.MVMArrayREPRData {
+    return repr_data orelse moar.nullDeref(0);
 }
 
 /// Zeroes slots `from` to `to` (slot indices, `start` not added), as

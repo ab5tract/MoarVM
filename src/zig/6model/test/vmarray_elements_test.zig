@@ -1128,14 +1128,19 @@ comptime {
 
 extern "c" fn fork() c_int;
 extern "c" fn signal(sig: c_int, handler: ?*anyopaque) ?*anyopaque;
+extern "c" fn prctl(option: c_int, ...) c_int;
+/// prctl's PR_SET_DUMPABLE (linux/prctl.h).
+const PR_SET_DUMPABLE = 4;
 
 /// Runs `f(args...)` in a forked child with the default SIGSEGV action
 /// and returns the signal the child died of, or null if it exited. The
-/// child never returns to the test runner.
+/// child never returns to the test runner, and is made non-dumpable so its
+/// fault leaves no core dump (a pipe `core_pattern` ignores RLIMIT_CORE).
 fn childSignal(comptime f: anytype, args: anytype) !?std.c.SIG {
     const pid = fork();
     if (pid == 0) {
         _ = signal(@backingInt(std.c.SIG.SEGV), null);
+        _ = prctl(PR_SET_DUMPABLE, @as(c_ulong, 0));
         @call(.auto, f, args);
         std.c._exit(0);
     }
@@ -1169,4 +1174,50 @@ test "where the C reads through NULL the Zig array faults with SIGSEGV too" {
     try expectEqual(@as(?std.c.SIG, .SEGV), try childSignal(spliceInto, .{ tc, a, @as([*c]Object, null) }));
     // The parent's array is untouched; an empty hash only deletes (no copy).
     try expectSamples(&vm, a, .obj, &.{ 0, 1 });
+}
+
+test "on a stubbed STable without REPR data an empty array is left alone where the C does not read it" {
+    // A nested MVM_serialization_demand_stable only stubs an STable
+    // (REPR_data NULL) and objects of it can be allocated, zeroed, before
+    // deserialize_repr_data runs; the collector marks and frees them.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    c.MVM_gc_allocate_gen2_default_set(tc);
+    var t: ?*Object = composedArray(tc, null);
+    c.MVM_gc_allocate_gen2_default_clear(tc);
+    var a: A = .{ .o = c.MVM_repr_alloc_init(tc, t) };
+    var other = vm.new(.obj);
+    const r = moar.rootN(tc, .{ &t, &a.o, &other.o });
+    defer r.pop(tc);
+    const st = t.?.st;
+    const saved = st.*.REPR_data;
+    st.*.REPR_data = null;
+    defer st.*.REPR_data = saved;
+    try expectEqual(@as(u64, 0), a.elems());
+    try expect(a.body().slots.any == null);
+
+    // gc_mark: the empty check comes before the read (VMArray.c:76-79).
+    const wl = c.MVM_gc_worklist_create(tc, 1);
+    defer c.MVM_gc_worklist_destroy(tc, wl);
+    mark.gcMark(tc, st, a.body(), wl);
+    // gc_mark_repr_data: its own NULL check (VMArray.c:120).
+    mark.gcMarkReprData(tc, st, wl);
+    try expectEqual(@as(u32, 0), wl.*.items);
+    // gc_free reads only the object; copy_to reads the REPR data only for
+    // elements (VMArray.c:55-56); elems never reads it.
+    E.gcFree(tc, a.o);
+    var copy = std.mem.zeroes(c.MVMArrayBody);
+    copy.slots.any = @ptrFromInt(0x10); // overwritten, not freed
+    E.copyTo(tc, st, a.body(), a.o, &copy);
+    try expect(copy.slots.any == null);
+    try expectEqual(@as(u64, 0), copy.elems);
+    try expectEqual(@as(u64, 0), E.elems(tc, st, a.o, a.body()));
+    // set_elems to the current size and a splice with nothing to copy or
+    // delete return before any read (VMArray.c:411-412, 1086-1089).
+    E.setElems(tc, st, a.o, a.body(), 0);
+    E.asplice(tc, st, a.o, a.body(), other.o, 0, 0);
+    try expectEqual(@as(u64, 0), a.elems());
+    try expect(a.body().slots.any == null);
 }

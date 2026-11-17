@@ -68,13 +68,18 @@ pub inline fn bodyOf(data: ?*anyopaque) *Body {
     return @ptrCast(@alignCast(data));
 }
 
-/// The STable's array REPR data (the C's `(MVMArrayREPRData *)st->REPR_data`).
-/// Set by `type_object_for` and `deserialize_repr_data` before any object
-/// exists; were it NULL the C's next field read faults, and so does this
-/// (`moar.nullDeref`).
-pub inline fn reprDataOf(st: St) *c.MVMArrayREPRData {
-    return @ptrCast(@alignCast(st.*.REPR_data orelse moar.nullDeref(0)));
+/// The STable's array REPR data pointer as the C loads it (`(MVMArrayREPRData
+/// *)st->REPR_data`), possibly NULL: an STable stubbed during deserialization
+/// can already have empty array objects (`storage.derefReprData`). It stays
+/// optional until the C's first read through it, where `need` dereferences
+/// it, so an early return or throw the C takes before that read comes first
+/// here too.
+pub inline fn reprDataOf(st: St) ?*const c.MVMArrayREPRData {
+    return @ptrCast(@alignCast(st.*.REPR_data));
 }
+
+/// The C's read through a REPR data pointer: the pointer, or the C's fault.
+const need = storage.derefReprData;
 
 /// The slots of `body` as bytes, for the byte copies. NULL only where a
 /// recompose to a kind without storage left the array without storage
@@ -419,8 +424,12 @@ comptime {
 /// and U32 where AO_t is 4 bytes); every other kind throws, as the C's
 /// fall-through.
 fn atomicArm(comptime k: Kind, tc: Tc, body: *Body, index: u64) [*c]c.AO_t {
-    if (comptime @typeInfo(kinds.Elem(k)) == .int and kinds.info(k).elem_size == @sizeOf(c.AO_t))
-        return @ptrCast(@alignCast(&kinds.slots(k, body)[body.start +% index]));
+    if (comptime @typeInfo(kinds.Elem(k)) == .int and kinds.info(k).elem_size == @sizeOf(c.AO_t)) {
+        // Only the address, as the C (VMArray.c:1207): NULL slots are not
+        // read here, so the raw `[*c]` member, not `kinds.slots`.
+        const raw: [*c]c.AO_t = @ptrCast(@alignCast(@field(body.slots, kinds.info(k).member)));
+        return raw + (body.start +% index);
+    }
     return notAtomic(@backingInt(k), tc, body, index);
 }
 
@@ -451,7 +460,7 @@ pub fn Elements(comptime S: type) type {
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
             const i = u(fromEnd(tc, index, body.elems));
-            kinds.dispatch(repr_data.slot_type, Arm(.atpos).read, .{ tc, body, i, @as(*Reg, value), kind }, unhandledAtPos);
+            kinds.dispatch(need(repr_data).slot_type, Arm(.atpos).read, .{ tc, body, i, @as(*Reg, value), kind }, unhandledAtPos);
         }
 
         /// `MVM_VMArray_bind_pos` (VMArray.c:478-561): the growth before
@@ -461,7 +470,7 @@ pub fn Elements(comptime S: type) type {
             const body = bodyOf(data);
             enterSingleUser(tc, body);
             const i = bindIndex(S, tc, st, body, index);
-            kinds.dispatch(repr_data.slot_type, Arm(.bindpos).store, .{ tc, root, body, body.start +% i, value, kind }, unhandled);
+            kinds.dispatch(need(repr_data).slot_type, Arm(.bindpos).store, .{ tc, root, body, body.start +% i, value, kind }, unhandled);
             exitSingleUser(body);
         }
 
@@ -481,7 +490,7 @@ pub fn Elements(comptime S: type) type {
             const repr_data = reprDataOf(st);
             enterSingleUser(tc, body);
             S.setSize(tc, body, body.elems +% 1, repr_data);
-            kinds.dispatch(repr_data.slot_type, Arm(.push).store, .{ tc, root, body, body.start +% body.elems -% 1, value, kind }, unhandled);
+            kinds.dispatch(need(repr_data).slot_type, Arm(.push).store, .{ tc, root, body, body.start +% body.elems -% 1, value, kind }, unhandled);
             exitSingleUser(body);
         }
 
@@ -499,8 +508,8 @@ pub fn Elements(comptime S: type) type {
             if (body.elems < 1) c.MVM_exception_throw_adhoc(tc, "MVMArray: Can't pop from an empty array");
             enterSingleUser(tc, body);
             body.elems -= 1; // elems >= 1 here
-            kinds.dispatch(repr_data.slot_type, Arm(.pop).load, .{ tc, body, slot, @as(*Reg, value), kind }, unhandled);
-            storage.zeroSlots(tc, body, slot, slot +% 1, repr_data.slot_type);
+            kinds.dispatch(need(repr_data).slot_type, Arm(.pop).load, .{ tc, body, slot, @as(*Reg, value), kind }, unhandled);
+            storage.zeroSlots(tc, body, slot, slot +% 1, need(repr_data).slot_type);
             exitSingleUser(body);
         }
 
@@ -513,19 +522,19 @@ pub fn Elements(comptime S: type) type {
         pub fn unshift(tc: Tc, st: St, root: Obj, data: ?*anyopaque, value: Reg, kind: u16) callconv(.c) void {
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
-            const es = repr_data.elem_size;
             enterSingleUser(tc, body);
             if (body.start < 1) {
                 const live = body.elems;
                 const n = @min(@max(live, 8), 8192);
                 S.setSize(tc, body, live +% n, repr_data);
+                const es = need(repr_data).elem_size; // VMArray.c:745
                 moveBytes(body, n *% es, 0, live *% es);
                 body.start = n;
                 body.elems = live;
-                storage.zeroSlots(tc, body, 0, n, repr_data.slot_type);
+                storage.zeroSlots(tc, body, 0, n, need(repr_data).slot_type);
             }
             body.start -%= 1;
-            kinds.dispatch(repr_data.slot_type, Arm(.unshift).store, .{ tc, root, body, body.start, value, kind }, unhandled);
+            kinds.dispatch(need(repr_data).slot_type, Arm(.unshift).store, .{ tc, root, body, body.start, value, kind }, unhandled);
             body.elems +%= 1;
             exitSingleUser(body);
         }
@@ -539,7 +548,7 @@ pub fn Elements(comptime S: type) type {
             const repr_data = reprDataOf(st);
             if (body.elems < 1) c.MVM_exception_throw_adhoc(tc, "MVMArray: Can't shift from an empty array");
             enterSingleUser(tc, body);
-            kinds.dispatch(repr_data.slot_type, Arm(.shift).load, .{ tc, body, body.start, @as(*Reg, value), kind }, unhandled);
+            kinds.dispatch(need(repr_data).slot_type, Arm(.shift).load, .{ tc, body, body.start, @as(*Reg, value), kind }, unhandled);
             body.start +%= 1;
             body.elems -%= 1;
             exitSingleUser(body);
@@ -561,33 +570,36 @@ pub fn Elements(comptime S: type) type {
         ///   22b). Nothing converts across kinds but the register's own
         ///   widening and narrowing (row 22c). A kind without storage on
         ///   either side aborts in `slotTypeToKind`, the target's first
-        ///   (rule of row 22c); a non-VMArray source with elements makes
+        ///   (rule of row 22c); a non-VMArray source with elements (or a
+        ///   VMArray one whose stubbed STable has no REPR data yet) makes
         ///   the C read its REPR data through NULL and fault, which
-        ///   `moar.nullDeref` reproduces (Task 2 §6).
+        ///   `moar.nullDeref` reproduces (Task 2 §6). Both REPR data
+        ///   pointers are loaded first and read only after `n <= 0`, as the
+        ///   C (936-944).
         fn copyElements(tc: Tc, src: Obj, dest: Obj, s_offset: i64, d_offset: i64, n: i64) void {
             const s_body = objectBodyOf(src);
             const d_body = objectBodyOf(dest);
-            const s_repr_data: ?*c.MVMArrayREPRData = if (src.*.st.*.REPR.*.ID == c.MVM_REPR_ID_VMArray) reprDataOf(src.*.st) else null;
+            const s_repr_data: ?*const c.MVMArrayREPRData = if (src.*.st.*.REPR.*.ID == c.MVM_REPR_ID_VMArray) reprDataOf(src.*.st) else null;
             const d_repr_data = reprDataOf(dest.*.st);
             if (n <= 0) return;
             const d_needs_barrier = (dest.*.header.flags2 & c.MVM_CF_SECOND_GEN) != 0;
             if (s_repr_data) |s_rd| {
-                if (s_rd.slot_type == d_repr_data.slot_type and
-                    s_rd.elem_size == d_repr_data.elem_size and
-                    (d_repr_data.slot_type != c.MVM_ARRAY_OBJ or !d_needs_barrier) and
-                    d_repr_data.slot_type != c.MVM_ARRAY_STR)
+                if (s_rd.slot_type == need(d_repr_data).slot_type and
+                    s_rd.elem_size == need(d_repr_data).elem_size and
+                    (need(d_repr_data).slot_type != c.MVM_ARRAY_OBJ or !d_needs_barrier) and
+                    need(d_repr_data).slot_type != c.MVM_ARRAY_STR)
                 {
-                    const len = d_repr_data.elem_size *% u(n);
+                    const len = need(d_repr_data).elem_size *% u(n);
                     if (len == 0) return;
                     const d = slotBytes(d_body);
                     const sp = slotBytes(s_body);
-                    const d_at = u(s(d_body.start) +% d_offset) *% d_repr_data.elem_size;
+                    const d_at = u(s(d_body.start) +% d_offset) *% need(d_repr_data).elem_size;
                     const s_at = u(s(s_body.start) +% s_offset) *% s_rd.elem_size;
                     @memmove(d[d_at..][0..len], sp[s_at..][0..len]);
                     return;
                 }
             }
-            const target_kind = slotTypeToKind(d_repr_data.slot_type);
+            const target_kind = slotTypeToKind(need(d_repr_data).slot_type);
             // A non-VMArray source with elements: the C reads
             // `s_repr_data->slot_type` through NULL (VMArray.c:958) and
             // faults; this faults at the same offset (Task 2 §6).
@@ -626,7 +638,6 @@ pub fn Elements(comptime S: type) type {
         pub fn asplice(tc: Tc, st: St, root: Obj, data: ?*anyopaque, from: Obj, offset_in: i64, count_in: u64) callconv(.c) void {
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
-            const es = repr_data.elem_size;
             var elems0: u64 = body.elems;
             const from_obj = objectOrFault(from);
             const elems1: u64 = reprFn(from_obj.st.*.REPR.*.elems)(tc, from_obj.st, from, moar.objectBody(from_obj));
@@ -668,6 +679,7 @@ pub fn Elements(comptime S: type) type {
             } else if (tail > 0 and count > elems1) {
                 // Shrinking: move the tail left first.
                 const start = s(body.start);
+                const es = need(repr_data).elem_size; // VMArray.c:1100
                 moveBytes(body, (u(start +% offset) +% elems1) *% es, (u(start +% offset) +% count) *% es, u(tail) *% es);
             }
 
@@ -676,6 +688,7 @@ pub fn Elements(comptime S: type) type {
             const start = s(body.start);
             if (tail > 0 and count < elems1) {
                 // Grown: move the tail right.
+                const es = need(repr_data).elem_size; // VMArray.c:1112
                 moveBytes(body, (u(start +% offset) +% elems1) *% es, (u(start +% offset) +% count) *% es, u(tail) *% es);
             }
             exitSingleUser(body);
@@ -713,7 +726,7 @@ pub fn Elements(comptime S: type) type {
         /// `get_elem_storage_spec` (VMArray.c:1147-1192, row 28).
         pub fn getElemStorageSpec(tc: Tc, st: St) callconv(.c) c.MVMStorageSpec {
             _ = tc;
-            return kinds.dispatch(reprDataOf(st).slot_type, elemSpec, .{}, referenceSpec);
+            return kinds.dispatch(need(reprDataOf(st)).slot_type, elemSpec, .{}, referenceSpec);
         }
 
         /// `pos_as_atomic` (VMArray.c:1194-1213): the index check first,
@@ -726,7 +739,7 @@ pub fn Elements(comptime S: type) type {
             if (index < 0) index = s(u(index) +% body.elems);
             if (index < 0 or u(index) >= body.elems)
                 c.MVM_exception_throw_adhoc(tc, "Index out of bounds in atomic operation on array");
-            return kinds.dispatch(repr_data.slot_type, atomicArm, .{ tc, body, u(index) }, notAtomic);
+            return kinds.dispatch(need(repr_data).slot_type, atomicArm, .{ tc, body, u(index) }, notAtomic);
         }
 
         /// `pos_as_atomic_multidim` (VMArray.c:1215-1221).
@@ -747,9 +760,9 @@ pub fn Elements(comptime S: type) type {
             const body = bodyOf(data);
             var start = body.start;
             const live = body.elems;
-            if (repr_data.slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: write_buf requires an integer type");
+            if (need(repr_data).slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: write_buf requires an integer type");
             if (offset < 0) c.MVM_exception_throw_adhoc(tc, "MVMArray: Index out of bounds");
-            const es = repr_data.elem_size;
+            const es = need(repr_data).elem_size;
             if (live *% es < u(offset) *% es +% count) {
                 S.setSize(tc, body, u(offset) +% count, repr_data);
                 start = body.start;
@@ -773,8 +786,8 @@ pub fn Elements(comptime S: type) type {
             const body = bodyOf(data);
             const start = s(body.start);
             var result: i64 = 0;
-            const es = repr_data.elem_size;
-            if (repr_data.slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf requires an integer type");
+            const es = need(repr_data).elem_size; // VMArray.c:1019, before the gate
+            if (need(repr_data).slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf requires an integer type");
             if (offset < 0 or (u(start) +% body.elems) *% es < u(offset) *% es +% count)
                 c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf out of bounds offset %" ++ c.PRIi64 ++ " start %" ++ c.PRIi64 ++ " elems %" ++ c.PRIu64 ++ " count %" ++ c.PRIu64, offset, start, body.elems, count);
             if (count == 0) return result; // the C's 0-byte memcpy
@@ -826,7 +839,7 @@ pub fn Elements(comptime S: type) type {
         /// `unmanaged_size` (VMArray.c:1515-1519): `ssize * elem_size`.
         pub fn unmanagedSize(tc: Tc, st: St, data: ?*anyopaque) callconv(.c) u64 {
             _ = tc;
-            return bodyOf(data).ssize *% reprDataOf(st).elem_size;
+            return bodyOf(data).ssize *% need(reprDataOf(st)).elem_size;
         }
 
         /// The read entry points specialised for kind `k`, generated per
@@ -853,7 +866,7 @@ pub fn Elements(comptime S: type) type {
                     const body = bodyOf(data);
                     const i = u(fromEnd(tc, index, body.elems));
                     if (comptime k == .str or k == .obj) {
-                        const slot_type = reprDataOf(st).slot_type;
+                        const slot_type = need(reprDataOf(st)).slot_type;
                         // The slot type, an MVMuint8 promoted for `%u`.
                         if (slot_type != @backingInt(k)) c.MVM_exception_throw_adhoc(tc, if (k == .str)
                             "MVMArray: atpos expected a string register, but %u is not MVM_ARRAY_STR"

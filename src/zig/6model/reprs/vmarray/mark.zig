@@ -17,6 +17,7 @@ const moar = @import("moar");
 const c = moar.c;
 const kinds = @import("kinds.zig");
 const elements = @import("elements.zig");
+const storage = @import("storage.zig");
 
 const Kind = kinds.Kind;
 const Tc = [*c]c.MVMThreadContext;
@@ -27,28 +28,43 @@ const Body = c.MVMArrayBody;
 /// `VMArray_gc_mark` (VMArray.c:68-109): nothing for an empty array, else
 /// the arm of the slot type (row 4).
 pub fn gcMark(tc: Tc, st: St, data: ?*anyopaque, worklist: Worklist) callconv(.c) void {
+    // Loaded first, read only after the empty check (VMArray.c:69, 76, 79):
+    // a stubbed STable's empty objects are marked before it has REPR data.
     const repr_data = elements.reprDataOf(st);
     const body = elements.bodyOf(data);
     if (body.elems == 0) return;
-    kinds.dispatch(repr_data.slot_type, markArm, .{ tc, body, worklist }, kinds.Otherwise.nothing);
+    kinds.dispatch(storage.derefReprData(repr_data).slot_type, markArm, .{ tc, body, worklist }, kinds.Otherwise.nothing);
 }
 
 /// gc_mark for kind `k`: empty unless `k` holds references; for OBJ and
 /// STR, `MVM_gc_worklist_presize_for(elems)` and then the address of each
 /// live slot in index order, through the `include_gen2` no-check add or
 /// the other as the worklist says.
+///
+/// The slots pointer is taken raw (`[*c]`), as the C's `slots += start`:
+/// the `include_gen2` add of a non-debug build only stores slot addresses
+/// and reads nothing, so NULL slots (an array a recompose left without
+/// storage) are pushed as addresses as in the C, whose collector faults
+/// later. The other add (and every add under MVM_GC_DEBUG) reads the first
+/// slot at once; for NULL slots that read is the C's fault, made here
+/// before the loop at that slot's address (`moar.nullDeref`). Slot
+/// addresses stay `[*c]` (`slots + i`, never `&slots[i]`), so a NULL base
+/// never becomes a non-optional pointer.
 fn markArm(comptime k: Kind, tc: Tc, body: *Body, worklist: Worklist) void {
     if (comptime !kinds.info(k).holds_refs) return;
     const n = body.elems;
-    const slots = kinds.slots(k, body) + body.start;
+    const raw = @field(body.slots, kinds.info(k).member);
+    const slots = raw + body.start;
     // MVMuint64 to the MVMint32 parameter: the C's conversion keeps the
     // low 32 bits.
     c.MVM_gc_worklist_presize_for(tc, worklist, @bitCast(@as(u32, @truncate(n))));
+    if (raw == null and (c.MVM_GC_DEBUG != 0 or worklist.*.include_gen2 == 0))
+        moar.nullDeref(body.start *% kinds.info(k).elem_size);
     var i: u64 = 0;
     if (worklist.*.include_gen2 != 0) {
-        while (i < n) : (i += 1) moar.worklistAddIncludeGen2Nocheck(tc, worklist, &slots[i]);
+        while (i < n) : (i += 1) moar.worklistAddIncludeGen2Nocheck(tc, worklist, slots + i);
     } else {
-        while (i < n) : (i += 1) moar.worklistAddNoIncludeGen2Nocheck(tc, worklist, &slots[i]);
+        while (i < n) : (i += 1) moar.worklistAddNoIncludeGen2Nocheck(tc, worklist, slots + i);
     }
 }
 
@@ -57,7 +73,8 @@ fn markArm(comptime k: Kind, tc: Tc, body: *Body, worklist: Worklist) void {
 pub fn describeRefs(tc: Tc, ss: [*c]c.MVMHeapSnapshotState, st: St, data: ?*anyopaque) callconv(.c) void {
     const repr_data = elements.reprDataOf(st);
     const body = elements.bodyOf(data);
-    kinds.dispatch(repr_data.slot_type, describeArm, .{ tc, ss, body }, kinds.Otherwise.nothing);
+    // The C reads the slot type at once (VMArray.c:1528).
+    kinds.dispatch(storage.derefReprData(repr_data).slot_type, describeArm, .{ tc, ss, body }, kinds.Otherwise.nothing);
 }
 
 /// describe_refs for kind `k`: empty unless `k` holds references; for OBJ
