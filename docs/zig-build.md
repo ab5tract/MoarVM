@@ -31,7 +31,7 @@ Options (`zig build --help` lists them):
 | `-Dnursery-size=` | `16777216` | `MVM_NURSERY_SIZE`, the maximum nursery size in bytes; small values stress the collector |
 | `-Dzig-impl=` | `true` | compile the Zig implementations from the `[zig]` section of `build/sources.list` instead of the C files they replace |
 | `-Dzig-gc=` | `true` | also compile the Zig garbage collector from the `[zig-gc]` section; `false` keeps `src/gc` in C while the other Zig implementations stay Zig (the control of every GC comparison); needs `-Dzig-impl=true`, and giving it with `-Dzig-impl=false` is a configure error (see "Garbage collector") |
-| `-Dzig-reprs=` | `true` with the Zig collector | also compile the Zig REPRs from the `[zig-reprs]` section of `build/sources.list` instead of the C files they replace; `false` keeps those REPRs in C while the collector and the other Zig implementations stay Zig (the control of every REPR comparison). It defaults to `false` when `-Dzig-impl` or `-Dzig-gc` is `false`, and `-Dzig-reprs=true` with either of them off is a configure error: the Zig REPRs call the Zig collector directly. The section is empty for now, so both values build the same library |
+| `-Dzig-reprs=` | `true` with the Zig collector | also compile the Zig REPRs from the `[zig-reprs]` section of `build/sources.list` instead of the C files they replace; `false` keeps those REPRs in C while the collector and the other Zig implementations stay Zig (the control of every REPR comparison). It defaults to `false` when `-Dzig-impl` or `-Dzig-gc` is `false`, and `-Dzig-reprs=true` with either of them off is a configure error: the Zig REPRs call the Zig collector directly. It holds `VMArray.zig` (in place of `VMArray.c`); see "REPRs" below |
 | `-Dconfig-h=` | unset | path to an existing `gen/config.h` (the Perl build's `src/gen/config.h`) to build the Zig implementations against; only `zig build zig-objects` is supported with it |
 
 Always pass an absolute `--prefix`: it is baked into the binary's RUNPATH,
@@ -707,6 +707,233 @@ These were found while porting on 0.16 and still hold on 0.17.
   `DESTDIR` without `--prefix` installs under `/usr`.
 - `std.Build.Step.TranslateC` is deprecated; the translation comes from the
   `translate_c` package (see "Zig implementations" above).
+
+## REPRs
+
+A REPR (a 6model representation: the vtable `MVMREPROps` of
+`src/6model/6model.h` and the functions behind it) can be written in Zig
+behind the same C symbols and struct layouts. The first is VMArray
+(`traces/llm/specs/2026-11-16-zig-vmarray-repr-design.md`; evidence in
+`traces/llm/plans/2026-11-16-zig-vmarray-repr.md`, "Outcome"). The pieces:
+
+| file | what it holds |
+|---|---|
+| `src/zig/6model/repr.zig` | `Ops(R)`, the vtable builder, and `dumpOps`; nothing REPR-specific |
+| `src/zig/6model/reprs/VMArray.zig` | the array's declaration, its one allocator, the table and the ten exports of `VMArray.h`; no logic |
+| `src/zig/6model/reprs/vmarray/*.zig` | the array: `kinds.zig` (the slot kinds and `dispatch`), `storage.zig`, `elements.zig`, `mark.zig`, `serial.zig`, `spesh.zig`; export-free, so the tests can link them beside libmoar |
+| `src/zig/6model/test/` | the `repr-test` root of `zig build unit-test` |
+
+### The switch
+
+`build/sources.list` has a `[zig-reprs]` section, the same line grammar as
+`[zig]`:
+
+    [zig-reprs]
+    src/zig/6model/reprs/VMArray.zig: src/6model/reprs/VMArray.c
+
+With `-Dzig-reprs=true` (the default with the Zig collector) the C file is
+left out of the C sources and `src/zig/root.zig` imports the Zig one:
+
+```zig
+    if (@import("zig_options").zig_reprs) {
+        _ = @import("6model/reprs/VMArray.zig");
+    }
+```
+
+With `-Dzig-reprs=false` the C file is compiled and the Zig one is not
+imported: the collector and the other Zig implementations stay Zig, so that
+build of the same commit is the control of every REPR comparison. The
+exported symbol set is the same either way (2,850 names at the default
+options). A new REPR is a new line in the section and a new import in that
+block; the build's root-reference check (`build/zig/zigimpl.zig`) fails if
+the import is missing.
+
+### How a REPR declares itself
+
+A REPR is a Zig struct type whose public declarations are named after the
+fields of `MVMREPROps`; the nested tables (`attr_funcs`, `box_funcs`,
+`pos_funcs`, `ass_funcs`) are nested struct types named after theirs. From
+`VMArray.zig`:
+
+```zig
+const VMArray = struct {
+    pub const name = "VMArray";
+    pub const ID = c.MVM_REPR_ID_VMArray;
+    pub const type_object_for = Ser.typeObjectFor(&table);
+    /// The C function itself: serialization.c compares against it.
+    pub const allocate = &c.MVM_gc_allocate_object;
+    pub const copy_to = E.copyTo;
+    pub const pos_funcs = struct {
+        pub const at_pos = E.atPos;
+        pub const bind_pos = E.bindPos;
+        // ... the other sixteen positional slots ...
+    };
+    pub const elems = E.elems;
+    // ... get_storage_spec, serialize ... describe_refs ...
+};
+
+/// The array's vtable, with static storage as the C's `VMArray_this_repr`.
+const table: c.MVMREPROps = repr.Ops(VMArray);
+```
+
+A slot is a Zig function with the C calling convention whose type is
+exactly the field's (`fn (...) callconv(.c) ...`), or a pointer to a C
+function (`&c.MVM_gc_allocate_object`), or `null`. `name` is a string,
+`ID` an integer. Declarations that are not `pub` are ignored, so the struct
+may keep helpers. The table refers to itself through `type_object_for`
+(`MVM_gc_allocate_stable` needs it), which works because `table` is a
+container-level constant. The file then returns `&table` from its
+`*_initialize` and exports whatever the C header declares, each checked
+against the header's signature:
+
+```zig
+comptime {
+    for (exports) |e| {
+        if (@TypeOf(e[1].*) != @TypeOf(@field(c, e[0])))
+            @compileError("VMArray.zig: " ++ e[0] ++ " does not have the header's signature");
+        @export(e[1], .{ .name = e[0], .visibility = visibility });
+    }
+}
+```
+
+### What the builder fills in
+
+`repr.Ops(R)` walks `@typeInfo(c.MVMREPROps)` (the C header's field list,
+not a copy) and gives each leaf field, in this order: `R`'s declaration of
+that name; else the `MVM_REPR_DEFAULT_*` function the C macros of
+`src/6model/reprs.h` put there, from the one hand-written table
+`default_functions` in `repr.zig`; else null. A REPR that declares only the
+required slots gets the table C would write as
+
+```c
+{ typeObjectFor, MVM_gc_allocate_object, NULL /* initialize */,
+  NULL /* copy_to */, MVM_REPR_DEFAULT_ATTR_FUNCS,
+  MVM_REPR_DEFAULT_BOX_FUNCS, MVM_REPR_DEFAULT_POS_FUNCS,
+  MVM_REPR_DEFAULT_ASS_FUNCS, MVM_REPR_DEFAULT_ELEMS, getStorageSpec,
+  NULL, ... /* change_type .. gc_free_repr_data */, compose, NULL /* spesh */,
+  "Minimal", 99, NULL /* unmanaged_size */, NULL /* describe_refs */ }
+```
+
+Inside a nested table only the declared slots change; the others keep
+their defaults (P6int declares four of the nine box slots and gets
+`MVM_REPR_DEFAULT_SET_NUM` and the rest for the other five). Declaring
+`null` empties a slot that has a default, as MVMContinuation.c's `elems`
+and P6opaque.c's `ass_funcs.get_value_storage_spec` are NULL in C.
+
+`declError(R)` stops the build when a public declaration names no field
+(`"<R>: unknown REPR function 'pos_funcs.pussh'"`), has the wrong type
+(`"'allocate' has the wrong type; the field is ..."`), or one of
+`type_object_for`, `allocate`, `get_storage_spec`, `compose` is missing or
+null: a misspelt hook never silently becomes a default.
+
+`repr.dumpOps` prints a table one leaf per line (`pos_funcs.push\tdefault`;
+the classes are `own`, `default`, `null`). `repr-test` compares the linked
+library's array table with the dump recorded from the C table
+(`src/zig/6model/test/vmarray_vtable_c.tsv`), and the declarations P6int and
+MVMCode would make with the C tables of those REPRs
+(`traces/llm/bench/va-mechanism-check.md`).
+
+### The slot kinds, and how to add one
+
+The array's per-kind facts are one table in `vmarray/kinds.zig`, an entry
+per `MVM_ARRAY_*` constant that has storage:
+
+```zig
+pub const kinds = [_]KindInfo{
+    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj, &reg_obj, "ref"),
+    entry(.str, [*c]c.MVMString, "s", "s", &reg_str, &reg_str, "str"),
+    entry(.i64, c.MVMint64, "i64", "i64", &reg_int, &reg_int, "int"),
+    // ...
+    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint, &reg_int, "int"),
+};
+```
+
+The columns: the kind, the element type, the `body.slots` union member, the
+`MVMRegister` member the value travels in, the register kinds `at_pos` and
+`bind_pos` accept, those `push`/`pop`/`shift`/`unshift` accept, and the
+serialization reader/writer suffix. Every operation is written once,
+generic over `comptime k: Kind`, and reached through the one runtime switch:
+
+```zig
+pub inline fn dispatch(slot_type: u8, comptime f: anytype, args: anytype, comptime otherwise: anytype) ReturnOf(f) {
+    switch (slot_type) {
+        inline 0...kinds.len - 1 => |v| return @call(.auto, f, .{@as(Kind, @fromBackingInt(@intCast(v)))} ++ args),
+        else => if (comptime @typeInfo(@TypeOf(otherwise)) == .@"fn") {
+            return @call(.auto, otherwise, .{slot_type} ++ args);
+        } else switch (comptime @as(Otherwise, otherwise)) {
+            .throw => |message| c.MVM_exception_throw_adhoc(args[0], message.ptr),
+            .abort => std.c.abort(),
+            .nothing => {
+                if (ReturnOf(f) != void) @compileError("dispatch: .nothing needs f to return void");
+                return;
+            },
+        },
+    }
+}
+```
+
+`otherwise` says at each call site what the C's `default:` arm does for the
+six kinds without storage (`U4` ... `I1`, listed once in `unstored`).
+
+To add a stored kind: a value in `enum Kind` equal to its `MVM_ARRAY_*`
+constant and an `entry(...)` row at that position. An integer or num kind
+needs nothing else to be created: `serial.zig`'s `specToReprData` finds the
+kind for an element type's storage spec by walking the table
+(`setInt`/`setNum` compare each row's `Elem` width and signedness); a kind
+of another sort (neither integer, num, string nor object) needs a branch
+there for the storage spec that creates it. The
+comptime block after the table checks the row against the C header (union
+member type, register member, serializer names, value order), so a wrong
+row fails the build. Every `dispatch` gets the new arm by itself; anything
+that differs for the new kind (reference kinds take the write barrier and
+are marked, `holds_refs`) is read from the row. The layout stays in
+`VMArray.h`: a new kind constant and union member go there first.
+
+### The allocator, and how to change it
+
+`VMArray.zig` names the one allocator of everything the array owns outside
+the GC heap (the slots and the REPR data):
+
+```zig
+/// Changing the array's allocator is a change to this line.
+const allocator: std.mem.Allocator = moar.mvm_allocator;
+
+/// The slot storage over `allocator`.
+const S = storage.Storage(struct {
+    pub fn get() std.mem.Allocator {
+        return allocator;
+    }
+});
+```
+
+`Storage(Source)` takes the allocator at compile time (the tests give it
+`std.testing.allocator` or a length-agnostic tracking allocator), so the
+REPR's calls go to it directly with no runtime field. There is no
+`MVM_malloc`/`MVM_realloc`/`MVM_free` call under `src/zig/6model/reprs/`; a
+zero length is never requested, and an array without storage has
+`slots.any == NULL`.
+
+The constraint on a replacement: outside C code (I/O, the decoder,
+normalization, the string encoders) hands arrays buffers it got from
+`MVM_malloc`, with an `ssize` that can misstate their size, and frees or
+replaces the slots itself (`traces/llm/bench/va-adoption-audit.md`). So the
+allocator must accept a pointer from `MVM_malloc` and ignore the length it
+is given back on `free` and `remap`, which is why `storage.zig` calls the
+raw vtable functions (`rawAlloc`, `rawRemap`, `rawFree`) rather than
+`Allocator.free`/`realloc`. Any allocator that is backed by `MVM_malloc`
+qualifies; a length-sensitive one (an arena, a size-class pool, a
+nursery-lifetime allocator) needs those adoption sites changed first.
+
+### Adding the next REPR
+
+Write `src/zig/6model/reprs/<Name>.zig` with the declaration struct, the
+`repr.Ops` table, its `*_initialize` and its exports; put the code in an
+export-free directory beside it so `repr-test` can test it against the
+linked library; add the `[zig-reprs]` line and the import in `root.zig`;
+record the C table with `dumpOps` from a `-Dzig-reprs=false` build and
+assert the Zig table dumps the same. The layouts stay in the C headers;
+pin the sizes and offsets you rely on with comptime asserts, as
+`vmarray/kinds.zig` does for the union.
 
 ## Not yet supported
 
