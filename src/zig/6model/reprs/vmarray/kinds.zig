@@ -61,13 +61,21 @@ pub const KindInfo = struct {
     /// cast: `@truncate`, never `@intCast`) and the num narrowing rounds
     /// (`@floatCast`).
     reg: [:0]const u8,
-    /// The register kinds (`c.MVM_reg_*`) that `at_pos` and `bind_pos`
-    /// accept for this kind: `MVM_reg_obj`, `MVM_reg_str`, `MVM_reg_num64`,
-    /// `MVM_reg_int64` for the signed integers and `MVM_reg_uint64` or
-    /// `MVM_reg_int64` for the unsigned ones (va-kind-differences.md rows
-    /// 12a, 15a). `push`, `pop`, `shift` and `unshift` accept fewer: the
-    /// unsigned kinds take `MVM_reg_int64` only there (row 17a).
+    /// The kind's own register kind (`c.MVM_reg_*`), what the C's
+    /// `slot_type_to_kind` returns for it (va-kind-differences.md row 21):
+    /// `MVM_reg_obj`, `MVM_reg_str`, `MVM_reg_int64` (signed integers),
+    /// `MVM_reg_num64` (nums), `MVM_reg_uint64` (unsigned integers). A
+    /// copy between arrays reads and writes elements with it.
+    reg_kind: u16,
+    /// The register kinds that `at_pos` and `bind_pos` accept for this
+    /// kind: `reg_kind`, and for the unsigned kinds `MVM_reg_int64` too
+    /// (rows 12a, 15a).
     reg_kinds: []const u16,
+    /// The register kinds that `push`, `pop`, `shift` and `unshift` accept:
+    /// one each, and `MVM_reg_int64` for every integer kind, the unsigned
+    /// ones included (rows 17a, 18a, 19a, 20): a `uint64` register is
+    /// refused there although `at_pos` takes it.
+    stack_reg_kinds: []const u16,
     /// Whether a slot holds a collectable reference (OBJ, STR): only these
     /// kinds are marked by the GC, described in heap snapshots and stored
     /// through the write barrier.
@@ -78,18 +86,21 @@ pub const KindInfo = struct {
 
 /// Builds one table entry; `Elem` and `member` are checked against the C
 /// union below, so a wrong type here fails the build.
-fn entry(kind: Kind, comptime E: type, member: [:0]const u8, reg: [:0]const u8, reg_kinds: []const u16) KindInfo {
+fn entry(kind: Kind, comptime E: type, member: [:0]const u8, reg: [:0]const u8, reg_kinds: []const u16, stack_reg_kinds: []const u16) KindInfo {
     return .{
         .kind = kind,
         .Elem = E,
         .member = member,
         .reg = reg,
+        .reg_kind = reg_kinds[0],
         .reg_kinds = reg_kinds,
+        .stack_reg_kinds = stack_reg_kinds,
         .holds_refs = kind == .obj or kind == .str,
         .elem_size = @sizeOf(E),
     };
 }
 
+// Each set starts with the kind's own register kind (`reg_kind`).
 const reg_obj = [_]u16{c.MVM_reg_obj};
 const reg_str = [_]u16{c.MVM_reg_str};
 const reg_int = [_]u16{c.MVM_reg_int64};
@@ -100,18 +111,18 @@ const reg_num = [_]u16{c.MVM_reg_num64};
 /// It is comptime-only (an entry holds a type) and is read in `inline for`
 /// loops, through `info(k)`, and by `dispatch`.
 pub const kinds = [_]KindInfo{
-    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj),
-    entry(.str, [*c]c.MVMString, "s", "s", &reg_str),
-    entry(.i64, c.MVMint64, "i64", "i64", &reg_int),
-    entry(.i32, c.MVMint32, "i32", "i64", &reg_int),
-    entry(.i16, c.MVMint16, "i16", "i64", &reg_int),
-    entry(.i8, c.MVMint8, "i8", "i64", &reg_int),
-    entry(.n64, c.MVMnum64, "n64", "n64", &reg_num),
-    entry(.n32, c.MVMnum32, "n32", "n64", &reg_num),
-    entry(.u64, c.MVMuint64, "u64", "u64", &reg_uint),
-    entry(.u32, c.MVMuint32, "u32", "u64", &reg_uint),
-    entry(.u16, c.MVMuint16, "u16", "u64", &reg_uint),
-    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint),
+    entry(.obj, [*c]c.MVMObject, "o", "o", &reg_obj, &reg_obj),
+    entry(.str, [*c]c.MVMString, "s", "s", &reg_str, &reg_str),
+    entry(.i64, c.MVMint64, "i64", "i64", &reg_int, &reg_int),
+    entry(.i32, c.MVMint32, "i32", "i64", &reg_int, &reg_int),
+    entry(.i16, c.MVMint16, "i16", "i64", &reg_int, &reg_int),
+    entry(.i8, c.MVMint8, "i8", "i64", &reg_int, &reg_int),
+    entry(.n64, c.MVMnum64, "n64", "n64", &reg_num, &reg_num),
+    entry(.n32, c.MVMnum32, "n32", "n64", &reg_num, &reg_num),
+    entry(.u64, c.MVMuint64, "u64", "u64", &reg_uint, &reg_int),
+    entry(.u32, c.MVMuint32, "u32", "u64", &reg_uint, &reg_int),
+    entry(.u16, c.MVMuint16, "u16", "u64", &reg_uint, &reg_int),
+    entry(.u8, c.MVMuint8, "u8", "u64", &reg_uint, &reg_int),
 };
 
 /// The `body.slots` union type of the C header.

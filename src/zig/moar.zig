@@ -154,6 +154,32 @@ pub inline fn worklistAdd(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, 
     }
 }
 
+/// MVM_gc_worklist_add_include_gen2_nocheck(tc, worklist, item)
+/// (worklist.h:62-63 under MVM_GC_DEBUG, :83-86 otherwise): pushes `item`
+/// unconditionally, NULL pointee included. The caller has called
+/// MVM_gc_worklist_presize_for for every item and knows `include_gen2` is
+/// set. Under MVM_GC_DEBUG it is MVM_gc_worklist_add (`worklistAdd`).
+pub inline fn worklistAddIncludeGen2Nocheck(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, item: anytype) void {
+    if (comptime c.MVM_GC_DEBUG != 0) return worklistAdd(tc, worklist, item);
+    worklist.*.list[worklist.*.items] = @ptrCast(@alignCast(item));
+    // MVMuint32 `items++`; the presize leaves room, so it cannot wrap.
+    worklist.*.items +%= 1;
+}
+
+/// MVM_gc_worklist_add_no_include_gen2_nocheck(tc, worklist, item)
+/// (worklist.h:64-65 under MVM_GC_DEBUG, :91-96 otherwise): pushes `item`
+/// when its pointee is non-NULL and not in gen2, without a capacity check
+/// (the caller has presized). Under MVM_GC_DEBUG it is
+/// MVM_gc_worklist_add (`worklistAdd`).
+pub inline fn worklistAddNoIncludeGen2Nocheck(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, item: anytype) void {
+    if (comptime c.MVM_GC_DEBUG != 0) return worklistAdd(tc, worklist, item);
+    const item_to_add: [*c][*c]Collectable = @ptrCast(@alignCast(item));
+    if (item_to_add.* != null and (item_to_add.*.*.flags2 & c.MVM_CF_SECOND_GEN) == 0) {
+        worklist.*.list[worklist.*.items] = item_to_add;
+        worklist.*.items +%= 1;
+    }
+}
+
 // ---- MVMROOT .. MVMROOT6 from src/gc/roots.h ----------------------------
 
 /// Handle returned by `rootN`; `defer r.pop(tc)` ends the scope.
