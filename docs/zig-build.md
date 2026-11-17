@@ -875,19 +875,46 @@ pub inline fn dispatch(slot_type: u8, comptime f: anytype, args: anytype, compti
 `otherwise` says at each call site what the C's `default:` arm does for the
 six kinds without storage (`U4` ... `I1`, listed once in `unstored`).
 
-To add a stored kind: a value in `enum Kind` equal to its `MVM_ARRAY_*`
-constant and an `entry(...)` row at that position. An integer or num kind
-needs nothing else to be created: `serial.zig`'s `specToReprData` finds the
-kind for an element type's storage spec by walking the table
-(`setInt`/`setNum` compare each row's `Elem` width and signedness); a kind
-of another sort (neither integer, num, string nor object) needs a branch
-there for the storage spec that creates it. The
-comptime block after the table checks the row against the C header (union
-member type, register member, serializer names, value order), so a wrong
-row fails the build. Every `dispatch` gets the new arm by itself; anything
-that differs for the new kind (reference kinds take the write barrier and
-are marked, `holds_refs`) is read from the row. The layout stays in
-`VMArray.h`: a new kind constant and union member go there first.
+Adding a stored kind. The stored kinds must be a dense prefix of the
+`MVM_ARRAY_*` values: `dispatch`'s arm is `inline 0...kinds.len - 1`, the
+comptime check requires `kinds[i]` to have the value `i` ("entries out of
+value order") and every kind without storage to lie above them ("an
+unstored kind overlaps a stored one"). Today the twelve stored kinds are 0
+to 11 and the six without storage 12 to 17 (`VMArray.h`, `MVM_ARRAY_U4` 12
+... `MVM_ARRAY_I1` 17). So a new stored kind cannot take the next free
+value, 18; it goes in as 12 and the six move up by one. In order:
+
+1. `src/6model/reprs/VMArray.h`: define the new constant as 12, renumber
+   `MVM_ARRAY_U4` ... `MVM_ARRAY_I1` to 13 ... 18, and add the union member
+   to `MVMArrayBody.slots` (before `any`). The header is shared, so the C
+   array (`VMArray.c`, the `-Dzig-reprs=false` control) needs the new kind's
+   arm in each of its switches too, or the control and the Zig array part.
+2. `vmarray/kinds.zig`: the new tag in `enum Kind` with value 12, and an
+   `entry(...)` row as the thirteenth row of `kinds`. `unstored` names the
+   six by their constants, so it follows the renumbering by itself.
+3. A reference kind (one the collector must mark) also needs `entry`'s
+   `holds_refs = kind == .obj or kind == .str` widened; for any other kind
+   the row is all there is. Every `dispatch` gets the new arm by itself.
+4. Creating it: an integer or num kind needs nothing more, because
+   `serial.zig`'s `specToReprData` finds the kind for a storage spec by
+   walking the table (`setInt`/`setNum` compare each row's `Elem` width and
+   signedness); a kind of another sort needs a branch there for the storage
+   spec that creates it.
+
+What depends on the numeric values, so check it after renumbering: the
+serialized form does not (`serialize_repr_data` writes only the element
+type; the slot type is recomputed on load); the C readers that name the
+constants (`MultiDimArray.c`, `debugserver.c`, `strings/ops.c`, `io/*.c`,
+`Decoder.c`, `reprconv.c`, `loadbytecode.c`; `va-adoption-audit.md` lists
+the ones that touch the body) use them by name and pick up new values on a
+rebuild, but `debugserver.c`'s switches over the kinds need a case for the
+new one, and `MultiDimArray.c`, which uses the same constants for its own
+slots, switches over them too (decide whether it gets the kind); and the two messages that print a slot type
+(`"... but %u is not MVM_ARRAY_STR"`, `"... array type %u is not
+MVM_ARRAY_OBJ"`) print the renumbered values for the six. The comptime
+block after the table then checks each row against the header (union
+member type, register member, serializer names, value order), so a row
+that does not match fails the build.
 
 ### The allocator, and how to change it
 
