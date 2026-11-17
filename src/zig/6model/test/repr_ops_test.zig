@@ -293,3 +293,101 @@ test "the linked library's array table has the C table's shape" {
     defer std.testing.allocator.free(text);
     try std.testing.expectEqualStrings(@embedFile("vmarray_vtable_c.tsv"), text);
 }
+
+// ---- the paper check (traces/llm/bench/va-mechanism-check.md) -------------
+//
+// The declarations two other REPRs would give `repr.Ops`, with bodies that
+// do nothing: P6int (a leaf with box functions and no storage) and MVMCode
+// (reference fields in its body). Each table must dump as the linked C
+// REPR's table does, slot for slot: `own` where the C has its own function,
+// `default` where it has a `MVM_REPR_DEFAULT_*` one, `null` where NULL.
+
+const Tc = [*c]c.MVMThreadContext;
+const St = [*c]c.MVMSTable;
+const Obj = [*c]c.MVMObject;
+
+fn tObjectFor(_: Tc, _: Obj) callconv(.c) Obj {
+    return null;
+}
+fn tCopyTo(_: Tc, _: St, _: ?*anyopaque, _: Obj, _: ?*anyopaque) callconv(.c) void {}
+fn tSetInt(_: Tc, _: St, _: Obj, _: ?*anyopaque, _: c.MVMint64) callconv(.c) void {}
+fn tGetInt(_: Tc, _: St, _: Obj, _: ?*anyopaque) callconv(.c) c.MVMint64 {
+    return 0;
+}
+fn tSetUint(_: Tc, _: St, _: Obj, _: ?*anyopaque, _: c.MVMuint64) callconv(.c) void {}
+fn tGetUint(_: Tc, _: St, _: Obj, _: ?*anyopaque) callconv(.c) c.MVMuint64 {
+    return 0;
+}
+fn tStorageSpec(_: Tc, _: St) callconv(.c) [*c]const c.MVMStorageSpec {
+    return null;
+}
+fn tSerialize(_: Tc, _: St, _: ?*anyopaque, _: [*c]c.MVMSerializationWriter) callconv(.c) void {}
+fn tDeserialize(_: Tc, _: St, _: Obj, _: ?*anyopaque, _: [*c]c.MVMSerializationReader) callconv(.c) void {}
+fn tSerializeReprData(_: Tc, _: St, _: [*c]c.MVMSerializationWriter) callconv(.c) void {}
+fn tStReader(_: Tc, _: St, _: [*c]c.MVMSerializationReader) callconv(.c) void {}
+fn tFreeReprData(_: Tc, _: St) callconv(.c) void {}
+fn tCompose(_: Tc, _: St, _: Obj) callconv(.c) void {}
+fn tSpesh(_: Tc, _: St, _: [*c]c.MVMSpeshGraph, _: [*c]c.MVMSpeshBB, _: [*c]c.MVMSpeshIns) callconv(.c) void {}
+fn tGcMark(_: Tc, _: St, _: ?*anyopaque, _: [*c]c.MVMGCWorklist) callconv(.c) void {}
+fn tGcFree(_: Tc, _: Obj) callconv(.c) void {}
+
+/// P6int as `repr.Ops` would read it (P6int.c:317-355).
+const P6int = struct {
+    pub const name = "P6int";
+    pub const ID = c.MVM_REPR_ID_P6int;
+    pub const type_object_for = tObjectFor;
+    pub const allocate = &c.MVM_gc_allocate_object;
+    pub const copy_to = tCopyTo;
+    pub const box_funcs = struct {
+        pub const set_int = tSetInt;
+        pub const get_int = tGetInt;
+        pub const set_uint = tSetUint;
+        pub const get_uint = tGetUint;
+    };
+    pub const get_storage_spec = tStorageSpec;
+    pub const serialize = tSerialize;
+    pub const deserialize = tDeserialize;
+    pub const serialize_repr_data = tSerializeReprData;
+    pub const deserialize_repr_data = tStReader;
+    pub const deserialize_stable_size = tStReader;
+    pub const gc_free_repr_data = tFreeReprData;
+    pub const compose = tCompose;
+    pub const spesh = tSpesh;
+};
+
+/// MVMCode as `repr.Ops` would read it (MVMCode.c:86-114).
+const MVMCode = struct {
+    pub const name = "MVMCode";
+    pub const ID = c.MVM_REPR_ID_MVMCode;
+    pub const type_object_for = tObjectFor;
+    pub const allocate = &c.MVM_gc_allocate_object;
+    pub const copy_to = tCopyTo;
+    pub const get_storage_spec = tStorageSpec;
+    pub const gc_mark = tGcMark;
+    pub const gc_free = tGcFree;
+    pub const compose = tCompose;
+};
+
+/// The two tables dump alike: per slot the same class (`own`, `default`,
+/// `null`), and the same name and ID. The class is what a declaration
+/// decides; which own function fills a slot is the REPR's code.
+fn expectSameShape(c_ops: *const c.MVMREPROps, zig_ops: *const c.MVMREPROps) !void {
+    const a = try dump(c_ops);
+    defer std.testing.allocator.free(a);
+    const b = try dump(zig_ops);
+    defer std.testing.allocator.free(b);
+    try std.testing.expectEqualStrings(a, b);
+}
+
+test "P6int and MVMCode, declared for repr.Ops, get their C tables' shape" {
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc = instance.*.main_thread;
+    const p6int = comptime repr.Ops(P6int);
+    const code = comptime repr.Ops(MVMCode);
+    try expectSameShape(c.MVMP6int_initialize(tc), &p6int);
+    try expectSameShape(c.MVMCode_initialize(tc), &code);
+    // The C function in the allocate slot is the very one, as serialization.c
+    // expects.
+    try std.testing.expectEqual(c.MVMP6int_initialize(tc).*.allocate, p6int.allocate);
+}
