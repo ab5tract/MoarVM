@@ -42,7 +42,8 @@ const S = storage.Storage(struct {
 });
 const Ser = serial.Serial(S);
 
-/// `specToReprData` reads `tc` only to throw; no row below throws.
+/// For the hooks that never read `tc` (`gcFreeReprData` of an STable
+/// without REPR data, `deserializeStableSize`): no VM is booted for them.
 const no_tc: [*c]c.MVMThreadContext = undefined;
 
 // ---- spec_to_repr_data -------------------------------------------------
@@ -111,6 +112,12 @@ const spec_rows = [_]Row{
 };
 
 test "specToReprData maps each storage spec to the C's slot type and element size" {
+    // `specToReprData` reads `tc` only to throw, and no row below throws;
+    // it gets a real one all the same, so a row that did throw would fail
+    // as the VM fails, not through an undefined pointer.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
     for (spec_rows) |row| {
         var rd: c.MVMArrayREPRData = .{ .elem_size = before.elem_size, .slot_type = before.slot_type, .elem_type = null };
         const spec: c.MVMStorageSpec = .{
@@ -121,7 +128,7 @@ test "specToReprData maps each storage spec to the C's slot type and element siz
             .can_box = 0,
             .is_unsigned = row.unsigned,
         };
-        serial.specToReprData(no_tc, &rd, &spec);
+        serial.specToReprData(vm.tc, &rd, &spec);
         expectEqual(row.slot_type, rd.slot_type) catch |e| {
             std.debug.print("row bp={d} bits={d} unsigned={d}\n", .{ row.bp, row.bits, row.unsigned });
             return e;
@@ -301,8 +308,11 @@ test "serialize writes the library's bytes and deserialize reads them back, for 
         mine.init();
         defer mine.deinit();
         Ser.serialize(tc, a.st(), a.body(), &mine.writer);
-        // The linked library's own serialize (the C array with
-        // -Dzig-reprs=false) writes the same bytes.
+        // The linked library's own serialize writes the same bytes. With
+        // -Dzig-reprs=false that is the C array, so this compares the Zig
+        // with the C; in the default build the library's array is this Zig
+        // array, so there the comparison is Zig against Zig, and the C
+        // comparison is the -Dzig-reprs=false run of this test.
         var lib: GrowBuffer = undefined;
         lib.init();
         defer lib.deinit();

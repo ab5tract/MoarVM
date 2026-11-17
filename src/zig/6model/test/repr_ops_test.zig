@@ -181,6 +181,61 @@ test "declError names an unknown, a mistyped and a missing declaration" {
     try std.testing.expect(comptime repr.declError(WithPush) == null);
 }
 
+test "a slot declared null is null although it has a default" {
+    // As MVMContinuation.c writes NULL for `elems` and P6opaque.c for
+    // `ass_funcs.get_value_storage_spec`.
+    const WithNulls = struct {
+        pub const name = "WithNulls";
+        pub const ID = 99;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = allocateStub;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = composeStub;
+        pub const elems = null;
+        pub const ass_funcs = struct {
+            pub const get_value_storage_spec = null;
+        };
+    };
+    const ops = comptime repr.Ops(WithNulls);
+    try std.testing.expect(ops.elems == null);
+    try std.testing.expect(ops.ass_funcs.get_value_storage_spec == null);
+    try std.testing.expectEqual(addr(&c.MVM_REPR_DEFAULT_AT_KEY), addr(ops.ass_funcs.at_key.?));
+    try std.testing.expectEqual(addr(&c.MVM_REPR_DEFAULT_DELETE_KEY), addr(ops.ass_funcs.delete_key.?));
+
+    // Exactly those two leaves differ from Minimal's table.
+    const minimal = comptime repr.Ops(Minimal);
+    const a = try dump(&minimal);
+    defer std.testing.allocator.free(a);
+    const b = try dump(&ops);
+    defer std.testing.allocator.free(b);
+    var la = std.mem.splitScalar(u8, a, '\n');
+    var lb = std.mem.splitScalar(u8, b, '\n');
+    var differing: usize = 0;
+    while (la.next()) |x| {
+        const y = lb.next() orelse return error.DumpsDifferInLength;
+        if (std.mem.eql(u8, x, y) or std.mem.startsWith(u8, x, "name\t")) continue;
+        differing += 1;
+        if (std.mem.eql(u8, x, "elems\tdefault")) {
+            try std.testing.expectEqualStrings("elems\tnull", y);
+        } else {
+            try std.testing.expectEqualStrings("ass_funcs.get_value_storage_spec\tdefault", x);
+            try std.testing.expectEqualStrings("ass_funcs.get_value_storage_spec\tnull", y);
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 2), differing);
+
+    // A required slot cannot be null.
+    const NullCompose = struct {
+        pub const name = "NullCompose";
+        pub const ID = 99;
+        pub const type_object_for = typeObjectFor;
+        pub const allocate = allocateStub;
+        pub const get_storage_spec = getStorageSpec;
+        pub const compose = null;
+    };
+    try std.testing.expectEqualStrings(@typeName(NullCompose) ++ ": required 'compose' cannot be null", comptime repr.declError(NullCompose).?);
+}
+
 test "a C function can fill a slot" {
     const WithC = struct {
         pub const name = "WithC";
@@ -192,6 +247,42 @@ test "a C function can fill a slot" {
     };
     const ops = comptime repr.Ops(WithC);
     try std.testing.expectEqual(addr(&c.MVM_gc_allocate_object), addr(ops.allocate.?));
+}
+
+test "a C REPR that uses the default macros dumps every such slot as default" {
+    // P6int.c writes MVM_REPR_DEFAULT_ATTR_FUNCS, _POS_FUNCS, _ASS_FUNCS and
+    // MVM_REPR_DEFAULT_ELEMS. `dumpOps` calls a slot `default` only when it
+    // holds the function `default_functions` gives that very path, so two
+    // same-typed defaults swapped there (push and unshift, pop and shift)
+    // would show here as `own`. Its box_funcs mix its own functions with
+    // defaults, as checked below.
+    const instance = c.MVM_vm_create_instance();
+    defer c.MVM_vm_destroy_instance(instance);
+    const tc = instance.*.main_thread;
+    const text = try dump(c.MVMP6int_initialize(tc));
+    defer std.testing.allocator.free(text);
+    const own_box = [_][]const u8{ "box_funcs.set_int", "box_funcs.get_int", "box_funcs.set_uint", "box_funcs.get_uint" };
+    var checked: usize = 0;
+    var lines = std.mem.splitScalar(u8, std.mem.trimEnd(u8, text, "\n"), '\n');
+    while (lines.next()) |line| {
+        var cols = std.mem.splitScalar(u8, line, '\t');
+        const path = cols.next().?;
+        const class = cols.next().?;
+        const grouped = std.mem.startsWith(u8, path, "attr_funcs.") or std.mem.startsWith(u8, path, "pos_funcs.") or
+            std.mem.startsWith(u8, path, "ass_funcs.") or std.mem.startsWith(u8, path, "box_funcs.") or
+            std.mem.eql(u8, path, "elems");
+        if (!grouped) continue;
+        const want = for (own_box) |o| {
+            if (std.mem.eql(u8, o, path)) break "own";
+        } else "default";
+        std.testing.expectEqualStrings(want, class) catch |e| {
+            std.debug.print("P6int {s}\n", .{path});
+            return e;
+        };
+        checked += 1;
+    }
+    // 5 attr + 9 box + 18 pos + 5 ass + elems.
+    try std.testing.expectEqual(@as(usize, 38), checked);
 }
 
 test "the linked library's array table has the C table's shape" {

@@ -18,6 +18,10 @@
 //!   convention (`fn (...) callconv(.c) ...`) or as a pointer to a C
 //!   function (`&c.MVM_gc_allocate_object`); either way its type must be
 //!   exactly the field's function type.
+//! - A function slot may also be declared `null` (`pub const elems = null;`):
+//!   it is then null although the field has a default function. Two C
+//!   tables do that: MVMContinuation.c's `elems` and P6opaque.c's
+//!   `ass_funcs.get_value_storage_spec`. A required field cannot be null.
 //! - Every field `R` does not declare gets what the C macros give it: the
 //!   `MVM_REPR_DEFAULT_*` function of `default_functions` below (the C
 //!   functions are referenced, not reimplemented), or null for a field
@@ -126,7 +130,7 @@ fn defaultFor(comptime path: []const u8, comptime F: type) F {
 ///
 /// The result has one value per leaf field of `c.MVMREPROps`, chosen in
 /// this order: `R`'s public declaration of that name (for a nested table,
-/// `R.<table>`'s), else the field's `MVM_REPR_DEFAULT_*` function from
+/// `R.<table>`'s; a declared `null` gives null), else the field's `MVM_REPR_DEFAULT_*` function from
 /// `default_functions`, else null. `name` becomes a pointer to `R.name`'s
 /// bytes, `ID` the integer. If `declError(R)` reports a problem, that
 /// message is the compile error. Bind the result to a container-level
@@ -193,7 +197,7 @@ fn fill(comptime T: type, comptime D: type, comptime prefix: []const u8) T {
 
 /// `D.<decl>` as a value of the field type `F`: a function becomes a
 /// pointer to it, a string its bytes' address, anything else (a function
-/// pointer, an integer) is coerced as it is.
+/// pointer, `null`, an integer) is coerced as it is.
 fn slotValue(comptime F: type, comptime D: type, comptime decl: []const u8) F {
     const v = @field(D, decl);
     const V = @TypeOf(v);
@@ -224,7 +228,9 @@ fn declares(comptime D: type, comptime name: []const u8) bool {
 ///   declaration that `Ops` could not store in its field, in field order
 ///   (for `name` the type given is `[:0]const u8`, what to declare);
 /// - `"<R>: missing required '<name>'"`: the first name of `required` that
-///   `R` does not declare.
+///   `R` does not declare;
+/// - `"<R>: required '<name>' cannot be null"`: the first name of
+///   `required` that `R` declares as `null`.
 pub fn declError(comptime R: type) ?[]const u8 {
     // The checks compare field and declaration names byte by byte at compile
     // time, which takes more than the default 1000 backward branches.
@@ -235,6 +241,7 @@ pub fn declError(comptime R: type) ?[]const u8 {
         return @typeName(R) ++ ": '" ++ m.path ++ "' has the wrong type; the field is " ++ m.field_type;
     for (required) |name| {
         if (!declares(R, name)) return @typeName(R) ++ ": missing required '" ++ name ++ "'";
+        if (@TypeOf(@field(R, name)) == @TypeOf(null)) return @typeName(R) ++ ": required '" ++ name ++ "' cannot be null";
     }
     return null;
 }
@@ -285,13 +292,14 @@ fn isStructType(comptime v: anytype) bool {
 
 /// Whether the declared value `v` can fill a field of type `F`:
 /// - a function slot (`?*const fn ...`): a function of exactly that type
-///   (the calling convention included), or a pointer of that type;
+///   (the calling convention included), a pointer of that type, or `null`;
 /// - `name` (`[*c]const u8`): a `[:0]const u8` or a string literal;
 /// - `ID` (an integer): an integer whose value fits `F`.
 fn fits(comptime F: type, comptime v: anytype) bool {
     const V = @TypeOf(v);
     switch (@typeInfo(F)) {
         .optional => |o| {
+            if (V == @TypeOf(null)) return true;
             if (@typeInfo(V) == .@"fn") return *const V == o.child;
             return V == o.child or V == F;
         },
