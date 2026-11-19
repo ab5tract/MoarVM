@@ -401,7 +401,7 @@ takes `[zig-gc]` with `[zig]`.
 
 | C file | Zig file | What it holds |
 |---|---|---|
-| `worklist.c` | `worklist.zig` | the mark worklist: create, the slow-path grow, presize, destroy |
+| `worklist.c` | `worklist.zig` | the mark worklist: create, the slow-path grow, presize, destroy; `items`, `alloc` and the presize count are 64-bit (upstream e9dee2a3e), in both implementations |
 | `allocation.c` | `allocation.zig` | nursery bump allocation and the object, type object, STable and frame allocators |
 | `gen2.c` | `gen2.zig` | the gen2 size-class allocator: bins, pages, free lists, overflows, transfer between threads |
 | `roots.c` | `roots.zig` | permanent, instance, thread, temporary, gen2 and frame roots, and their heap snapshot variant |
@@ -747,6 +747,26 @@ exported symbol set is the same either way (2,850 names at the default
 options). A new REPR is a new line in the section and a new import in that
 block; the build's root-reference check (`build/zig/zigimpl.zig`) fails if
 the import is missing.
+
+### Fidelity to the C array
+
+The Zig array does what `VMArray.c` does: the same results, the same
+exception messages byte for byte, the same order of checks, the same state
+after a throw, and a NULL fault no earlier than the C's first dereference
+of that pointer (`traces/llm/bench/va-kind-differences.md`). Where the C
+has been fixed, the Zig follows the fixed C: the VMArray fixes of
+`traces/llm/bench/cfix-mirror.md` (a splice of an array into itself gives
+the splice from a clone; growth that would wrap near 2**64 elements, a
+splice from a non-VMArray source, into or out of a kind without storage or
+between kinds whose registers would be reinterpreted, `read_buf`/`write_buf`
+past the elements or at wrapping offsets, `write_buf` on a kind without
+storage and recomposing a type to another element kind are refused with the
+C's messages; a rejected `pop` or `unshift` leaves the array as it was). The
+one deliberate difference left is the allocator rule below: where the C
+asks its allocator for zero bytes for one of the six kinds without storage,
+the Zig array keeps `slots` NULL. `tools/bench/repr/diff.sh` of the two
+switch settings exits 0 (no differing line); its list of lines undefined in
+C (`undefined-lines.txt`) is empty since the self-splice fixes.
 
 ### How a REPR declares itself
 
