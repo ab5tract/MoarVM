@@ -5,9 +5,10 @@
 //! the Zig functions are called directly on them, with the storage over
 //! `moar.mvm_allocator`, so the library frees what the Zig code allocated.
 //! `Vm`, `A`, `E`, `sample` and `filled` are public for
-//! vmarray_serial_test.zig. Only paths that do not throw are tested
-//! here (spec 7.1): a throw longjmps out of the test. The throwing paths
-//! and their messages are covered by the differential programs.
+//! vmarray_serial_test.zig. In-process only paths that do not throw are
+//! tested (spec 7.1): a throw longjmps out of the test. A throwing path is
+//! run in a forked child (`childThrow`), which reports the message and the
+//! state the throw left; the differential programs cover the rest.
 const std = @import("std");
 const builtin = @import("builtin");
 const moar = @import("moar");
@@ -1182,6 +1183,156 @@ fn childSignal(comptime f: anytype, args: anytype) !?std.c.SIG {
     try expectEqual(pid, std.c.waitpid(pid, &status, 0));
     const w: u32 = @bitCast(status);
     return if (std.c.W.IFSIGNALED(w)) std.c.W.TERMSIG(w) else null;
+}
+
+extern "c" fn pipe(fds: *[2]c_int) c_int;
+extern "c" fn dup2(old: c_int, new: c_int) c_int;
+extern "c" fn read(fd: c_int, buf: [*]u8, n: usize) isize;
+extern "c" fn write(fd: c_int, buf: [*]const u8, n: usize) isize;
+extern "c" fn close(fd: c_int) c_int;
+extern "c" fn atexit(f: *const fn () callconv(.c) void) c_int;
+extern "c" fn exit(status: c_int) noreturn;
+extern "c" fn alarm(seconds: c_uint) c_uint;
+
+/// The array whose state a `childThrow` child reports when it exits.
+var watched: ?*c.MVMArrayBody = null;
+var watched_elem_size: usize = 0;
+
+/// Writes `text` to fd 1 (the child's pipe).
+fn say(text: []const u8) void {
+    _ = write(1, text.ptr, text.len);
+}
+
+/// The child's exit handler: `state: elems=E start=S ssize=Z` and the live
+/// window's bytes in hex (at most 64), so that the parent sees what a
+/// throw left behind. It runs from the exit the unhandled exception ends
+/// in (exceptions.c panic_unhandled_ex), or from the child's own exit
+/// after `f` returned.
+fn reportWatched() callconv(.c) void {
+    const b = watched orelse return;
+    var buf: [256]u8 = undefined;
+    say(std.fmt.bufPrint(&buf, "state: elems={d} start={d} ssize={d} bytes=", .{ b.elems, b.start, b.ssize }) catch unreachable);
+    if (b.slots.any) |any| {
+        const p: [*]const u8 = @ptrCast(any);
+        const n = @min(b.elems *% watched_elem_size, 64);
+        for (p[b.start *% watched_elem_size ..][0..n]) |byte| say(std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable);
+    } else say("null");
+    say("\n");
+}
+
+/// What a `childThrow` child printed and how it ended.
+const ChildResult = struct {
+    out: [16384]u8 = undefined,
+    len: usize = 0,
+    /// The exit status, or null when the child died of a signal.
+    exit_code: ?u8 = null,
+    signal: ?std.c.SIG = null,
+
+    fn text(r: *const ChildResult) []const u8 {
+        return r.out[0..r.len];
+    }
+    /// Expects `needle` in the output (printed with the output if absent).
+    fn expectHas(r: *const ChildResult, needle: []const u8) !void {
+        if (std.mem.find(u8, r.text(), needle) == null) {
+            std.debug.print("child output lacks \"{s}\":\n{s}\n", .{ needle, r.text() });
+            return error.TestUnexpectedResult;
+        }
+    }
+};
+
+/// Runs `f(args...)` in a forked child, with fds 1 and 2 on a pipe the
+/// parent reads, and returns what it printed and how it ended. A throw
+/// from `f` has no handler (no interpreter frame), so the VM prints
+/// "Unhandled exception: <message>" and exits 1; `body` (with its kind's
+/// `elem_size`), when given, is reported by `reportWatched` at that exit,
+/// which is how a test sees the state a throw leaves. If `f` returns, the
+/// child prints "returned" and exits 0 (reporting too). A test thereby
+/// checks throwing paths, which in-process would longjmp out of the test.
+fn childThrow(comptime f: anytype, args: anytype, body: ?*c.MVMArrayBody, elem_size: usize) !ChildResult {
+    var fds: [2]c_int = undefined;
+    try expectEqual(@as(c_int, 0), pipe(&fds));
+    const pid = fork();
+    if (pid == 0) {
+        _ = close(fds[0]);
+        _ = dup2(fds[1], 1);
+        _ = dup2(fds[1], 2);
+        _ = signal(@backingInt(std.c.SIG.SEGV), null);
+        _ = prctl(PR_SET_DUMPABLE, @as(c_ulong, 0));
+        // A child that hangs (a collection waiting for a thread fork did
+        // not copy) dies of SIGALRM instead of stalling the test.
+        _ = alarm(60);
+        watched = body;
+        watched_elem_size = elem_size;
+        _ = atexit(&reportWatched);
+        @call(.auto, f, args);
+        say("returned\n");
+        exit(0);
+    }
+    _ = close(fds[1]);
+    try expect(pid > 0);
+    var r: ChildResult = .{};
+    while (r.len < r.out.len) {
+        const got = read(fds[0], r.out[r.len..].ptr, r.out.len - r.len);
+        if (got <= 0) break;
+        r.len += @intCast(got);
+    }
+    _ = close(fds[0]);
+    var status: c_int = 0;
+    try expectEqual(pid, std.c.waitpid(pid, &status, 0));
+    const w: u32 = @bitCast(status);
+    if (std.c.W.IFSIGNALED(w)) r.signal = std.c.W.TERMSIG(w) else r.exit_code = @intCast(std.c.W.EXITSTATUS(w));
+    return r;
+}
+
+/// Expects a `childThrow` child to have thrown `message` (no signal, exit
+/// 1) and left `state` (a `reportWatched` line, without the "state: ").
+fn expectThrew(r: *const ChildResult, message: []const u8, state: ?[]const u8) !void {
+    var buf: [512]u8 = undefined;
+    r.expectHas(std.fmt.bufPrint(&buf, "Unhandled exception: {s}\n", .{message}) catch unreachable) catch |e| {
+        std.debug.print("(signal {?}, exit {?})\n", .{ r.signal, r.exit_code });
+        return e;
+    };
+    try expectEqual(@as(?u8, 1), r.exit_code);
+    if (state) |st| try r.expectHas(std.fmt.bufPrint(&buf, "state: {s}", .{st}) catch unreachable);
+}
+
+fn setElemsTo(tc: *c.MVMThreadContext, a: A, n: u64) void {
+    E.setElems(tc, a.st(), a.o, a.body(), n);
+}
+
+test "growing to within 4096 of 2**64 elements throws instead of wrapping, and leaves the array" {
+    // cfix-repro/G1-size-wrap.nqp: from 8,192 slots on the new size is
+    // (n + 0x1000) & ~0xfff, which wraps to 0 for n >= 2**64 - 4096; the C
+    // (upstream 52aa25019) now throws the limit's message with n there.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    inline for ([_]Kind{ .i64, .u8, .obj }) |k| {
+        const es = kinds.info(k).elem_size;
+        var a = vm.new(k);
+        var b = filled(&vm, k, &.{ 0, 1, 2, 3 });
+        const r = moar.rootN(tc, .{ &a.o, &b.o });
+        defer r.pop(tc);
+        E.setElems(tc, a.st(), a.o, a.body(), 9000);
+        try expectEqual(@as(u64, 9000), a.body().ssize);
+        var msg: [96]u8 = undefined;
+        for ([_]u64{ 1, 4095, 4096 }) |below| {
+            const n = @as(u64, 0) -% below;
+            const got = try childThrow(setElemsTo, .{ tc, a, n }, a.body(), es);
+            try expectThrew(&got, try std.fmt.bufPrint(&msg, "Unable to allocate an array of {d} elements", .{n}), "elems=9000 start=0 ssize=9000 bytes=");
+        }
+        // One more below does not wrap: the limit check, which prints the
+        // rounded size, as before.
+        const over = try childThrow(setElemsTo, .{ tc, a, @as(u64, 0) -% 4097 }, a.body(), es);
+        try expectThrew(&over, "Unable to allocate an array of 18446744073709547520 elements", "elems=9000 start=0 ssize=9000 bytes=");
+        // With start > 0 (after shifts), on 9,000 slots grown by pushes.
+        for (0..8996) |i| b.push(tc, k, sample(&vm, k, i % n_samples));
+        for (0..3) |_| _ = b.shift(tc, k);
+        try expectEqual(@as(u64, 12288), b.body().ssize);
+        const shifted = try childThrow(setElemsTo, .{ tc, b, @as(u64, 0) -% 1 }, b.body(), es);
+        try expectThrew(&shifted, "Unable to allocate an array of 18446744073709551615 elements", "elems=8997 start=3 ssize=12288 bytes=");
+    }
 }
 
 fn spliceInto(tc: *c.MVMThreadContext, a: A, from: [*c]Object) void {

@@ -138,8 +138,10 @@ pub fn Storage(comptime Source: type) type {
         /// new `ssize`: below 8,192 slots, twice the old, at least `n`, at
         /// least 8; from 8,192 on, `n` rounded up past the next multiple of
         /// 4,096 (`(n + 0x1000) & ~0xfff`, wrapping as the C's unsigned
-        /// arithmetic does). Above the address budget for the element size
-        /// it throws "Unable to allocate an array of <ssize> elements".
+        /// arithmetic does; a wrapped size, below `n`, throws "Unable to
+        /// allocate an array of <n> elements" before anything is changed).
+        /// Above the address budget for the element size it throws "Unable
+        /// to allocate an array of <ssize> elements".
         /// Then the buffer is reallocated (`remap`, where the C calls
         /// its realloc) or allocated (where it calls its malloc), the
         /// new slots from `clear_from` are zeroed, and `ssize` and last
@@ -161,6 +163,11 @@ pub fn Storage(comptime Source: type) type {
                 if (ssize < 8) ssize = 8;
             } else {
                 ssize = (n +% 0x1000) & ~@as(u64, 0xfff);
+                // A rounded size below n cannot hold the array (the addition
+                // wrapped, for n within 4096 of 2**64): refused with the
+                // limit's message, naming n (upstream 52aa25019).
+                if (ssize < n)
+                    c.MVM_exception_throw_adhoc(tc, "Unable to allocate an array of %" ++ c.PRIu64 ++ " elements", n);
             }
             // The budget is 2 ** (index bits - bits to address a byte of
             // an element): the C's table maps 8 to 4, 4 to 3, 2 to 2 and
