@@ -487,35 +487,66 @@ test "asplice and aslice copy from another kind as the C's at_pos and bind_pos c
     }
 }
 
-test "a splice from the array itself: memmove for the copied kinds, the C's forward loop for STR and promoted OBJ" {
+test "a splice from the array itself gives the splice from its clone, on the block and the element path" {
     var vm: Vm = undefined;
     vm.boot();
     defer vm.deinit();
     const tc = vm.tc;
     const ten = [_]usize{ 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
-    // Splicing [0..9] into itself at 2: what a memmove of the overlapping
-    // copy leaves (the array inserted into itself) ...
+    // Splicing [0..9] into itself at 2: the array inserted into itself, as
+    // from a clone (VMArray.c copy_elements: memmove on the block path, the
+    // element loop backwards when the target lies above the source).
     const moved = [_]usize{ 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 2, 3, 4, 5, 6, 7, 8, 9 };
-    // ... and what the element-by-element forward copy of copy_elements
-    // leaves: each read sees what the copy has already written two slots
-    // further left (va-differential.md section 5).
-    const forward = [_]usize{ 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9 };
     inline for (kinds.kinds) |ki| {
         const k = ki.kind;
         var a = filled(&vm, k, &ten);
         const r = moar.root(tc, &a.o);
         defer r.pop(tc);
         E.asplice(tc, a.st(), a.o, a.body(), a.o, 2, 0);
-        try expectSamples(&vm, a, k, if (k == .str) &forward else &moved);
+        try expectSamples(&vm, a, k, &moved);
     }
-    // An OBJ array in gen2 takes the element path (row 22a), so the forward
-    // pattern, through the write barrier.
+    // An OBJ array in gen2 takes the element path (row 22a), through the
+    // write barrier: the same result.
     var g = vm.newGen2(.obj);
     const r = moar.root(tc, &g.o);
     defer r.pop(tc);
     for (ten) |i| g.push(tc, .obj, sample(&vm, .obj, i));
     E.asplice(tc, g.st(), g.o, g.body(), g.o, 2, 0);
-    try expectSamples(&vm, g, .obj, &forward);
+    try expectSamples(&vm, g, .obj, &moved);
+}
+
+test "a splice from the array itself at offset 0 leaves start alone: no shifted-off slot comes back, none is dropped" {
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    inline for (kinds.kinds) |ki| {
+        const k = ki.kind;
+        // T3 (cfix-repro/T3-self-splice-shifted.nqp): 0 1 2 3 with two
+        // shifted off, spliced into itself at 0 replacing nothing: the
+        // clone result 2 3 2 3, not the shifted-off 0 1 back in front.
+        var a = filled(&vm, k, &.{ 0, 1, 2, 3 });
+        const ra = moar.root(tc, &a.o);
+        defer ra.pop(tc);
+        _ = a.shift(tc, k);
+        _ = a.shift(tc, k);
+        E.asplice(tc, a.st(), a.o, a.body(), a.o, 0, 0);
+        try expectSamples(&vm, a, k, &.{ 2, 3, 2, 3 });
+        // The other direction (cfix-repro/T3-self-splice-overcount.nqp): a
+        // count above elems replaces the whole array with itself.
+        var b = filled(&vm, k, &.{ 0, 1, 2, 3, 4, 5, 6, 7 });
+        const rb = moar.root(tc, &b.o);
+        defer rb.pop(tc);
+        E.asplice(tc, b.st(), b.o, b.body(), b.o, 0, 9);
+        try expectSamples(&vm, b, k, &.{ 0, 1, 2, 3, 4, 5, 6, 7 });
+        // Shifted and replacing two at 0: the clone result.
+        var d = filled(&vm, k, &.{ 0, 1, 2, 3, 4, 5, 6, 7, 8 });
+        const rd = moar.root(tc, &d.o);
+        defer rd.pop(tc);
+        for (0..3) |_| _ = d.shift(tc, k);
+        E.asplice(tc, d.st(), d.o, d.body(), d.o, 0, 2);
+        try expectSamples(&vm, d, k, &.{ 3, 4, 5, 6, 7, 8, 5, 6, 7, 8 });
+    }
 }
 
 test "writeBuf and readBuf copy bytes for the integer kinds" {
@@ -1234,6 +1265,7 @@ const TwinStep = union(enum) {
     set_elems: u64,
     bind: i64, // a sample bound at this index
     splice: struct { offset: i64, count: u64 }, // from the 3-sample `from`
+    self_splice: struct { offset: i64, count: u64 }, // from the array itself
 };
 
 const twin_steps = [_]TwinStep{
@@ -1248,6 +1280,10 @@ const twin_steps = [_]TwinStep{
     .{ .shift = 4 },
     .{ .splice = .{ .offset = 0, .count = 1 } }, // offset 0 with start > 0
     .{ .splice = .{ .offset = 3, .count = 50 } },
+    .{ .shift = 2 },
+    .{ .self_splice = .{ .offset = 0, .count = 1 } }, // offset 0 with start > 0
+    .{ .self_splice = .{ .offset = 2, .count = 0 } }, // overlapping, target above
+    .{ .self_splice = .{ .offset = 0, .count = 20 } }, // count > elems
     .{ .push = 9000 }, // across 8,192: both growth branches
     .{ .set_elems = 0 },
 };
@@ -1281,6 +1317,7 @@ fn twinApply(vm: *Vm, a: A, from: A, comptime k: Kind, step: TwinStep, lib: bool
         .set_elems => |n| set_elems(tc, st, a.o, body, n),
         .bind => |i| bind_pos(tc, st, a.o, body, i, sample(vm, k, 7), kinds.info(k).reg_kind),
         .splice => |sp| splice(tc, st, a.o, body, from.o, sp.offset, sp.count),
+        .self_splice => |sp| splice(tc, st, a.o, body, a.o, sp.offset, sp.count),
     }
 }
 

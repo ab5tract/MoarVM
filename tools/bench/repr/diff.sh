@@ -54,17 +54,17 @@
 #     different number of lines, or a cross-read that differs: exit 1 naming
 #     the first differing line;
 #   * if base and head differ, but only in lines listed in
-#     undefined-lines.txt (self-splices whose result in C is what memcpy over
-#     overlapping ranges leaves), each such line of the head must print what
-#     memmove gives: memmove-model.py (beside this script) models it for
-#     every listed line (the diff-nqp `<kind>.selfsplice.*` lines and the
-#     diff-raku self-splices), and a head value that differs from the model
-#     is exit 1 like any other difference. A listed line the model does not
-#     cover would be named in the output as "accepted without a model
-#     check"; none is at present. Then exit 3 "differs only in
-#     undefined self-splice lines, and equals memmove there", with every
-#     differing line, both values and the model's verdict. This is not a
-#     pass: it is recorded and put to the user;
+#     undefined-lines.txt (lines whose value in C is undefined; it lists
+#     none since the C defines a splice of an array into itself, so today
+#     every difference is exit 1), each such line of the head must print
+#     what memmove gives: memmove-model.py (beside this script) models the
+#     diff-nqp `<kind>.selfsplice.*` lines and the diff-raku self-splices,
+#     and a head value that differs from the model is exit 1 like any other
+#     difference. A listed line the model does not cover would be named in
+#     the output as "accepted without a model check". Then exit 3 "differs
+#     only in undefined self-splice lines, and equals memmove there", with
+#     every differing line, both values and the model's verdict. This is
+#     not a pass: it is recorded and put to the user;
 #   * exit 0 "identical" with the line counts.
 #
 # Usage: tools/bench/repr/diff.sh --base=PREFIX --head=PREFIX --out=DIR
@@ -77,9 +77,10 @@
 # the undefined-*.txt and model-*.txt files an earlier pass left there, so
 # its verdict rests on this pass alone). The two
 # PREFIX strings must be of equal length (the install path is baked into
-# libmoar and its length moves the heap, and a few cases print what a
-# memcpy over overlapping ranges leaves, which can follow the alignment of
-# the storage); an unequal pair is misuse and refused before anything runs.
+# libmoar and its length moves the heap; when undefined-lines.txt listed
+# the C's overlapping memcpy cases, what they printed could follow the
+# alignment of the storage); an unequal pair is misuse and refused before
+# anything runs.
 # Exit: 0 identical, 1 base and head differ, 2 a side not repeatable,
 # 3 base and head differ only in the listed undefined self-splice lines and
 # the head equals memmove there (or the line is named as not model-checked),

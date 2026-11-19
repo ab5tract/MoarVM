@@ -5,12 +5,23 @@
 # where head and base differ and that undefined-lines.txt lists, so that its
 # exit 3 means "differs only where memmove was expected, and equals memmove".
 #
+# Since the C array defines a splice of an array into itself (upstream
+# b2cbdc57c, 6ee35f98a, 5febdef32: memmove on the block path, a backwards
+# element loop where the target lies above the source, no offset-0 start
+# adjustment; the result is the splice from a clone of the array), the C
+# and the Zig array print the same on every such line and undefined-lines.txt
+# lists none, so diff.sh, which calls this only for listed lines, never does.
+# It stays as a check of what the fixed asplice prints, by hand: for example
+#     memmove-model.py diff-nqp OUT $(sed -n 's/^\([a-z0-9]*\.selfsplice\.[^:]*\):.*/\1/p' OUT)
+# on an output of either array.
+#
 # The model is the one of traces/llm/bench/va-differential-raw/selfsplice.py
 # (which derived the diff-nqp entries of undefined-lines.txt), copied here so
-# the instrument does not depend on the records, with two changes: it starts
-# from given slots (so a splice can follow another), and it renders a whole
+# the instrument does not depend on the records, with three changes: it starts
+# from given slots (so a splice can follow another), it renders a whole
 # output line as vmarray-diff.nqp's d() prints it, the SHA-1 form above 40
-# elements included. It covers
+# elements included, and it leaves out the offset-0 start adjustment, as the
+# fixed asplice does for a self-splice (selfsplice.py keeps it). It covers
 #   diff-nqp <kind>.selfsplice.<case>  the cases of selfsp() in vmarray-diff.nqp
 #   diff-nqp <kind>.selfsplice.twice   splice($a, $a, 2, 1) then splice($a, $a, 3, 0)
 #                                      on fill($k, 4)
@@ -22,7 +33,7 @@
 #                                      nqp::splice(b, b, 2, 0), on an Array's
 #                                      reified buffer of 1 2 3 4 5
 # and nothing else: any other NAME is reported as "accepted without a model
-# check", by name (no line undefined-lines.txt lists is left so).
+# check", by name.
 #
 # Prints one line per NAME ("memmove: NAME", "MISMATCH: NAME" with the
 # expected and printed values, "accepted without a model check: NAME") and
@@ -88,26 +99,19 @@ CASES = unique([
 def splice(kind, slots, start, offset, count):
     """asplice($a, $a, offset, count) on storage `slots` whose live window
     starts at `start` and runs to the end of the list, memmove as the last
-    copy (selfsplice.py's model with forward=False). Returns the storage and
-    the new start; the live window again runs to the end of the list."""
+    copy (selfsplice.py's model with forward=False) and without the offset-0
+    start adjustment, as the fixed asplice does for a splice of an array into
+    itself. Returns the storage and the new start; the live window again
+    runs to the end of the list."""
     zero = {'obj': '<null>', 'str': '<null>'}.get(kind, '0')
     slots = list(slots)
     n = len(slots) - start
     elems0, elems1 = n, n
     if offset < 0:
         offset += elems0
-    if offset == 0:
-        d = elems1 - count
-        if d > start:
-            d = start
-        if d <= -elems0:
-            elems0 = 0
-            count = 0
-            start = 0
-        elif d != 0:
-            elems0 += d
-            count += d
-            start -= d
+    # No offset-0 start adjustment: asplice skips it when the source is the
+    # array itself (VMArray.c, "Not when splicing SELF into itself"; upstream
+    # 5febdef32), and every splice modelled here is one.
     if count == 0 and elems1 == 0:
         return slots[:start + elems0], start
     tail = max(elems0 - offset - count, 0)

@@ -15,9 +15,9 @@ coverage reached and the cases left out are recorded in
 | `vmarray-diff.raku` | The Raku half: what nqp cannot reach. `nqp::atposref_*` and `nqp::multidimref_*` (native references), the atomic operations on a position (`nqp::cas_i`, `nqp::atomicload_i`, ... and the `⚛` operators on an `atomicint` array), and the arrays as Rakudo uses them: `array[int8]` to `array[uint64]`, `array[num32]`, `array[num64]`, `array[str]`, `buf8` to `buf64`, `blob8` to `blob64` (with every `read-*`/`write-*` method), and the reified `IterationBuffer` inside an `Array`. About 2,500 lines. |
 | `vmarray-serial.nqp` | The serialization record: one serialization context per case, an empty, a 3-element, a shifted and a 10,000-element array of each of 16 kinds, printed as hex (`<case>.blob`), with the string heap (`<case>.strings`) and the array as deserialized in the same process (`<case>.roundtrip`). `--read=FILE` deserializes the blobs in another run's output and prints `<case>.read` lines; `sed -n 's/\.roundtrip: /.read: /p' FILE` is what a correct reader prints. |
 | `vmarray-devirt.nqp` | Ten lines of output for one purpose: the "Index out of bounds" errors of `vmarray_at_pos_int64` and `vmarray_bind_pos_int64`, the two functions the JIT calls directly. Only this program's shape was found to reach them (see its header); do not reshape it without measuring again. |
-| `undefined-lines.txt` | The 195 output lines (`<program> <case name>`) whose value in C is what `memcpy` over overlapping ranges leaves: self-splices of the eleven kinds copied with `memcpy`. Its header says how the list was derived. `diff.sh` reads it for exit 3. |
-| `memmove-model.py` | `memmove-model.py PROGRAM OUTPUT NAME...`: whether the lines `NAME...` of `OUTPUT` print what `asplice` gives when its last copy has memmove semantics. A copy of the model in `traces/llm/bench/va-differential-raw/selfsplice.py` (which derived the diff-nqp entries of `undefined-lines.txt`), extended to start from given slots, so that it also covers the two splices of `<kind>.selfsplice.twice`, and to render a whole output line as the program's `d()` prints it. It covers every listed line: the 176 diff-nqp entries and the 19 diff-raku entries (`nqp::splice($a, $a, 3, 0)` on each type's six values, and the two splices of `array.reified.splice`); a name it does not model would be named as "accepted without a model check". A case name printed twice in `OUTPUT`, or a `NAME` given twice, is refused (exit 64). `diff.sh` runs it on the head's listed differing lines before it exits 3. |
-| `diff.sh` | The runner: each program K times (default 3) per side and per spesh setting, repeatability of each side, base against head, and the serialization cross-read (each side deserializes what the other serialized). Exit 0 identical, 1 base and head differ (first differing line named), 2 a side is not repeatable, 3 base and head differ only in lines listed in `undefined-lines.txt` and the head prints the memmove result on each of them (`memmove-model.py`; a listed line the model does not cover is named as accepted without a model check; every such line printed with both values and the model's verdict; a head value off the model is exit 1), 4 a run failed, wrote to stderr or a side did not load the libmoar under its prefix, 64 misuse (including prefixes of unequal length). The caller's `MVM_*`, `RAKUDO_*`, `NQP_*`, `RAKU_*`, `PERL6*` variables and `RAKULIB` are removed from the runs. `--compare-only --out=DIR` repeats the checks on outputs already there, after deleting the `undefined-*.txt` and `model-*.txt` files an earlier pass left. `--help` prints the details. |
+| `undefined-lines.txt` | The output lines (`<program> <case name>`) whose value in C is undefined, which `diff.sh` reads for exit 3. Empty (a header only) since the C array defines a splice of an array into itself (upstream b2cbdc57c, 6ee35f98a, 5febdef32): the 195 self-splice lines of the eleven kinds the C copied with an overlapping `memcpy` that it listed until then are compared like every other line. The mechanism is kept for a future undefined case. |
+| `memmove-model.py` | `memmove-model.py PROGRAM OUTPUT NAME...`: whether the lines `NAME...` of `OUTPUT` print what the fixed `asplice` gives for a splice of an array into itself (memmove semantics in the last copy, no offset-0 start adjustment: the result of splicing from a clone). A copy of the model in `traces/llm/bench/va-differential-raw/selfsplice.py` (which derived the old entries of `undefined-lines.txt`), extended to start from given slots, so that it also covers the two splices of `<kind>.selfsplice.twice`, to render a whole output line as the program's `d()` prints it, and without the old offset-0 adjustment. It covers the diff-nqp `<kind>.selfsplice.*` lines and the diff-raku self-splices (`nqp::splice($a, $a, 3, 0)` on each type's six values, and the two splices of `array.reified.splice`); a name it does not model is named as "accepted without a model check". A case name printed twice in `OUTPUT`, or a `NAME` given twice, is refused (exit 64). `diff.sh` runs it only on listed lines, so with the list empty it is a check run by hand (its header shows how). |
+| `diff.sh` | The runner: each program K times (default 3) per side and per spesh setting, repeatability of each side, base against head, and the serialization cross-read (each side deserializes what the other serialized). Exit 0 identical, 1 base and head differ (first differing line named), 2 a side is not repeatable, 3 base and head differ only in lines listed in `undefined-lines.txt` and the head prints the memmove result on each of them (`memmove-model.py`; a listed line the model does not cover is named as accepted without a model check; every such line printed with both values and the model's verdict; a head value off the model is exit 1; the list is empty at present, so every difference is exit 1), 4 a run failed, wrote to stderr or a side did not load the libmoar under its prefix, 64 misuse (including prefixes of unequal length). The caller's `MVM_*`, `RAKUDO_*`, `NQP_*`, `RAKU_*`, `PERL6*` variables and `RAKULIB` are removed from the runs. `--compare-only --out=DIR` repeats the checks on outputs already there, after deleting the `undefined-*.txt` and `model-*.txt` files an earlier pass left. `--help` prints the details. |
 
 Every output line is `<case name>: <result>`; a caught exception prints
 `<case name>: DIED <message>`. The case name says which kind and which
@@ -54,23 +54,17 @@ One program by hand:
   array grows before it checks the register kind in `push` and `bindpos`,
   decrements `elems` before it checks in `pop`, moves `start` before it
   checks in `unshift`). These are per-kind accidents the port keeps.
-- `*.selfsplice.*`, `*.splice.self*` and `array.reified.splice`: a splice from
-  the array itself. For the kinds copied with `memcpy` the C passes
-  overlapping ranges, which is undefined; the control prints what its `memcpy`
-  leaves, which is neither a forward nor a backward copy for some cases
-  (`va-differential.md` lists them). STR arrays, and OBJ arrays that have been
-  promoted, are copied element by element and print a forward copy. The
-  decision taken: the Zig array copies overlapping ranges with memmove
-  semantics exactly where the C uses `memcpy`, that is for the eleven memcpy
-  kinds (the twelve stored kinds but STR; OBJ only while the target is not
-  in the second generation), and nowhere else: STR, and OBJ into a
-  second-generation (promoted) target, keep the C's defined
-  element-by-element forward copy. So it is expected to differ
-  from the control in exactly the lines of `undefined-lines.txt`, and to
-  print there what `memmove-model.py` computes. `diff.sh` then exits 3, not
-  0: that result is recorded with the lines it printed and put to the user,
-  never passed as "identical". A difference in any other line, or a listed
-  line whose head value is not the model's, is exit 1.
+- `*.selfsplice.*`, `*.splice.self*` and `array.reified.splice`: a splice
+  from the array itself. The C array defines it (upstream b2cbdc57c,
+  6ee35f98a, 5febdef32): memmove on the block path, a backwards element
+  loop when the target lies above the source (STR, and OBJ into a
+  second-generation target), and no offset-0 start adjustment, so the result
+  is the splice from a clone of the array. The Zig array does the same, so
+  these lines are compared like every other line; `memmove-model.py`
+  computes what they must print. (Until those fixes the C passed
+  overlapping ranges to `memcpy` there, the Zig array used memmove
+  semantics on purpose, and `diff.sh` exited 3 on the 390 lines that
+  differed; `traces/llm/bench/va-fix-wave.md`.)
 - `*.limit.*`: the message carries the slot count the growth policy computed,
   so a different number is a different policy.
 - `*.mega.*` lines list every distinct result a megamorphic sub gave, in

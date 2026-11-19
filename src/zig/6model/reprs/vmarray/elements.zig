@@ -566,14 +566,18 @@ pub fn Elements(comptime S: type) type {
         /// - Block copy (row 22a) when `src` is a VMArray of the same slot
         ///   type and element size, unless the target is STR, or OBJ with
         ///   the target in gen2 (`MVM_CF_SECOND_GEN` of the DESTINATION,
-        ///   row 22b). The C's `memcpy` is a `@memmove` here: a splice from
-        ///   the array itself overlaps, where the C is undefined (row 22d,
-        ///   va-differential.md section 5). The same kind without storage
-        ///   on both sides copies 0 bytes (row 22c).
-        /// - Otherwise element by element, forward, through the source's
-        ///   `at_pos` with its kind's register kind and `bindPos` with the
-        ///   target's (the barrier; NULL OBJ holes become VMNull, row
-        ///   22b). Nothing converts across kinds but the register's own
+        ///   row 22b): a `@memmove`, as the C's `memmove` (`src` may be
+        ///   `dest`, a splice of an array into itself, whose ranges
+        ///   overlap). The same kind without storage on both sides copies 0
+        ///   bytes (row 22c).
+        /// - Otherwise element by element through the source's `at_pos`
+        ///   with its kind's register kind and `bindPos` with the target's
+        ///   (the barrier; NULL OBJ holes become VMNull, row 22b): forward,
+        ///   or from the last element down when `src` is `dest` and the
+        ///   target range lies above the source range, so that no element
+        ///   is overwritten before it is read (as the memmove). So a splice
+        ///   of an array into itself gives the splice from its clone on
+        ///   every path (traces/llm/bench/cfix-S.md). Nothing converts across kinds but the register's own
         ///   widening and narrowing (row 22c). A kind without storage on
         ///   either side aborts in `slotTypeToKind`, the target's first
         ///   (rule of row 22c); a non-VMArray source with elements (or a
@@ -615,11 +619,14 @@ pub fn Elements(comptime S: type) type {
             const s_rd = s_repr_data orelse moar.nullDeref(@offsetOf(c.MVMArrayREPRData, "slot_type"));
             const source_kind = slotTypeToKind(s_rd.slot_type);
             const at_pos = reprFn(src.*.st.*.REPR.*.pos_funcs.at_pos);
+            const backwards = src == dest and d_offset > s_offset;
             var i: i64 = 0;
             while (i < n) : (i += 1) {
+                // n > 0 here, so `n - 1 - i` does not overflow.
+                const j = if (backwards) n - 1 - i else i;
                 var to_copy: Reg = undefined;
-                at_pos(tc, src.*.st, src, s_body, s_offset +% i, &to_copy, source_kind);
-                bindPos(tc, dest.*.st, dest, d_body, d_offset +% i, to_copy, target_kind);
+                at_pos(tc, src.*.st, src, s_body, s_offset +% j, &to_copy, source_kind);
+                bindPos(tc, dest.*.st, dest, d_body, d_offset +% j, to_copy, target_kind);
             }
         }
 
@@ -643,7 +650,8 @@ pub fn Elements(comptime S: type) type {
         /// `offset` with `from`'s, step for step as the C, with its mixed
         /// signed and unsigned arithmetic (each `MVMuint64`/`MVMint64` mix
         /// is the C's conversion, wrapping). At offset 0 `start` may move
-        /// back over shifted-off slots (row 26; kept).
+        /// back over shifted-off slots (row 26), but not when `from` is the
+        /// array itself: that would move the source too.
         pub fn asplice(tc: Tc, st: St, root: Obj, data: ?*anyopaque, from: Obj, offset_in: i64, count_in: u64) callconv(.c) void {
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
@@ -660,7 +668,7 @@ pub fn Elements(comptime S: type) type {
 
             enterSingleUser(tc, body);
 
-            if (offset == 0) {
+            if (offset == 0 and from != root) {
                 var n = s(elems1 -% count);
                 const start = s(body.start);
                 if (n > start) n = start;
