@@ -570,6 +570,22 @@ for buf8, buf16, buf32, buf64, blob8, blob16, blob32, blob64 -> \T {
     t 'list.flatten.native',  { my int @a = ^5; (sub (int $a, int $b, int $c, int $d, int $e) { $a + $b + $c + $d + $e })(|@a) };
     t 'hash.keys.sorted',     { my %h = (^50).map({ "k$_" => $_ }); %h.keys.sort.elems ~ ' ' ~ %h.values.sum };
     t 'str.split.join',       { ('a,b,c,d' x 1000).split(',').elems ~ ' ' ~ (^1000).join('').chars ~ ' ' ~ 'a b c'.words.reverse.join(' ') };
+
+    # What the C array crashed on, read past or wrote outside of before the
+    # cfix fixes (traces/llm/bench/cfix-repro/B1-read-buf-past-storage.raku,
+    # B2-buf-offset-wrap.raku, P1-splice-shaped-raku.raku), and so was not
+    # driven: now an exception or a defined result on both arrays.
+    for <last 5 1>, <past1 6 1>, <past4 4 4> -> ($name, $off, $size) {
+        t "cfix.buf8.shifted.read.$name", { my $b = Buf.new(1..8); $b.shift for ^2; $size == 1 ?? $b.read-uint8($off.Int) !! $b.read-uint32($off.Int) };
+    }
+    for (buf64, 2**61 + 1), (buf32, 2**62 + 1), (buf16, 2**63 - 1) -> ($type, $off) {
+        my $n = $type.^name;
+        t "cfix.$n.read.wrap", { my $b = $type.new(1, 2, 3, 4); $type ~~ buf64 ?? $b.read-int64($off) !! $b.read-int32($off) };
+        t "cfix.$n.write.wrap", { my $b = $type.new(1, 2, 3, 4); my $w = try { $type ~~ buf64 ?? $b.write-int64($off, 99) !! $b.write-int32($off, 99); 'ok' } // "DIED {$!.message}"; $w ~ ' / ' ~ $b.list.join(' ') };
+    }
+    t 'cfix.shaped.buf',    { my int @a[2] = 1, 2; Buf.new(@a).list.join(' ') };
+    t 'cfix.shaped.strapp', { my str @a[2] = <a b>; my str @t = <x>; @t.append(@a); @t.join(' ') };
+    t 'cfix.shaped.intapp', { my int @a[2] = 1, 2; my int @i = 1; @i.append(@a); @i.join(' ') };
 }
 
 say 'done: 1';

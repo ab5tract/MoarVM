@@ -90,7 +90,8 @@ CASES = unique([
     ('replace.1.20', (10, 0, 1, 20)), ('neg', (10, 0, -3, 1)), ('past', (10, 0, 12, 0)),
     ('shifted.prepend', (10, 4, 0, 0)), ('shifted.prepend20', (10, 20, 0, 0)),
     ('shifted.middle', (10, 4, 5, 0)), ('shifted.replace', (10, 4, 0, 4)),
-    ('shifted.replace.2.3', (10, 4, 2, 3)), ('shifted.append', (10, 4, 10, 0)), ('one', (1, 0, 0, 0)),
+    ('shifted.replace.2.3', (10, 4, 2, 3)), ('shifted.append', (10, 4, 10, 0)), ('shifted.over', (10, 4, 0, 20)),
+    ('shifted.over11', (10, 4, 0, 11)), ('one', (1, 0, 0, 0)),
     ('one.replace', (1, 0, 0, 1)), ('empty', (0, 0, 0, 0)), ('big.middle', (9000, 0, 4500, 0)),
     ('big.1', (9000, 0, 1, 0)), ('big.replace', (9000, 0, 100, 5000)), ('big.shifted', (9000, 50, 3, 7)),
 ], 'case')

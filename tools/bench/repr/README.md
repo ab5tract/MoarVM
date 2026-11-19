@@ -11,7 +11,7 @@ coverage reached and the cases left out are recorded in
 
 | File | What it is |
 |---|---|
-| `vmarray-diff.nqp` | The nqp half of the differential program. Twelve slot kinds with storage (OBJ, STR, I64, I32, I16, I8, U64, U32, U16, U8, N64, N32; the sized ones made with `nqp::newtype(..., 'VMArray')` and `nqp::composetype`), each through: `atpos`/`bindpos`/`push`/`pop`/`shift`/`unshift`/`setelems`/`elems`, growth through every branch of the policy and the size limit, `splice` (insert, delete, replace, from another kind, from itself), `slice`, `clone`, the multi-dimensional ops, `writeint`/`readint`/`writenum`/`readnum` at every size and endianness, every typed op with every register kind (the mismatches, and the state they leave), the integer and num boundary values, iteration, argument flattening, `join`, `existspos`. Then the six kinds without storage (4-, 2- and 1-bit element types), arrays whose type is composed a second time, the collector's view (`nqp::force_gc`), hot loops, and megamorphic subs that reach the `MVM_VMArray_at_pos_*` entry points from compiled code. About 10,000 lines of output. |
+| `vmarray-diff.nqp` | The nqp half of the differential program. Twelve slot kinds with storage (OBJ, STR, I64, I32, I16, I8, U64, U32, U16, U8, N64, N32; the sized ones made with `nqp::newtype(..., 'VMArray')` and `nqp::composetype`), each through: `atpos`/`bindpos`/`push`/`pop`/`shift`/`unshift`/`setelems`/`elems`, growth through every branch of the policy and the size limit, `splice` (insert, delete, replace, from another kind, from itself), `slice`, `clone`, the multi-dimensional ops, `writeint`/`readint`/`writenum`/`readnum` at every size and endianness, every typed op with every register kind (the mismatches, and the state they leave), the integer and num boundary values, iteration, argument flattening, `join`, `existspos`. Then the six kinds without storage (4-, 2- and 1-bit element types), arrays whose type is composed for the first time while they have elements (and the refused second composes), the cases the cfix fixes made drivable (`cfix.*`), the collector's view (`nqp::force_gc`), hot loops, and megamorphic subs that reach the `MVM_VMArray_at_pos_*` entry points from compiled code. About 10,000 lines of output. |
 | `vmarray-diff.raku` | The Raku half: what nqp cannot reach. `nqp::atposref_*` and `nqp::multidimref_*` (native references), the atomic operations on a position (`nqp::cas_i`, `nqp::atomicload_i`, ... and the `⚛` operators on an `atomicint` array), and the arrays as Rakudo uses them: `array[int8]` to `array[uint64]`, `array[num32]`, `array[num64]`, `array[str]`, `buf8` to `buf64`, `blob8` to `blob64` (with every `read-*`/`write-*` method), and the reified `IterationBuffer` inside an `Array`. About 2,500 lines. |
 | `vmarray-serial.nqp` | The serialization record: one serialization context per case, an empty, a 3-element, a shifted and a 10,000-element array of each of 16 kinds, printed as hex (`<case>.blob`), with the string heap (`<case>.strings`) and the array as deserialized in the same process (`<case>.roundtrip`). `--read=FILE` deserializes the blobs in another run's output and prints `<case>.read` lines; `sed -n 's/\.roundtrip: /.read: /p' FILE` is what a correct reader prints. |
 | `vmarray-devirt.nqp` | Ten lines of output for one purpose: the "Index out of bounds" errors of `vmarray_at_pos_int64` and `vmarray_bind_pos_int64`, the two functions the JIT calls directly. Only this program's shape was found to reach them (see its header); do not reshape it without measuring again. |
@@ -74,12 +74,39 @@ One program by hand:
 
 ## Left out on purpose
 
-The C array crashes, aborts or reads memory it does not own in these places,
-so no case goes there (the reasons are in `va-differential.md`): `setelems`
-of 2**64 - 4096 or more on an array with 8,192 or more slots of storage; a
-size request that is under the limit but cannot be allocated; a splice from a
-non-empty object that is not a VMArray; a splice that copies elements into an
-array of a kind without storage; a cross-kind splice between a reference kind
-and a numeric kind; growing an OBJ or STR array back over the slot a rejected
-`pop` left behind; a `read_buf` the bounds check lets through that lies
-beyond the storage; `writeint` on a recomposed array without storage.
+The C array panics the VM in these places, so no case goes there (the
+reasons are in `va-differential.md` and `cfix-baseline.md`): a size request
+that is under the limit but cannot be allocated, including a `writeint` at
+an offset whose byte position wraps but whose element count stays within the
+kind's size budget (malloc is asked for exabytes: "Memory allocation
+failed").
+
+What was left out until the cfix fixes (upstream 52aa25019, 007382664,
+98a84053a, f8a955192, 27ebea0b8, fd53df2e0, 156957654, 2acff2df5, f3ff57945,
+40b448381; traces/llm/bench/cfix-mirror.md) because the C crashed, aborted
+or read memory it did not own is driven now, each a throw or a defined
+result: growth to within 4096 of 2**64 elements on 8,192 or more slots
+(`cfix.<kind>.setelems.wrap.*`), a splice from a non-empty object that is
+not a VMArray (`cfix.<kind>.splice.fromhash.full*`, `cfix.shaped.*` in the
+Raku half), splices into, out of and within an array of a kind without
+storage (`<kind>.late.splice.*`), the cross-kind splices between the
+reference kinds and the rest in both directions (`cfix.cross.*`), growing an
+array back over the slot a rejected `pop` left, and a rejected `unshift`
+after a shift (`cfix.<kind>.pop.rejected.regrow`,
+`cfix.<kind>.unshift.rejected.shifted`, and the reference kinds' `*.state`
+lines, which now grow back too), self-splices at offset 0 of shifted OBJ
+and STR arrays and with counts over elems (`<kind>.selfsplice.shifted.*`),
+`read_buf` past the window or beyond the storage and at offsets whose byte
+position wraps (`<kind>.buf.readint.shifted.beyond`, `*.wrap.*`,
+`cfix.buf*` in the Raku half), and `writeint` on an array of a kind without
+storage (`<kind>.late.writeint*`).
+
+Recomposing a type to another element kind is refused now (upstream
+40b448381), so the cases that recomposed an int8 array type with a live
+array to a kind without storage (`<kind>.recomposed.*`) make that array as
+the one route left: an object array whose type is composed for the first
+time while it has elements (`<kind>.late.*`, same operations, plus the
+splices and `writeint`); `recomposed.i8.u8` and `recomposed.i64.n64` are
+replaced by `recomposed.refused.<from>.<to>` (every pair of nine element
+kinds: the message, and the live and a new array used as the old kind) and
+`recomposed.same.kind`; `u4.recomposed.serialize` is `u4.late.serialize`.

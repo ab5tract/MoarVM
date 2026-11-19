@@ -472,16 +472,17 @@ sub splices($k) {
     selfsp('replace.1.20',   10, 0,  1, 20);
     selfsp('neg',            10, 0, -3,  1);
     selfsp('past',           10, 0, 12,  0);
-    # A splice at offset 0 that grows an array with start > 0 moves start
-    # back over slots that were shifted off, and a splice from the array
-    # itself then copies what those slots still hold. For the numeric kinds
-    # that is the old values; for OBJ and STR it is pointers the collector no
-    # longer knows about, so those two kinds do not go there.
-    unless $k<cls> eq 'o' || $k<cls> eq 's' {
-        selfsp('shifted.prepend', 10, 4,  0,  0);
-        selfsp('shifted.prepend20', 10, 20, 0, 0);
-        selfsp('shifted.replace', 10, 4,  0,  4);
-    }
+    # A splice at offset 0 that grows an array with start > 0 used to move
+    # start back over slots that were shifted off, also for a splice from
+    # the array itself, which then copied what those slots still held (for
+    # OBJ and STR pointers the collector no longer knew about, so those
+    # kinds did not go there). Upstream 5febdef32 leaves start alone for a
+    # self-splice: every kind goes there now, with counts over elems too.
+    selfsp('shifted.prepend', 10, 4,  0,  0);
+    selfsp('shifted.prepend20', 10, 20, 0, 0);
+    selfsp('shifted.replace', 10, 4,  0,  4);
+    selfsp('shifted.over',    10, 4,  0, 20);
+    selfsp('shifted.over11',  10, 4,  0, 11);
     selfsp('shifted.middle', 10, 4,  5,  0);
     selfsp('shifted.replace.2.3', 10, 4, 2, 3);
     selfsp('shifted.append', 10, 4, 10,  0);
@@ -668,13 +669,29 @@ sub bufs($k) {
     t("$n.buf.flags.16", { my $a := fill($k, 3); nqp::writeint($a, 0, 5, 16); dd($a) });
     t("$n.buf.readflags.3", { my $a := fill($k, 3); ~nqp::readint($a, 0, 3) });
     t("$n.buf.readnum.size1", { my $a := fill($k, 3); ~nqp::readnum($a, 0, 0) });
-    # The bounds check of read_buf adds start to the element count, so with
-    # start > 0 it lets a read past the last element through. These reads
-    # stay inside the storage (5 pushed, storage of 8, 2 shifted off).
+    # The bounds check of read_buf added start to the element count, so with
+    # start > 0 it let a read past the last element through (these stay
+    # inside the storage: 5 pushed, storage of 8, 2 shifted off); now it is
+    # against the elements alone (upstream 156957654). "beyond" read past
+    # the storage, and so was left out before.
     t("$n.buf.readint.shifted.in", { my $a := fill_shifted($k, 3, 2); ~nqp::readint($a, 2, 1) });
     t("$n.buf.readint.shifted.past1", { my $a := fill_shifted($k, 3, 2); ~nqp::readint($a, 3, 1) });
     t("$n.buf.readint.shifted.past2", { my $a := fill_shifted($k, 3, 2); ~nqp::readint($a, 4, 1) });
     t("$n.buf.readint.shifted.past3", { my $a := fill_shifted($k, 3, 2); ~nqp::readint($a, 5, 1) });
+    t("$n.buf.readint.shifted.beyond", { my $a := fill_shifted($k, 3, 2); ~nqp::readint($a, 6, 13) });
+    # Offsets whose byte position wraps (offset * element size), to a byte
+    # inside or before the storage: read and written there before upstream
+    # 2acff2df5 (left out before); now out of bounds, and a write grows,
+    # which is refused where offset + 8 is over the kind's size budget (a
+    # write within the budget would ask malloc for exabytes, and the VM
+    # panics: not driven).
+    for (2305843009213693953, 4611686018427387905, 9223372036854775807) -> $off {
+        t("$n.buf.readint.wrap.$off", { my $a := fill($k, 4); ~nqp::readint($a, $off, 13) });
+        t("$n.buf.readint4.wrap.$off", { my $a := fill($k, 8); ~nqp::readint($a, $off, 9) });
+        if $ref || ($k<esize> == 1 ?? $off == 9223372036854775807 !! $off > $k<limit> - 8) {
+            t("$n.buf.writeint.wrap.$off", { my $a := fill($k, 4); my $r := 'wrote'; try { nqp::writeint($a, $off, 99, 13); CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }; $r ~ ' / ' ~ dd($a) });
+        }
+    }
     t("$n.buf.writeint.limit", { my $a := fill($k, 3); nqp::writeint($a, $k<limit>, 5, 1); dd($a) });
 }
 
@@ -689,9 +706,10 @@ sub mismatches($k) {
         t("$n.kind.$name.state", {
             my $a := fill($k, 3);
             try { code($a); CATCH { } }
-            # What the failed operation left: for the numeric kinds, grow
-            # back over the slots; for the reference kinds only use the array.
-            nqp::setelems($a, 6) unless $ref;
+            # What the failed operation left: grow back over the slots (for
+            # the reference kinds too, since a rejected pop no longer leaves
+            # an untracked pointer behind: upstream 27ebea0b8).
+            nqp::setelems($a, 6);
             psh($k, $a, 30); ush($k, $a, 31);
             d($k, $a)
         });
@@ -1017,25 +1035,45 @@ sub odd_kinds() {
     t('typeobject.clone', { ~nqp::isconcrete(nqp::clone(nqp::what(nqp::list_i()))) });
 }
 
-# An array type composed a second time while an array of it is alive: the
-# array keeps its elements and storage and gets the new slot kind. Going from
-# int8 (one byte a slot) to a 4-bit or 1-bit element type (no storage, element
-# size zero) is the one way to hold a non-empty array of a kind without
-# storage, and so the one way into the default arms of bind_pos, push, pop,
-# shift, unshift and serialize. Nothing here reads or writes a slot: with an
-# element size of zero every copy is of zero bytes. (A splice that would copy
-# elements into such an array is absent: slot_type_to_kind aborts the process.)
+# An array type composed for the first time while an array of it is alive
+# (made as an object array, the kind of a type not yet composed): the array
+# keeps its elements and storage and gets the new slot kind. Composing it
+# with a 4-bit or 1-bit element type (no storage, element size zero) is the
+# one way left to hold a non-empty array of a kind without storage, and so
+# the one way into the default arms of bind_pos, push, pop, shift, unshift
+# and serialize. (Until upstream 40b448381 an int8 array type composed a
+# second time did the same; that is now refused: recomposed.refused.* below.)
+# Nothing here reads or writes a slot: with an element size of zero every
+# copy is of zero bytes, and a splice that would copy elements into or out of
+# such an array is refused (upstream 98a84053a): late.*.splice.* below.
+# One element of the kind named $kn ("u4": none) into $a, and how $a's
+# first element reads as that kind.
+sub put_one($kn, $a) {
+    if    $kn eq 'u4'  { }
+    elsif $kn eq 'obj' { nqp::push($a, 'x') }
+    elsif $kn eq 'str' { nqp::push_s($a, 'y') }
+    elsif $kn eq 'n64' || $kn eq 'n32' { nqp::push_n($a, 2.5e0) }
+    else  { nqp::push_i($a, -2) }
+}
+sub first_of($kn, $a) {
+    if    nqp::elems($a) == 0 { '[]' }
+    elsif $kn eq 'obj' { '[' ~ ostr(nqp::atpos($a, 0)) ~ ']' }
+    elsif $kn eq 'str' { '[' ~ sstr(nqp::atpos_s($a, 0)) ~ ']' }
+    elsif $kn eq 'n64' || $kn eq 'n32' { '[' ~ nqp::atpos_n($a, 0) ~ ']' }
+    else  { '[' ~ nqp::atpos_i($a, 0) ~ ']' }
+}
 sub recomposed() {
     for (4, 1) -> $bits {
         for (1, 0) -> $unsigned {
-            my $n := ($unsigned ?? 'u' !! 'i') ~ $bits ~ '.recomposed';
-            # 1 4 7 in an int8 array (storage of 8), with start 0 or 2.
+            my $n := ($unsigned ?? 'u' !! 'i') ~ $bits ~ '.late';
+            # a b c in an object array (storage of 8), with start 0 or 2,
+            # whose type is then composed for the first time.
             sub mkre(int $shifted) {
-                my $ty := arrtype(inttype(8, 0));
+                my $ty := nqp::newtype(nqp::null(), 'VMArray');
                 my $a := nqp::create($ty);
-                if $shifted { nqp::push_i($a, 90); nqp::push_i($a, 91) }
-                nqp::push_i($a, 1); nqp::push_i($a, 4); nqp::push_i($a, 7);
-                if $shifted { nqp::shift_i($a); nqp::shift_i($a) }
+                if $shifted { nqp::push($a, 'y'); nqp::push($a, 'z') }
+                nqp::push($a, 'a'); nqp::push($a, 'b'); nqp::push($a, 'c');
+                if $shifted { nqp::shift($a); nqp::shift($a) }
                 nqp::composetype($ty, nqp::hash('array', nqp::hash('type', inttype($bits, $unsigned))));
                 $a
             }
@@ -1070,6 +1108,13 @@ sub recomposed() {
             re('setelems.same', -> $a { nqp::setelems($a, 3); '' });
             re('splice.delete', -> $a { nqp::splice($a, nqp::list_i(), 0, 1); '' });
             re('splice.delete.tail', -> $a { nqp::splice($a, nqp::list_i(), 1, 2); '' });
+            re('splice.into',  -> $a { nqp::splice($a, nqp::list_i(5, 6), 1, 0); '' });
+            re('splice.from',  -> $a { my $b := nqp::list_i(5, 6); nqp::splice($b, $a, 1, 0); nqp::join(',', $b) });
+            re('splice.self',  -> $a { nqp::splice($a, $a, 1, 0); '' });
+            re('splice.from.fresh', -> $a { my $f := nqp::create(nqp::what($a)); nqp::splice($a, $f, 0, 1); '' });
+            re('splice.into.fresh', -> $a { my $f := nqp::create(nqp::what($a)); nqp::splice($f, nqp::list_i(1), 0, 0); nqp::elems($f) });
+            re('writeint',     -> $a { nqp::writeint($a, 0, 1, 1); '' });
+            re('writeint.past', -> $a { nqp::writeint($a, 3, 1, 1); '' });
             re('slice',        -> $a { ~nqp::elems(nqp::slice($a, 0, 1)) });
             re('clone',        -> $a { my $c := nqp::clone($a); nqp::elems($c) ~ ' ' ~ nqp::reprname($c) });
             re('readint',      -> $a { ~nqp::readint($a, 0, 1) });
@@ -1084,32 +1129,49 @@ sub recomposed() {
             re('gc',           -> $a { nqp::force_gc(); ~nqp::elems($a) });
         }
     }
-    # Between two kinds with storage of the same element size the array is
-    # simply read as the new kind.
-    t('recomposed.i8.u8', {
+    # A type that already has an element type may not change kind (upstream
+    # 40b448381): every pair of element kinds (the twelve with storage, a
+    # 4-bit one and an object type) tried on an int8 or object array type
+    # with a live array, the message, and the array and type after it.
+    my @elems := nqp::list(
+        nqp::list('i8', inttype(8, 0)), nqp::list('u8', inttype(8, 1)),
+        nqp::list('i16', inttype(16, 0)), nqp::list('u64', inttype(64, 1)),
+        nqp::list('n64', numtype(64)), nqp::list('n32', numtype(32)),
+        nqp::list('str', str), nqp::list('u4', inttype(4, 1)), nqp::list('obj', NQPMu));
+    for @elems -> $from {
+        for @elems -> $to {
+            my $fn := nqp::atpos($from, 0); my $tn := nqp::atpos($to, 0);
+            t("recomposed.refused.$fn.$tn", {
+                my $ty := arrtype(nqp::atpos($from, 1));
+                my $a := nqp::create($ty);
+                put_one($fn, $a);
+                my $r := 'composed';
+                try { nqp::composetype($ty, nqp::hash('array', nqp::hash('type', nqp::atpos($to, 1)))); CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }
+                # The live array and a new one, used as the old kind.
+                my $b := nqp::create($ty);
+                my $more;
+                try { put_one($fn, $b); $more := first_of($fn, $b); CATCH { $more := 'DIED ' ~ nqp::getmessage($!) } }
+                "$r / live: elems=" ~ nqp::elems($a) ~ ' ' ~ first_of($fn, $a) ~ ' / new: ' ~ $more
+            });
+        }
+    }
+    # The element type itself may change when the kind stays.
+    t('recomposed.same.kind', {
         my $ty := arrtype(inttype(8, 0));
         my $a := nqp::create($ty);
         nqp::push_i($a, -1); nqp::push_i($a, 100);
-        nqp::composetype($ty, nqp::hash('array', nqp::hash('type', inttype(8, 1))));
+        nqp::composetype($ty, nqp::hash('array', nqp::hash('type', inttype(8, 0))));
         nqp::push_i($a, -2);
         nqp::atpos_i($a, 0) ~ ' ' ~ nqp::atpos_i($a, 1) ~ ' ' ~ nqp::atpos_i($a, 2) ~ ' ' ~ nqp::elems($a)
-    });
-    t('recomposed.i64.n64', {
-        my $ty := arrtype(inttype(64, 0));
-        my $a := nqp::create($ty);
-        nqp::push_i($a, 4607182418800017408); nqp::push_i($a, -1);
-        nqp::composetype($ty, nqp::hash('array', nqp::hash('type', numtype(64))));
-        nqp::push_n($a, 2.5e0);
-        nqp::atpos_n($a, 0) ~ ' ' ~ nqp::atpos_n($a, 1) ~ ' ' ~ nqp::atpos_n($a, 2) ~ ' ' ~ nqp::elems($a)
     });
 }
 # Serializing a non-empty array of a kind without storage: the default arm of
 # serialize. Run last: the serializer does not clean up after an exception.
 sub recomposed_serialize() {
-    t('u4.recomposed.serialize', {
-        my $ty := arrtype(inttype(8, 0));
+    t('u4.late.serialize', {
+        my $ty := nqp::newtype(nqp::null(), 'VMArray');
         my $a := nqp::create($ty);
-        nqp::push_i($a, 1); nqp::push_i($a, 4);
+        nqp::push($a, 'a'); nqp::push($a, 'b');
         nqp::composetype($ty, nqp::hash('array', nqp::hash('type', inttype(4, 1))));
         my $sc := nqp::createsc('VA_DIFF_RECOMPOSED');
         nqp::scsetobj($sc, 0, $a);
@@ -1388,6 +1450,68 @@ sub hot_cases() {
     }
 }
 
+# What the C array crashed on before the cfix fixes (upstream 007382664,
+# 98a84053a, f8a955192, 27ebea0b8, fd53df2e0, 52aa25019), and so was left
+# out (traces/llm/bench/va-differential.md section 6); each is now a throw
+# or a defined result. Cases from traces/llm/bench/cfix-repro/.
+sub cfix_cases() {
+    # Splices between the reference kinds and the others, in both
+    # directions: refused, but STR into OBJ (P3-splice-kind-matrix.nqp).
+    my @names := nqp::list('obj', 'str', 'i64', 'u64', 'i8', 'u8', 'n64', 'n32');
+    for @names -> $target_name {
+        my $target_kind := kind_named($target_name);
+        for @names -> $source_name {
+            my $source_kind := kind_named($source_name);
+            if $target_kind<cls> eq 'o' || $target_kind<cls> eq 's' || $source_kind<cls> eq 'o' || $source_kind<cls> eq 's' {
+                t("cfix.cross.$target_name.from.$source_name", {
+                    my $target := fill($target_kind, 3);
+                    my $r := 'spliced';
+                    try { nqp::splice($target, fill_shifted($source_kind, 2, 1), 1, 1); CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }
+                    $r ~ ' / ' ~ (($target_kind<cls> eq 'o' && $source_kind<cls> eq 's') ?? 'elems=' ~ nqp::elems($target) !! d($target_kind, $target))
+                });
+            }
+        }
+    }
+    # A splice from a non-empty object that is not a VMArray
+    # (P1-splice-from-non-vmarray.nqp), at the offsets and counts of
+    # splice.fromhash, and with a bad offset (checked first).
+    for @kinds -> $k {
+        my $n := $k<name>;
+        t("cfix.$n.splice.fromhash.full", { my $a := fill($k, 6); my $h := nqp::hash('a', 1); my $r := 'spliced'; try { nqp::splice($a, $h, 1, 2); CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }; $r ~ ' / ' ~ d($k, $a) });
+        t("cfix.$n.splice.fromhash.full.badoffset", { my $a := fill($k, 6); nqp::splice($a, nqp::hash('a', 1), -7, 0); d($k, $a) });
+        # A rejected pop or unshift, then the array grown back over the
+        # slot (T1-rejected-pop.nqp, T2-rejected-unshift.nqp).
+        my $ref := $k<cls> eq 'o' || $k<cls> eq 's';
+        t("cfix.$n.pop.rejected.regrow", {
+            my $a := fill($k, 3);
+            my $r;
+            try { if $ref { nqp::pop_i($a) } else { nqp::pop_s($a) }; $r := 'popped'; CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }
+            nqp::force_gc();
+            psh($k, $a, 40); psh($k, $a, 41);
+            nqp::force_gc();
+            $r ~ ' / ' ~ d($k, $a)
+        });
+        t("cfix.$n.unshift.rejected.shifted", {
+            my $a := fill_shifted($k, 3, 1);
+            my $r;
+            try { if $ref { nqp::unshift_i($a, 1) } else { nqp::unshift_s($a, 'x') }; $r := 'unshifted'; CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }
+            nqp::force_gc();
+            ush($k, $a, 42);
+            $r ~ ' / ' ~ d($k, $a)
+        });
+        # Growth to within 4096 of 2**64 elements on an array of 8,192 or
+        # more slots (G1-size-wrap.nqp): refused, the array as it was.
+        for (-1, -4095, -4096, -4097) -> $size {
+            t("cfix.$n.setelems.wrap.$size", {
+                my $a := fill($k, 9000);
+                my $r := 'set';
+                try { nqp::setelems($a, $size); CATCH { $r := 'DIED ' ~ nqp::getmessage($!) } }
+                $r ~ ' / ' ~ d($k, $a)
+            });
+        }
+    }
+}
+
 # ------------------------------------------------------------------ main
 
 for @kinds -> $k { basics($k) }
@@ -1403,6 +1527,7 @@ for @kinds -> $k {
     elsif $k<cls> eq 'n' { values_num($k) }
 }
 cross_splices();
+cfix_cases();
 odd_kinds();
 gc_cases();
 hot_cases();
