@@ -365,17 +365,17 @@ fn kindToElementsName(kind: u16) [*:0]const u8 {
     };
 }
 
-/// Whether asplice copies from register kind `s_kind` into `d_kind`: the
+/// Whether asplice copies from register kind `source_kind` into `target_kind`: the
 /// same kind, a string into an object array, or between int and uint.
-fn spliceKindsFit(s_kind: u16, d_kind: u16) bool {
-    const int_like = struct {
-        fn f(kind: u16) bool {
+fn spliceKindsFit(source_kind: u16, target_kind: u16) bool {
+    const is_integer_kind = struct {
+        fn isInteger(kind: u16) bool {
             return kind == c.MVM_reg_int64 or kind == c.MVM_reg_uint64;
         }
-    }.f;
-    return s_kind == d_kind or
-        (s_kind == c.MVM_reg_str and d_kind == c.MVM_reg_obj) or
-        (int_like(s_kind) and int_like(d_kind));
+    }.isInteger;
+    return source_kind == target_kind or
+        (source_kind == c.MVM_reg_str and target_kind == c.MVM_reg_obj) or
+        (is_integer_kind(source_kind) and is_integer_kind(target_kind));
 }
 
 /// `memmove(slots + to, slots + from, len)` in bytes; nothing for 0 bytes
@@ -652,13 +652,13 @@ pub fn Elements(comptime S: type) type {
             const source_kind = slotTypeToKind(s_rd.slot_type);
             const at_pos = reprFn(src.*.st.*.REPR.*.pos_funcs.at_pos);
             const backwards = src == dest and d_offset > s_offset;
-            var i: i64 = 0;
-            while (i < n) : (i += 1) {
-                // n > 0 here, so `n - 1 - i` does not overflow.
-                const j = if (backwards) n - 1 - i else i;
+            var copied: i64 = 0;
+            while (copied < n) : (copied += 1) {
+                // n > 0 here, so `n - 1 - copied` does not overflow.
+                const element_index = if (backwards) n - 1 - copied else copied;
                 var to_copy: Reg = undefined;
-                at_pos(tc, src.*.st, src, s_body, s_offset +% j, &to_copy, source_kind);
-                bindPos(tc, dest.*.st, dest, d_body, d_offset +% j, to_copy, target_kind);
+                at_pos(tc, src.*.st, src, s_body, s_offset +% element_index, &to_copy, source_kind);
+                bindPos(tc, dest.*.st, dest, d_body, d_offset +% element_index, to_copy, target_kind);
             }
         }
 
@@ -707,17 +707,17 @@ pub fn Elements(comptime S: type) type {
             if (elems1 > 0) {
                 if (from_obj.st.*.REPR.*.ID != c.MVM_REPR_ID_VMArray)
                     c.MVM_exception_throw_adhoc(tc, "MVMArray: Can only splice from a VMArray, got a %s", from_obj.st.*.REPR.*.name);
-                const s_repr_data = reprDataOf(from_obj.st);
-                if (need(s_repr_data).elem_size == 0 or need(repr_data).elem_size == 0)
+                const source_repr_data = reprDataOf(from_obj.st);
+                if (need(source_repr_data).elem_size == 0 or need(repr_data).elem_size == 0)
                     c.MVM_exception_throw_adhoc(tc, "MVMArray: Unhandled slot type");
                 // The elements are copied as registers of these kinds,
                 // without conversion: only the pairs where that is still a
                 // value of the target's kind (a string is an object, int and
                 // uint convert).
-                const s_kind = slotTypeToKind(need(s_repr_data).slot_type);
-                const d_kind = slotTypeToKind(need(repr_data).slot_type);
-                if (!spliceKindsFit(s_kind, d_kind))
-                    c.MVM_exception_throw_adhoc(tc, "MVMArray: Cannot splice from an array of %s into an array of %s", kindToElementsName(s_kind), kindToElementsName(d_kind));
+                const source_kind = slotTypeToKind(need(source_repr_data).slot_type);
+                const target_kind = slotTypeToKind(need(repr_data).slot_type);
+                if (!spliceKindsFit(source_kind, target_kind))
+                    c.MVM_exception_throw_adhoc(tc, "MVMArray: Cannot splice from an array of %s into an array of %s", kindToElementsName(source_kind), kindToElementsName(target_kind));
             }
 
             enterSingleUser(tc, body);
@@ -840,15 +840,15 @@ pub fn Elements(comptime S: type) type {
             if (need(repr_data).slot_type < c.MVM_ARRAY_I64 or need(repr_data).elem_size == 0)
                 c.MVM_exception_throw_adhoc(tc, "MVMArray: write_buf requires an integer type");
             if (offset < 0) c.MVM_exception_throw_adhoc(tc, "MVMArray: Index out of bounds");
-            const es = need(repr_data).elem_size;
-            if (u(offset) > live or (live - u(offset)) *% es < count) {
+            const elem_size = need(repr_data).elem_size;
+            if (u(offset) > live or (live - u(offset)) *% elem_size < count) {
                 S.setSize(tc, body, u(offset) +% count, repr_data);
                 start = body.start;
             }
             if (count == 0) return; // the C's 0-byte memcpy
             // `from` is the caller's buffer of `count` bytes, never NULL.
-            const p = slotBytes(body);
-            @memmove(p[(start +% u(offset)) *% es ..][0..count], from[0..count]);
+            const slot_bytes = slotBytes(body);
+            @memmove(slot_bytes[(start +% u(offset)) *% elem_size ..][0..count], from[0..count]);
         }
 
         /// `read_buf` (VMArray.c:1014-1036): `count` bytes at element
@@ -867,15 +867,15 @@ pub fn Elements(comptime S: type) type {
             const body = bodyOf(data);
             const start = s(body.start);
             var result: i64 = 0;
-            const es = need(repr_data).elem_size; // VMArray.c:1019, before the gate
+            const elem_size = need(repr_data).elem_size; // VMArray.c:1019, before the gate
             if (need(repr_data).slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf requires an integer type");
-            if (offset < 0 or u(offset) > body.elems or (body.elems - u(offset)) *% es < count)
+            if (offset < 0 or u(offset) > body.elems or (body.elems - u(offset)) *% elem_size < count)
                 c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf out of bounds offset %" ++ c.PRIi64 ++ " start %" ++ c.PRIi64 ++ " elems %" ++ c.PRIu64 ++ " count %" ++ c.PRIu64, offset, start, body.elems, count);
             if (count == 0) return result; // the C's 0-byte memcpy
             const to: [*]u8 = @ptrCast(&result);
             const at: u64 = if (comptime builtin.cpu.arch.endian() == .big) 8 -% count else 0;
             const p = slotBytes(body);
-            @memcpy((to + at)[0..count], p[u(start +% offset) *% es ..][0..count]);
+            @memcpy((to + at)[0..count], p[u(start +% offset) *% elem_size ..][0..count]);
             return result;
         }
 

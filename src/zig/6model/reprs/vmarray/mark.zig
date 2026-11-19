@@ -52,18 +52,18 @@ pub fn gcMark(tc: Tc, st: St, data: ?*anyopaque, worklist: Worklist) callconv(.c
 /// never becomes a non-optional pointer.
 fn markArm(comptime k: Kind, tc: Tc, body: *Body, worklist: Worklist) void {
     if (comptime !kinds.info(k).holds_refs) return;
-    const n = body.elems;
+    const element_count = body.elems;
     const raw = @field(body.slots, kinds.info(k).member);
     const slots = raw + body.start;
     // The count is an MVMuint64, as elems (upstream e9dee2a3e).
-    c.MVM_gc_worklist_presize_for(tc, worklist, n);
+    c.MVM_gc_worklist_presize_for(tc, worklist, element_count);
     if (raw == null and (c.MVM_GC_DEBUG != 0 or worklist.*.include_gen2 == 0))
         moar.nullDeref(body.start *% kinds.info(k).elem_size);
     var i: u64 = 0;
     if (worklist.*.include_gen2 != 0) {
-        while (i < n) : (i += 1) moar.worklistAddIncludeGen2Nocheck(tc, worklist, slots + i);
+        while (i < element_count) : (i += 1) moar.worklistAddIncludeGen2Nocheck(tc, worklist, slots + i);
     } else {
-        while (i < n) : (i += 1) moar.worklistAddNoIncludeGen2Nocheck(tc, worklist, slots + i);
+        while (i < element_count) : (i += 1) moar.worklistAddNoIncludeGen2Nocheck(tc, worklist, slots + i);
     }
 }
 
