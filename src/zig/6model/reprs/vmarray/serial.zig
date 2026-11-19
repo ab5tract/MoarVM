@@ -186,21 +186,6 @@ inline fn storageSpecOf(tc: Tc, t: Obj) [*c]const c.MVMStorageSpec {
     return f(tc, t.*.st);
 }
 
-/// `MVM_ASSIGN_REF(tc, &(st->header), repr_data->elem_type, t)` with the
-/// STable's REPR data pointer as loaded, possibly NULL (a stubbed STable):
-/// the macro's checks and write barrier come first, then the store, which
-/// is where the C reads through NULL; this faults there too. Returns the
-/// REPR data, then known not to be NULL.
-fn assignElemType(tc: Tc, st: St, repr_data: ?*ReprData, t: Obj) *ReprData {
-    if (repr_data) |rd| {
-        moar.assignRef(tc, &st.*.header, &rd.elem_type, t);
-        return rd;
-    }
-    var discarded: Obj = null;
-    moar.assignRef(tc, &st.*.header, &discarded, t);
-    moar.nullDeref(@offsetOf(ReprData, "elem_type"));
-}
-
 /// The type-level hooks over the slot storage `S` (a
 /// `storage.Storage(Source)`): a namespace of functions, each with its
 /// VMArray vtable slot's C type (`repr.Ops` checks them), plus
@@ -272,22 +257,37 @@ pub fn Serial(comptime S: type) type {
             st.*.size = array_size;
         }
 
-        /// `compose` (VMArray.c:1320-1333): with an `array` entry whose
-        /// `type` is not null, the type's storage spec is fetched, the
-        /// element type stored, and then the kind set from the spec, so an
-        /// "Unsupported ... size" throw leaves the new element type with
-        /// the old kind (row 32). Live arrays of the type keep their
-        /// storage and change kind in place.
+        /// `compose` (VMArray.c:1320-1348): with an `array` entry whose
+        /// `type` is not null, the type's storage spec is fetched and the
+        /// kind worked out from it (`specToReprData` on an object array's
+        /// kind), so an "Unsupported ... size" throw changes nothing (row
+        /// 32, since upstream 40b448381). A type that already has an
+        /// element type may not change kind (arrays of it may exist, laid
+        /// out for the current kind): "MVMArray: Type <name> is already
+        /// composed with another element kind". Then the element type is
+        /// stored and the kind set. A first compose of a type that already
+        /// has instances still changes their kind in place (the gap the C
+        /// fix names).
         pub fn compose(tc: Tc, st: St, info_hash: Obj) callconv(.c) void {
             // A copy of the string constants, as the C takes it.
             const str_consts = tc.*.instance.*.str_consts;
             const repr_data: ?*ReprData = @ptrCast(@alignCast(st.*.REPR_data));
             const info = c.MVM_repr_at_key_o(tc, info_hash, str_consts.array);
             if (c.MVM_is_null(tc, info) != 0) return;
-            const t = c.MVM_repr_at_key_o(tc, info, str_consts.type);
-            if (c.MVM_is_null(tc, t) != 0) return;
-            const spec = storageSpecOf(tc, t);
-            specToReprData(tc, assignElemType(tc, st, repr_data, t), spec);
+            const element_type = c.MVM_repr_at_key_o(tc, info, str_consts.type);
+            if (c.MVM_is_null(tc, element_type) != 0) return;
+            const spec = storageSpecOf(tc, element_type);
+            // An object type (no boxed primitive) gives object slots.
+            var kind = std.mem.zeroes(ReprData);
+            setKind(&kind, .obj);
+            specToReprData(tc, &kind, spec);
+            // The C's first read through the REPR data pointer.
+            const composed = repr_data orelse moar.nullDeref(@offsetOf(ReprData, "elem_type"));
+            if (composed.elem_type != null and (kind.slot_type != composed.slot_type or kind.elem_size != composed.elem_size))
+                c.MVM_exception_throw_adhoc(tc, "MVMArray: Type %s is already composed with another element kind", c.MVM_6model_get_stable_debug_name(tc, st));
+            moar.assignRef(tc, &st.*.header, &composed.elem_type, element_type);
+            composed.slot_type = kind.slot_type;
+            composed.elem_size = kind.elem_size;
         }
 
         /// `gc_free_repr_data` (VMArray.c:126-128): frees the REPR data; an

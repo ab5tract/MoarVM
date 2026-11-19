@@ -1208,7 +1208,14 @@ fn say(text: []const u8) void {
 /// throw left behind. It runs from the exit the unhandled exception ends
 /// in (exceptions.c panic_unhandled_ex), or from the child's own exit
 /// after `f` returned.
+/// A type's REPR data a `childThrow` child reports too, when set.
+var watched_repr_data: ?*c.MVMArrayREPRData = null;
+
 fn reportWatched() callconv(.c) void {
+    if (watched_repr_data) |repr_data| {
+        var repr_buffer: [128]u8 = undefined;
+        say(std.fmt.bufPrint(&repr_buffer, "repr: slot_type={d} elem_size={d} elem_type={x}\n", .{ repr_data.slot_type, repr_data.elem_size, @intFromPtr(repr_data.elem_type) }) catch unreachable);
+    }
     const b = watched orelse return;
     var buf: [512]u8 = undefined;
     say("state: ");
@@ -1805,4 +1812,64 @@ test "write_buf on a kind without storage throws the integer-type message, even 
             try expectThrew(&result, "MVMArray: write_buf requires an integer type", "elems=0 start=0 ssize=0 bytes=null");
         }
     }
+}
+
+fn composeWith(tc: *c.MVMThreadContext, array_type: ?*Object, element_type: ?*Object) void {
+    const consts = tc.instance.*.str_consts;
+    const info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
+    const array_info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
+    c.MVM_repr_bind_key_o(tc, array_info, consts.type, element_type);
+    c.MVM_repr_bind_key_o(tc, info, consts.array, array_info);
+    E_compose(tc, array_type.?.st, info);
+}
+
+/// The Zig compose (serial.zig), on the library's types.
+const E_compose = @import("../reprs/vmarray/serial.zig").Serial(storage.Storage(struct {
+    pub fn get() std.mem.Allocator {
+        return moar.mvm_allocator;
+    }
+})).compose;
+
+test "a composed array type may not change its element kind; a failed compose changes nothing" {
+    // cfix-repro/R1-recompose-object-type.nqp, R-recompose-matrix.nqp,
+    // X1-recompose-wider-kind.nqp: recomposing changed the kind of live
+    // arrays in place; upstream 40b448381 refuses a kind change once an
+    // element type is set, and works the kind out before storing anything.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    const consts = vm.instance.str_consts;
+    c.MVM_gc_allocate_gen2_default_set(tc);
+    var int_type: ?*Object = composedArray(tc, nativeType(tc, c.MVM_REPR_ID_P6int, consts.integer, 64, false));
+    var other_int64: ?*Object = nativeType(tc, c.MVM_REPR_ID_P6int, consts.integer, 64, false);
+    var int32_element: ?*Object = nativeType(tc, c.MVM_REPR_ID_P6int, consts.integer, 32, false);
+    var fresh_type: ?*Object = composedArray(tc, null);
+    c.MVM_gc_allocate_gen2_default_clear(tc);
+    const roots = moar.rootN(tc, .{ &int_type, &other_int64, &int32_element, &fresh_type });
+    defer roots.pop(tc);
+    const int_repr = reprData(int_type.?);
+    const old_element = int_repr.elem_type;
+    var repr_buffer: [128]u8 = undefined;
+    const unchanged = try std.fmt.bufPrint(&repr_buffer, "repr: slot_type={d} elem_size=8 elem_type={x}\n", .{ c.MVM_ARRAY_I64, @intFromPtr(old_element) });
+    watched_repr_data = int_repr;
+    defer watched_repr_data = null;
+    // To an object type and to another width. (An unsupported width, whose
+    // throw now also comes before anything is stored, cannot be made: the
+    // P6int and P6num types refuse those widths first.)
+    const to_object = try childThrow(composeWith, .{ tc, int_type, vm.instance.boot_types.BOOTHash }, null, 0);
+    try expectThrew(&to_object, "MVMArray: Type  is already composed with another element kind", null);
+    try to_object.expectHas(unchanged);
+    const to_int32 = try childThrow(composeWith, .{ tc, int_type, int32_element }, null, 0);
+    try expectThrew(&to_int32, "MVMArray: Type  is already composed with another element kind", null);
+    try to_int32.expectHas(unchanged);
+    watched_repr_data = null;
+    // The same kind again: allowed, the element type replaced.
+    composeWith(tc, int_type, other_int64);
+    try expectEqual(@as(u8, c.MVM_ARRAY_I64), int_repr.slot_type);
+    try expectEqual(@intFromPtr(other_int64), @intFromPtr(int_repr.elem_type));
+    // A first compose: any kind.
+    composeWith(tc, fresh_type, int32_element);
+    try expectEqual(@as(u8, c.MVM_ARRAY_I32), reprData(fresh_type.?).slot_type);
+    try expectEqual(@as(usize, 4), reprData(fresh_type.?).elem_size);
 }
