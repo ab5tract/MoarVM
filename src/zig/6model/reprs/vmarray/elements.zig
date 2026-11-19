@@ -820,23 +820,28 @@ pub fn Elements(comptime S: type) type {
         }
 
         /// `write_buf` (VMArray.c:988-1012): `count` bytes from `from` at
-        /// element `offset`. The kind gate is `slot_type < MVM_ARRAY_I64`,
-        /// so the nums and the six kinds without storage pass (row 24;
-        /// kept); the growth is to `offset + count` elements, `count` being
-        /// bytes (an 8-byte write at element 1 of a 3-element U16 array
-        /// grows it to 9 elements, va-differential.md section 4; kept).
-        /// `@memmove`, defined where the C's
-        /// memcpy is, so no caller's buffer can make it illegal.
+        /// element `offset`. The kind gate is `slot_type < MVM_ARRAY_I64`
+        /// or no storage (`elem_size == 0`, upstream f3ff57945), so OBJ,
+        /// STR and the six kinds without storage are refused and the nums
+        /// pass (row 24; kept). The bounds check compares the offset with
+        /// `elems` in elements first, so `offset * elem_size` cannot wrap
+        /// (upstream 2acff2df5); the growth is to `offset + count`
+        /// elements, `count` being bytes (an 8-byte write at element 1 of
+        /// a 3-element U16 array grows it to 9 elements, va-differential.md
+        /// section 4; kept), and throws for an offset whose byte position
+        /// would wrap. `@memmove`, defined where the C's memcpy is, so no
+        /// caller's buffer can make it illegal.
         pub fn writeBuf(tc: Tc, st: St, root: Obj, data: ?*anyopaque, from: [*c]u8, offset: i64, count: u64) callconv(.c) void {
             _ = root;
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
             var start = body.start;
             const live = body.elems;
-            if (need(repr_data).slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: write_buf requires an integer type");
+            if (need(repr_data).slot_type < c.MVM_ARRAY_I64 or need(repr_data).elem_size == 0)
+                c.MVM_exception_throw_adhoc(tc, "MVMArray: write_buf requires an integer type");
             if (offset < 0) c.MVM_exception_throw_adhoc(tc, "MVMArray: Index out of bounds");
             const es = need(repr_data).elem_size;
-            if (live *% es < u(offset) *% es +% count) {
+            if (u(offset) > live or (live - u(offset)) *% es < count) {
                 S.setSize(tc, body, u(offset) +% count, repr_data);
                 start = body.start;
             }
@@ -849,12 +854,13 @@ pub fn Elements(comptime S: type) type {
         /// `read_buf` (VMArray.c:1014-1036): `count` bytes at element
         /// `offset` as an integer, filled from its low end (from the high
         /// end on a big-endian target, the C's `MVM_BIGENDIAN`, which
-        /// the config derives from the target). The bounds check adds
-        /// `start` to `elems`, so with `start > 0` it lets reads past the
-        /// last element through: within the storage they read the slots
-        /// past the window, beyond it past the allocation (row 25;
-        /// va-differential.md sections 4 and 6; kept). The callers
-        /// pass at most 8 bytes; more would overrun `result`, as in the C.
+        /// the config derives from the target). The bounds check is
+        /// against `elems` alone and compares the offset in elements first
+        /// (upstream 156957654, 2acff2df5): no read past the last element
+        /// (with `start > 0` the old check added `start`), and no
+        /// `offset * elem_size` that wraps to a byte inside or before the
+        /// storage. The callers pass at most 8 bytes; more would overrun
+        /// `result`, as in the C.
         pub fn readBuf(tc: Tc, st: St, root: Obj, data: ?*anyopaque, offset: i64, count: u64) callconv(.c) i64 {
             _ = root;
             const repr_data = reprDataOf(st);
@@ -863,7 +869,7 @@ pub fn Elements(comptime S: type) type {
             var result: i64 = 0;
             const es = need(repr_data).elem_size; // VMArray.c:1019, before the gate
             if (need(repr_data).slot_type < c.MVM_ARRAY_I64) c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf requires an integer type");
-            if (offset < 0 or (u(start) +% body.elems) *% es < u(offset) *% es +% count)
+            if (offset < 0 or u(offset) > body.elems or (body.elems - u(offset)) *% es < count)
                 c.MVM_exception_throw_adhoc(tc, "MVMArray: read_buf out of bounds offset %" ++ c.PRIi64 ++ " start %" ++ c.PRIi64 ++ " elems %" ++ c.PRIu64 ++ " count %" ++ c.PRIu64, offset, start, body.elems, count);
             if (count == 0) return result; // the C's 0-byte memcpy
             const to: [*]u8 = @ptrCast(&result);

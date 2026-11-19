@@ -1135,8 +1135,8 @@ test "the kinds without storage: what does not throw does nothing and keeps slot
 
         E.setElems(tc, a.st(), a.o, a.body(), 0);
         E.asplice(tc, a.st(), a.o, a.body(), other.o, 0, 0);
-        var bytes = [_]u8{1};
-        E.writeBuf(tc, a.st(), a.o, a.body(), &bytes, 0, 0);
+        // writeBuf now throws for them, even for 0 bytes (upstream
+        // f3ff57945; tested in "write_buf on a kind without storage ...").
         try expectEqual(@as(i64, 0), E.readBuf(tc, a.st(), a.o, a.body(), 0, 0));
         const spec = E.getElemStorageSpec(tc, a.st());
         try expectEqual(@as(u16, c.MVM_STORAGE_SPEC_REFERENCE), spec.inlineable);
@@ -1728,5 +1728,81 @@ test "a pop or unshift with the wrong register kind throws and leaves the array 
         try expectSamples(&vm, popped, kind, &.{ 1, 2 });
         popped.push(tc, kind, sample(&vm, kind, 5));
         try expectSamples(&vm, popped, kind, &.{ 1, 2, 5 });
+    }
+}
+
+fn readBufAt(tc: *c.MVMThreadContext, array: A, offset: i64, count: u64) void {
+    var buffer: [64]u8 = undefined;
+    const value = E.readBuf(tc, array.st(), array.o, array.body(), offset, count);
+    say(std.fmt.bufPrint(&buffer, "read {d}\n", .{value}) catch unreachable);
+}
+
+fn writeBufAt(tc: *c.MVMThreadContext, array: A, offset: i64, count: u64) void {
+    var bytes: [8]u8 = @splat(0x63);
+    E.writeBuf(tc, array.st(), array.o, array.body(), &bytes, offset, count);
+}
+
+test "read_buf and write_buf compare the offset with elems first: nothing past the window, no wrapped byte offset" {
+    // cfix-repro/B1-read-buf-past-storage.nqp (start > 0 let a read past
+    // the last element through; upstream 156957654) and
+    // B2-buf-offset-wrap.nqp, B2-buf-offset-before-storage.nqp (offset *
+    // elem_size wrapped to a byte inside, or before, the storage; upstream
+    // 2acff2df5).
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    var state_buffer: [512]u8 = undefined;
+    var message_buffer: [160]u8 = undefined;
+    var shifted = filled(&vm, .i64, &.{ 0, 1, 2, 3 });
+    var plain = filled(&vm, .i64, &.{ 0, 1, 2, 3 });
+    var halves = filled(&vm, .u16, &.{ 0, 1, 2, 3, 4, 5, 6, 7 });
+    const roots = moar.rootN(tc, .{ &shifted.o, &plain.o, &halves.o });
+    defer roots.pop(tc);
+    _ = shifted.shift(tc, .i64);
+    _ = shifted.shift(tc, .i64);
+    // B1: elements 2 3 at start 2; a read at element 2 is past the window.
+    const past = try childThrow(readBufAt, .{ tc, shifted, 2, 8 }, shifted.body(), 8);
+    try expectThrew(&past, "MVMArray: read_buf out of bounds offset 2 start 2 elems 2 count 8", stateOf(&state_buffer, shifted, .i64));
+    const past_partial = try childThrow(readBufAt, .{ tc, shifted, 1, 9 }, shifted.body(), 8);
+    try expectThrew(&past_partial, "MVMArray: read_buf out of bounds offset 1 start 2 elems 2 count 9", stateOf(&state_buffer, shifted, .i64));
+    try expectEqual(@as(i64, 3 * 3 + 1), E.readBuf(tc, shifted.st(), shifted.o, shifted.body(), 1, 8));
+    // B2: 2**61 + 1 eight-byte elements is byte 8 after the wrap.
+    const wrapping: i64 = (1 << 61) + 1;
+    const wrapped_read = try childThrow(readBufAt, .{ tc, plain, wrapping, 8 }, plain.body(), 8);
+    try expectThrew(&wrapped_read, "MVMArray: read_buf out of bounds offset 2305843009213693953 start 0 elems 4 count 8", stateOf(&state_buffer, plain, .i64));
+    const wrapped_write = try childThrow(writeBufAt, .{ tc, plain, wrapping, 8 }, plain.body(), 8);
+    try expectThrew(&wrapped_write, "Unable to allocate an array of 2305843009213693961 elements", stateOf(&state_buffer, plain, .i64));
+    // A 2-byte kind at 2**63 - 1: two bytes before the storage.
+    const before_read = try childThrow(readBufAt, .{ tc, halves, std.math.maxInt(i64), 4 }, halves.body(), 2);
+    try expectThrew(&before_read, "MVMArray: read_buf out of bounds offset 9223372036854775807 start 0 elems 8 count 4", stateOf(&state_buffer, halves, .u16));
+    const before_write = try childThrow(writeBufAt, .{ tc, halves, std.math.maxInt(i64), 4 }, halves.body(), 2);
+    try expectThrew(&before_write, try std.fmt.bufPrint(&message_buffer, "Unable to allocate an array of {d} elements", .{@as(u64, std.math.maxInt(i64)) + 4}), stateOf(&state_buffer, halves, .u16));
+    // At elems exactly: a read of 0 bytes is in bounds, a write appends.
+    try expectEqual(@as(i64, 0), E.readBuf(tc, plain.st(), plain.o, plain.body(), 4, 0));
+    var bytes = [_]u8{ 0x2a, 0, 0, 0, 0, 0, 0, 0 };
+    E.writeBuf(tc, plain.st(), plain.o, plain.body(), &bytes, 4, 8);
+    try expectEqual(@as(u64, 12), plain.elems());
+    try expectEqual(@as(i64, 42), E.readBuf(tc, plain.st(), plain.o, plain.body(), 4, 8));
+}
+
+test "write_buf on a kind without storage throws the integer-type message, even for 0 bytes" {
+    // cfix-repro/B3-*.nqp: the C copied into a zero-byte block (or NULL);
+    // upstream f3ff57945 refuses the kinds without storage at the gate.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    for ([_]struct { i64, bool }{ .{ 4, true }, .{ 2, true }, .{ 1, true }, .{ 4, false }, .{ 2, false }, .{ 1, false } }) |width_and_signedness| {
+        c.MVM_gc_allocate_gen2_default_set(tc);
+        var array_type: ?*Object = composedArray(tc, nativeType(tc, c.MVM_REPR_ID_P6int, vm.instance.str_consts.integer, width_and_signedness[0], width_and_signedness[1]));
+        c.MVM_gc_allocate_gen2_default_clear(tc);
+        var array: A = .{ .o = c.MVM_repr_alloc_init(tc, array_type) };
+        const roots = moar.rootN(tc, .{ &array_type, &array.o });
+        defer roots.pop(tc);
+        for ([_]u64{ 0, 1, 8 }) |count| {
+            const result = try childThrow(writeBufAt, .{ tc, array, 0, count }, array.body(), 0);
+            try expectThrew(&result, "MVMArray: write_buf requires an integer type", "elems=0 start=0 ssize=0 bytes=null");
+        }
     }
 }
