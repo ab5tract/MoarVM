@@ -1210,14 +1210,23 @@ fn say(text: []const u8) void {
 /// after `f` returned.
 fn reportWatched() callconv(.c) void {
     const b = watched orelse return;
-    var buf: [256]u8 = undefined;
-    say(std.fmt.bufPrint(&buf, "state: elems={d} start={d} ssize={d} bytes=", .{ b.elems, b.start, b.ssize }) catch unreachable);
+    var buf: [512]u8 = undefined;
+    say("state: ");
+    say(stateLine(&buf, b, watched_elem_size));
+    say("\n");
+}
+
+/// `elems=E start=S ssize=Z bytes=<hex of the live window, at most 64
+/// bytes, or "null" without slots>`, as `reportWatched` prints it.
+fn stateLine(buf: *[512]u8, b: *const c.MVMArrayBody, elem_size: usize) []const u8 {
+    var w: std.Io.Writer = .fixed(buf);
+    w.print("elems={d} start={d} ssize={d} bytes=", .{ b.elems, b.start, b.ssize }) catch unreachable;
     if (b.slots.any) |any| {
         const p: [*]const u8 = @ptrCast(any);
-        const n = @min(b.elems *% watched_elem_size, 64);
-        for (p[b.start *% watched_elem_size ..][0..n]) |byte| say(std.fmt.bufPrint(&buf, "{x:0>2}", .{byte}) catch unreachable);
-    } else say("null");
-    say("\n");
+        const n = @min(b.elems *% elem_size, 64);
+        for (p[b.start *% elem_size ..][0..n]) |byte| w.print("{x:0>2}", .{byte}) catch unreachable;
+    } else w.writeAll("null") catch unreachable;
+    return w.buffered();
 }
 
 /// What a `childThrow` child printed and how it ended.
@@ -1352,12 +1361,167 @@ test "where the C reads through NULL the Zig array faults with SIGSEGV too" {
     const r = moar.rootN(tc, .{ &a.o, &hash });
     defer r.pop(tc);
     c.MVM_repr_bind_key_o(tc, hash, vm.strs[0], vm.objs[0]);
-    // A splice from a non-VMArray with elements (VMArray.c:958) and from a
-    // NULL object (`REPR(from)`).
-    try expectEqual(@as(?std.c.SIG, .SEGV), try childSignal(spliceInto, .{ tc, a, hash }));
+    // A splice from a NULL object (`REPR(from)`, read for its elems before
+    // anything else). (A splice from a non-VMArray with elements, which
+    // faulted in copy_elements, is now refused first: the next test.)
     try expectEqual(@as(?std.c.SIG, .SEGV), try childSignal(spliceInto, .{ tc, a, @as([*c]Object, null) }));
-    // The parent's array is untouched; an empty hash only deletes (no copy).
+    // The parent's array is untouched.
     try expectSamples(&vm, a, .obj, &.{ 0, 1 });
+}
+
+fn spliceFrom(tc: *c.MVMThreadContext, a: A, from: [*c]Object, offset: i64, count: u64) void {
+    E.asplice(tc, a.st(), a.o, a.body(), from, offset, count);
+}
+
+/// `a`'s `stateLine`, for an `expectThrew` that the array is unchanged.
+fn stateOf(buf: *[512]u8, a: A, comptime k: Kind) []const u8 {
+    return stateLine(buf, a.body(), kinds.info(k).elem_size);
+}
+
+test "a splice from a non-empty source that is not a VMArray throws before changing anything" {
+    // cfix-repro/P1-splice-from-non-vmarray.nqp: the C read the source's
+    // REPR data through NULL in copy_elements; upstream 007382664 throws.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    var a = filled(&vm, .obj, &.{ 0, 1, 2 });
+    var hash: ?*Object = c.MVM_repr_alloc_init(tc, vm.instance.boot_types.BOOTHash);
+    var empty: ?*Object = c.MVM_repr_alloc_init(tc, vm.instance.boot_types.BOOTHash);
+    const r = moar.rootN(tc, .{ &a.o, &hash, &empty });
+    defer r.pop(tc);
+    c.MVM_repr_bind_key_o(tc, hash, vm.strs[0], vm.objs[0]);
+    var buf: [512]u8 = undefined;
+    for ([_]struct { i64, u64 }{ .{ 1, 1 }, .{ 0, 0 }, .{ 3, 0 }, .{ -1, 5 } }) |oc| {
+        const got = try childThrow(spliceFrom, .{ tc, a, hash, oc[0], oc[1] }, a.body(), 8);
+        try expectThrew(&got, "MVMArray: Can only splice from a VMArray, got a VMHash", stateOf(&buf, a, .obj));
+    }
+    // The offset check comes first.
+    const bad = try childThrow(spliceFrom, .{ tc, a, hash, -4, 0 }, a.body(), 8);
+    try expectThrew(&bad, "MVMArray: Illegal splice offset", stateOf(&buf, a, .obj));
+    // An empty source of any REPR copies nothing: the count is deleted
+    // (cfix-repro/P1-splice-empty-non-vmarray.nqp).
+    E.asplice(tc, a.st(), a.o, a.body(), empty, 1, 1);
+    try expectSamples(&vm, a, .obj, &.{ 0, 2 });
+}
+
+test "a splice into or out of a kind without storage throws before changing anything" {
+    // cfix-repro/P2-*.nqp: such an array has elements only when its type
+    // got its element type after the array got elements (a recompose, or a
+    // first compose with live instances: cfix-repro/R-first-compose-gap.nqp,
+    // which the R fix leaves possible). The C aborted in
+    // slot_type_to_kind; upstream 98a84053a throws.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    c.MVM_gc_allocate_gen2_default_set(tc);
+    var t: ?*Object = composedArray(tc, null);
+    var u4_type: ?*Object = nativeType(tc, c.MVM_REPR_ID_P6int, vm.instance.str_consts.integer, 4, true);
+    c.MVM_gc_allocate_gen2_default_clear(tc);
+    var x: A = .{ .o = c.MVM_repr_alloc_init(tc, t) };
+    var fresh: A = undefined;
+    var src = filled(&vm, .i64, &.{ 0, 1 });
+    const r = moar.rootN(tc, .{ &t, &u4_type, &x.o, &src.o });
+    defer r.pop(tc);
+    x.push(tc, .obj, sample(&vm, .obj, 0));
+    x.push(tc, .obj, sample(&vm, .obj, 1));
+    // The first compose, with x alive: x now has two elements of a kind
+    // without storage over its old storage.
+    const consts = tc.instance.*.str_consts;
+    var info: ?*Object = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
+    const ri = moar.root(tc, &info);
+    defer ri.pop(tc);
+    const arr_info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
+    c.MVM_repr_bind_key_o(tc, arr_info, consts.type, u4_type);
+    c.MVM_repr_bind_key_o(tc, info, consts.array, arr_info);
+    c.MVM_repr_compose(tc, t, info);
+    try expectEqual(@as(u8, c.MVM_ARRAY_U4), reprData(t.?).slot_type);
+    try expectEqual(@as(u64, 2), x.elems());
+    fresh = .{ .o = c.MVM_repr_alloc_init(tc, t) };
+    const rf = moar.root(tc, &fresh.o);
+    defer rf.pop(tc);
+    var bx: [512]u8 = undefined;
+    var bs: [512]u8 = undefined;
+    const x_state = stateLine(&bx, x.body(), 0);
+    const src_state = stateOf(&bs, src, .i64);
+    // Into it, from it, into itself, and into an empty one.
+    const into = try childThrow(spliceFrom, .{ tc, x, src.o, 0, 2 }, x.body(), 0);
+    try expectThrew(&into, "MVMArray: Unhandled slot type", x_state);
+    const out = try childThrow(spliceFrom, .{ tc, src, x.o, 1, 0 }, src.body(), 8);
+    try expectThrew(&out, "MVMArray: Unhandled slot type", src_state);
+    const self = try childThrow(spliceFrom, .{ tc, x, x.o, 0, 0 }, x.body(), 0);
+    try expectThrew(&self, "MVMArray: Unhandled slot type", x_state);
+    const grow = try childThrow(spliceFrom, .{ tc, fresh, src.o, 0, 0 }, fresh.body(), 0);
+    try expectThrew(&grow, "MVMArray: Unhandled slot type", "elems=0 start=0 ssize=0 bytes=null");
+    // An empty one as the source copies nothing (P2-...-same-kind.nqp
+    // empty-src): the count is deleted.
+    E.asplice(tc, src.st(), src.o, src.body(), fresh.o, 0, 1);
+    try expectSamples(&vm, src, .i64, &.{1});
+}
+
+/// What the cross-kind message calls the elements of register kind `kind`.
+fn elementsName(kind: u16) []const u8 {
+    return switch (kind) {
+        c.MVM_reg_obj => "objects",
+        c.MVM_reg_str => "strings",
+        c.MVM_reg_int64 => "integers",
+        c.MVM_reg_uint64 => "unsigned integers",
+        c.MVM_reg_num64 => "numbers",
+        else => unreachable,
+    };
+}
+
+test "a splice between kinds whose registers would be reinterpreted throws; the others copy" {
+    // cfix-repro/P3-splice-kind-matrix.nqp: the 144 pairs of stored kinds.
+    // Kept: the same register kind (the integer widths among themselves,
+    // N64 and N32), STR into OBJ, and int with uint; every other pair
+    // throws (upstream f8a955192), with the target unchanged.
+    @setEvalBranchQuota(10_000);
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    var srcs: [kinds.kinds.len]A = undefined;
+    var dsts: [kinds.kinds.len]A = undefined;
+    inline for (kinds.kinds, 0..) |ki, i| {
+        srcs[i] = filled(&vm, ki.kind, &.{ 3, 4 });
+        c.MVM_gc_root_temp_push(tc, @ptrCast(&srcs[i].o));
+        dsts[i] = filled(&vm, ki.kind, &.{ 0, 1 });
+        c.MVM_gc_root_temp_push(tc, @ptrCast(&dsts[i].o));
+    }
+    defer c.MVM_gc_root_temp_pop_n(tc, 2 * kinds.kinds.len);
+    var refused: usize = 0;
+    var buf: [512]u8 = undefined;
+    var msg: [128]u8 = undefined;
+    inline for (kinds.kinds, 0..) |from_ki, fi| {
+        inline for (kinds.kinds, 0..) |to_ki, ti| {
+            const sk = from_ki.reg_kind;
+            const dk = to_ki.reg_kind;
+            const int_like = struct {
+                fn f(kind: u16) bool {
+                    return kind == c.MVM_reg_int64 or kind == c.MVM_reg_uint64;
+                }
+            }.f;
+            const fits = sk == dk or (sk == c.MVM_reg_str and dk == c.MVM_reg_obj) or (int_like(sk) and int_like(dk));
+            if (!fits) {
+                refused += 1;
+                const d = dsts[ti];
+                const got = try childThrow(spliceFrom, .{ tc, d, srcs[fi].o, 1, 0 }, d.body(), to_ki.elem_size);
+                const want = try std.fmt.bufPrint(&msg, "MVMArray: Cannot splice from an array of {s} into an array of {s}", .{ elementsName(sk), elementsName(dk) });
+                try expectThrew(&got, want, stateOf(&buf, d, to_ki.kind));
+            }
+        }
+    }
+    try expectEqual(@as(usize, 73), refused);
+    // STR into OBJ copies the string pointers as objects.
+    var o = filled(&vm, .obj, &.{0});
+    const ro = moar.root(tc, &o.o);
+    defer ro.pop(tc);
+    E.asplice(tc, o.st(), o.o, o.body(), srcs[c.MVM_ARRAY_STR].o, 1, 0);
+    try expectEqual(@as(u64, 3), o.elems());
+    try expectEqual(@intFromPtr(vm.strs[3]), @intFromPtr(kinds.slots(.obj, o.body())[1]));
+    try expectEqual(@intFromPtr(vm.strs[4]), @intFromPtr(kinds.slots(.obj, o.body())[2]));
 }
 
 test "on a stubbed STable without REPR data an empty array is left alone where the C does not read it" {

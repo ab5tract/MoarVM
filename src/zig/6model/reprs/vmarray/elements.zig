@@ -350,6 +350,31 @@ fn ownRegKind(comptime k: Kind) u16 {
     return kinds.info(k).reg_kind;
 }
 
+/// `kind_to_elements_name`: what a register kind from `slotTypeToKind`
+/// holds, for the cross-kind splice message.
+fn kindToElementsName(kind: u16) [*:0]const u8 {
+    return switch (kind) {
+        c.MVM_reg_obj => "objects",
+        c.MVM_reg_str => "strings",
+        c.MVM_reg_int64 => "integers",
+        c.MVM_reg_uint64 => "unsigned integers",
+        else => "numbers",
+    };
+}
+
+/// Whether asplice copies from register kind `s_kind` into `d_kind`: the
+/// same kind, a string into an object array, or between int and uint.
+fn spliceKindsFit(s_kind: u16, d_kind: u16) bool {
+    const int_like = struct {
+        fn f(kind: u16) bool {
+            return kind == c.MVM_reg_int64 or kind == c.MVM_reg_uint64;
+        }
+    }.f;
+    return s_kind == d_kind or
+        (s_kind == c.MVM_reg_str and d_kind == c.MVM_reg_obj) or
+        (int_like(s_kind) and int_like(d_kind));
+}
+
 /// `memmove(slots + to, slots + from, len)` in bytes; nothing for 0 bytes
 /// (the C's 0-byte memmove, where `slots` may be NULL).
 inline fn moveBytes(body: *Body, to: u64, from: u64, len: u64) void {
@@ -583,9 +608,12 @@ pub fn Elements(comptime S: type) type {
         ///   (rule of row 22c); a non-VMArray source with elements (or a
         ///   VMArray one whose stubbed STable has no REPR data yet) makes
         ///   the C read its REPR data through NULL and fault, which
-        ///   `moar.nullDeref` reproduces (a C crash no differential case
-        ///   drives: traces/llm/bench/va-differential.md section 6). Both
-        ///   REPR data
+        ///   `moar.nullDeref` reproduces. Neither is reached any more:
+        ///   `asplice` refuses such a source, a kind without storage and
+        ///   the cross-kind pairs that would be reinterpreted before it
+        ///   changes anything (as the C, upstream 007382664, 98a84053a,
+        ///   f8a955192), and `aslice` copies into an array of the source's
+        ///   own type (the `slice` op allocates it so). Both REPR data
         ///   pointers are loaded first and read only after `n <= 0`, as the
         ///   C (936-944).
         fn copyElements(tc: Tc, src: Obj, dest: Obj, s_offset: i64, d_offset: i64, n: i64) void {
@@ -613,9 +641,8 @@ pub fn Elements(comptime S: type) type {
             }
             const target_kind = slotTypeToKind(need(d_repr_data).slot_type);
             // A non-VMArray source with elements: the C reads
-            // `s_repr_data->slot_type` through NULL (VMArray.c:958) and
-            // faults; this faults at the same offset (va-differential.md
-            // section 6: no case drives it).
+            // `s_repr_data->slot_type` through NULL and faults; this faults
+            // at the same offset (asplice refuses such a source first).
             const s_rd = s_repr_data orelse moar.nullDeref(@offsetOf(c.MVMArrayREPRData, "slot_type"));
             const source_kind = slotTypeToKind(s_rd.slot_type);
             const at_pos = reprFn(src.*.st.*.REPR.*.pos_funcs.at_pos);
@@ -651,7 +678,10 @@ pub fn Elements(comptime S: type) type {
         /// signed and unsigned arithmetic (each `MVMuint64`/`MVMint64` mix
         /// is the C's conversion, wrapping). At offset 0 `start` may move
         /// back over shifted-off slots (row 26), but not when `from` is the
-        /// array itself: that would move the source too.
+        /// array itself: that would move the source too. A non-empty
+        /// `from` that is not a VMArray, a kind without storage on either
+        /// side, or a pair of kinds `spliceKindsFit` refuses throws after
+        /// the offset check and before anything is changed.
         pub fn asplice(tc: Tc, st: St, root: Obj, data: ?*anyopaque, from: Obj, offset_in: i64, count_in: u64) callconv(.c) void {
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
@@ -664,6 +694,25 @@ pub fn Elements(comptime S: type) type {
             if (offset < 0) {
                 offset = s(u(offset) +% elems0);
                 if (offset < 0) c.MVM_exception_throw_adhoc(tc, "MVMArray: Illegal splice offset");
+            }
+
+            // A source copyElements cannot copy from is refused before
+            // anything is changed (upstream 007382664, 98a84053a,
+            // f8a955192); an empty source of any kind copies nothing.
+            if (elems1 > 0) {
+                if (from_obj.st.*.REPR.*.ID != c.MVM_REPR_ID_VMArray)
+                    c.MVM_exception_throw_adhoc(tc, "MVMArray: Can only splice from a VMArray, got a %s", from_obj.st.*.REPR.*.name);
+                const s_repr_data = reprDataOf(from_obj.st);
+                if (need(s_repr_data).elem_size == 0 or need(repr_data).elem_size == 0)
+                    c.MVM_exception_throw_adhoc(tc, "MVMArray: Unhandled slot type");
+                // The elements are copied as registers of these kinds,
+                // without conversion: only the pairs where that is still a
+                // value of the target's kind (a string is an object, int and
+                // uint convert).
+                const s_kind = slotTypeToKind(need(s_repr_data).slot_type);
+                const d_kind = slotTypeToKind(need(repr_data).slot_type);
+                if (!spliceKindsFit(s_kind, d_kind))
+                    c.MVM_exception_throw_adhoc(tc, "MVMArray: Cannot splice from an array of %s into an array of %s", kindToElementsName(s_kind), kindToElementsName(d_kind));
             }
 
             enterSingleUser(tc, body);
