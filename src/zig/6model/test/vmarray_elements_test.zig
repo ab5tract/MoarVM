@@ -1674,3 +1674,59 @@ test "the linked library's array and E keep elems, start and ssize alike, step b
         }
     }
 }
+
+fn popWithKind(tc: *c.MVMThreadContext, array: A, register_kind: u16) void {
+    var result: Reg = undefined;
+    E.pop(tc, array.st(), array.o, array.body(), &result, register_kind);
+}
+
+fn unshiftWithKind(tc: *c.MVMThreadContext, array: A, value: Reg, register_kind: u16) void {
+    E.unshift(tc, array.st(), array.o, array.body(), value, register_kind);
+}
+
+/// A register kind the stack operations of kind `k` refuse.
+fn refusedStackKind(comptime k: Kind) u16 {
+    return if (k == .obj) c.MVM_reg_int64 else c.MVM_reg_obj;
+}
+
+test "a pop or unshift with the wrong register kind throws and leaves the array as it was" {
+    // cfix-repro/T1-rejected-pop.nqp, T2-rejected-unshift.nqp,
+    // T-rejected-leaves-array.nqp: the C decremented elems (pop) or moved
+    // start (unshift) before the kind check (rows 18c, 19b); upstream
+    // 27ebea0b8 and fd53df2e0 check first.
+    var vm: Vm = undefined;
+    vm.boot();
+    defer vm.deinit();
+    const tc = vm.tc;
+    var state_buffer: [512]u8 = undefined;
+    inline for (kinds.kinds) |kind_info| {
+        const kind = kind_info.kind;
+        const refused = refusedStackKind(kind);
+        // pop: elements 0 1 2, after a shift too (start > 0).
+        var popped = filled(&vm, kind, &.{ 0, 1, 2, 3 });
+        const popped_root = moar.root(tc, &popped.o);
+        defer popped_root.pop(tc);
+        _ = popped.shift(tc, kind);
+        const pop_state = stateOf(&state_buffer, popped, kind);
+        const pop_result = try childThrow(popWithKind, .{ tc, popped, refused }, popped.body(), kind_info.elem_size);
+        try expectThrew(&pop_result, comptime elements.kindMessage(.pop, kind), pop_state);
+        // unshift with start > 0 (after a shift): the slot in front keeps
+        // the shifted-off value and start stays.
+        const unshift_state = stateOf(&state_buffer, popped, kind);
+        const unshift_result = try childThrow(unshiftWithKind, .{ tc, popped, sample(&vm, kind, 9), refused }, popped.body(), kind_info.elem_size);
+        try expectThrew(&unshift_result, comptime elements.kindMessage(.unshift, kind), unshift_state);
+        // unshift at start 0: the front room is made before the check (as
+        // the C; not caller-visible), the elements are where they were.
+        var fresh = filled(&vm, kind, &.{ 0, 1 });
+        const fresh_root = moar.root(tc, &fresh.o);
+        defer fresh_root.pop(tc);
+        const room_result = try childThrow(unshiftWithKind, .{ tc, fresh, sample(&vm, kind, 9), refused }, fresh.body(), kind_info.elem_size);
+        try expectThrew(&room_result, comptime elements.kindMessage(.unshift, kind), "elems=2 start=8 ssize=16 bytes=");
+        // In-process, the array grows back over the popped slot and reads
+        // what was pushed there (the pop cleared it).
+        _ = popped.pop(tc, kind);
+        try expectSamples(&vm, popped, kind, &.{ 1, 2 });
+        popped.push(tc, kind, sample(&vm, kind, 5));
+        try expectSamples(&vm, popped, kind, &.{ 1, 2, 5 });
+    }
+}

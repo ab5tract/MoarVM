@@ -37,9 +37,12 @@
 //! `S` (`storage.Storage(Source)`), whose allocator is the REPR's one
 //! declared allocator. Every throw is `MVM_exception_throw_adhoc` with the
 //! C's format string, after the same side effects as in the C: a rejected
-//! `push`, `bind_pos` or `unshift` has already grown the array, a rejected
-//! `pop` has already dropped the element (rows 15a, 17a, 18c, 19b). The C's
-//! bugs on defined paths are kept and cited, not fixed. The C's unsigned
+//! `push` or `bind_pos` has already grown the array, a rejected `unshift`
+//! may have made front room (rows 15a, 17a, 19b); a rejected `pop` leaves
+//! the array as it was (row 18c, since upstream 27ebea0b8). The C's
+//! bugs on defined paths are kept and cited, not fixed, except where the
+//! C itself has been fixed (traces/llm/bench/cfix-mirror.md): then the
+//! Zig follows the fixed C. The C's unsigned
 //! arithmetic wraps; it is written with the wrapping operators here.
 const std = @import("std");
 const builtin = @import("builtin");
@@ -525,10 +528,10 @@ pub fn Elements(comptime S: type) type {
             exitSingleUser(body);
         }
 
-        /// `pop` (VMArray.c:648-725): the empty check, then `elems--`
-        /// before the kind check (row 18c: a rejected pop has dropped the
-        /// element and left its slot, for OBJ/STR an untracked pointer;
-        /// kept), and the slot cleared only on success.
+        /// `pop` (VMArray.c:648-725): the empty check, the kind check,
+        /// then `elems--` and the slot cleared, so a rejected pop leaves
+        /// the array as it was (upstream 27ebea0b8; row 18c described the
+        /// old order, which dropped the element and left its slot).
         pub fn pop(tc: Tc, st: St, root: Obj, data: ?*anyopaque, value: [*c]Reg, kind: u16) callconv(.c) void {
             _ = root;
             const repr_data = reprDataOf(st);
@@ -538,18 +541,20 @@ pub fn Elements(comptime S: type) type {
             const slot = body.start +% body.elems -% 1;
             if (body.elems < 1) c.MVM_exception_throw_adhoc(tc, "MVMArray: Can't pop from an empty array");
             enterSingleUser(tc, body);
-            body.elems -= 1; // elems >= 1 here
             kinds.dispatch(need(repr_data).slot_type, Arm(.pop).load, .{ tc, body, slot, @as(*Reg, value), kind }, unhandled);
+            // Only once the register kind has been checked.
+            body.elems -= 1; // elems >= 1 here
             storage.zeroSlots(tc, body, slot, slot +% 1, need(repr_data).slot_type);
             exitSingleUser(body);
         }
 
         /// `unshift` (VMArray.c:727-824): at `start == 0` first
         /// `n = min(max(elems, 8), 8192)` slots of front room (grow, move
-        /// the elements up by `n`, zero the first `n`); then `start--`
-        /// before the kind check (row 19b: a rejected unshift leaves the
-        /// window one slot left, element 0 a zero or, after a shift, the
-        /// shifted-off value; kept), the store, `elems++`.
+        /// the elements up by `n`, zero the first `n`); then the kind
+        /// check and the store into the slot before `start`, and only then
+        /// `start--` and `elems++`, so a rejected unshift leaves the window
+        /// where it was (upstream fd53df2e0; row 19b described the old
+        /// order). The front room made at `start == 0` stays, as in the C.
         pub fn unshift(tc: Tc, st: St, root: Obj, data: ?*anyopaque, value: Reg, kind: u16) callconv(.c) void {
             const repr_data = reprDataOf(st);
             const body = bodyOf(data);
@@ -564,8 +569,8 @@ pub fn Elements(comptime S: type) type {
                 body.elems = live;
                 storage.zeroSlots(tc, body, 0, n, need(repr_data).slot_type);
             }
+            kinds.dispatch(need(repr_data).slot_type, Arm(.unshift).store, .{ tc, root, body, body.start -% 1, value, kind }, unhandled);
             body.start -%= 1;
-            kinds.dispatch(need(repr_data).slot_type, Arm(.unshift).store, .{ tc, root, body, body.start, value, kind }, unhandled);
             body.elems +%= 1;
             exitSingleUser(body);
         }
