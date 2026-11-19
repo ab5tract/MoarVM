@@ -448,7 +448,7 @@ test "instance roots mark both VM event subscription types" {
         instance.*.subscriptions.SpeshOverviewEvent = null;
     }
     roots.addInstanceRootsToWorklist(tc, wl, null);
-    try std.testing.expectEqual(@as(u32, 37 + 2), wl.*.items);
+    try std.testing.expectEqual(@as(u64, 37 + 2), wl.*.items);
     const gc_event = @intFromPtr(&instance.*.subscriptions.GCEvent);
     const spesh_overview = @intFromPtr(&instance.*.subscriptions.SpeshOverviewEvent);
     var seen_gc_event: u32 = 0;
@@ -525,12 +525,12 @@ test "frame registers add only object and string registers" {
 
     // No work area: nothing to scan.
     roots.addFrameRegistersToWorklist(tc, wl, &frame);
-    try std.testing.expectEqual(@as(u32, 0), wl.*.items);
+    try std.testing.expectEqual(@as(u64, 0), wl.*.items);
 
     // The static frame's register kinds.
     frame.work = &work;
     roots.addFrameRegistersToWorklist(tc, wl, &frame);
-    try std.testing.expectEqual(@as(u32, 3), wl.*.items);
+    try std.testing.expectEqual(@as(u64, 3), wl.*.items);
     try std.testing.expectEqual(@intFromPtr(&work[0].o), @intFromPtr(wl.*.list[0]));
     try std.testing.expectEqual(@intFromPtr(&work[2].o), @intFromPtr(wl.*.list[1]));
     try std.testing.expectEqual(@intFromPtr(&work[4].o), @intFromPtr(wl.*.list[2]));
@@ -544,6 +544,6 @@ test "frame registers add only object and string registers" {
     work[1] = .{ .o = instance.*.VMNull };
     frame.spesh_cand = &cand;
     roots.addFrameRegistersToWorklist(tc, wl, &frame);
-    try std.testing.expectEqual(@as(u32, 1), wl.*.items);
+    try std.testing.expectEqual(@as(u64, 1), wl.*.items);
     try std.testing.expectEqual(@intFromPtr(&work[1].o), @intFromPtr(wl.*.list[0]));
 }

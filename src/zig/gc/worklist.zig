@@ -1,6 +1,9 @@
 //! Zig port of src/gc/worklist.c (lines 1-35): allocation, growth and
 //! destruction of the GC worklist, a stack of addresses of collectable
-//! pointer slots. No behaviour change. The struct and the
+//! pointer slots. No behaviour change; the counts `items` and `alloc` and
+//! presize_for's count are 64-bit, as in the C since upstream e9dee2a3e
+//! (they were 32-bit and wrapped for lists of 2**31 entries and more). The
+//! struct and the
 //! `MVM_gc_worklist_add*`/`_get` fast-path macros stay in src/gc/worklist.h;
 //! the list is allocated through `MVM_malloc`/`MVM_realloc`/`MVM_free` so
 //! the C macros and every C caller can keep using `worklist->list`. The
@@ -21,10 +24,13 @@ const Entry = @typeInfo(@FieldType(c.MVMGCWorklist, "list")).pointer.child;
 
 // The C layout the macros of worklist.h index into.
 comptime {
-    if (builtin.target.cpu.arch == .x86_64) std.debug.assert(@sizeOf(c.MVMGCWorklist) == 24);
+    if (builtin.target.cpu.arch == .x86_64) std.debug.assert(@sizeOf(c.MVMGCWorklist) == 32);
     std.debug.assert(@offsetOf(c.MVMGCWorklist, "items") == 8);
-    std.debug.assert(@offsetOf(c.MVMGCWorklist, "alloc") == 12);
-    std.debug.assert(@offsetOf(c.MVMGCWorklist, "include_gen2") == 16);
+    std.debug.assert(@offsetOf(c.MVMGCWorklist, "alloc") == 16);
+    std.debug.assert(@offsetOf(c.MVMGCWorklist, "include_gen2") == 24);
+    // The counts are 64-bit (upstream e9dee2a3e), as presizeFor's.
+    std.debug.assert(@FieldType(c.MVMGCWorklist, "items") == u64);
+    std.debug.assert(@FieldType(c.MVMGCWorklist, "alloc") == u64);
 }
 
 /// `MVM_realloc` of the list to `worklist.alloc` entries.
@@ -55,7 +61,7 @@ pub noinline fn addSlow(worklist: Worklist, item: ColSlot) void {
 
 /// Pre-sizes the worklist in expectation a certain number of items is about to be
 /// added. (worklist.c:22-29)
-pub noinline fn presizeFor(worklist: Worklist, items: u32) void {
+pub noinline fn presizeFor(worklist: Worklist, items: u64) void {
     const wanted = worklist.items +% items;
     if (wanted >= worklist.alloc) {
         worklist.alloc = wanted;
@@ -82,10 +88,9 @@ fn addSlowExport(tc: [*c]c.MVMThreadContext, worklist: [*c]c.MVMGCWorklist, item
     addSlow(worklist, @ptrCast(item));
 }
 
-fn presizeForExport(tc: [*c]c.MVMThreadContext, worklist: [*c]c.MVMGCWorklist, items: c.MVMint32) callconv(.c) void {
+fn presizeForExport(tc: [*c]c.MVMThreadContext, worklist: [*c]c.MVMGCWorklist, items: c.MVMuint64) callconv(.c) void {
     _ = tc;
-    // MVMuint32 + MVMint32 is unsigned 32-bit arithmetic in C.
-    presizeFor(worklist, @bitCast(items));
+    presizeFor(worklist, items);
 }
 
 fn destroyExport(tc: [*c]c.MVMThreadContext, worklist: [*c]c.MVMGCWorklist) callconv(.c) void {

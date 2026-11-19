@@ -274,10 +274,10 @@ pub fn newThreadNurserySize(i: Instance) u32 {
         c.MVM_NURSERY_SIZE;
 }
 
-/// One phase of a run: the C's `GCDEBUG_LOG(..., "processing %d items
-/// from ...")` (`msg`) then `process_worklist`.
+/// One phase of a run: the C's `GCDEBUG_LOG(..., "processing %"PRIu64"
+/// items from ...")` (`msg`) then `process_worklist`.
 inline fn drain(tc: Tc, worklist: Worklist, wtp: *WorkToPass, gen: Generations, comptime msg: [*:0]const u8) void {
-    if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_COLLECT)) gcdebugLog(tc, msg, .{@as(c_uint, worklist.items)});
+    if (comptime gcDebugEnabled(c.MVM_GC_DEBUG_COLLECT)) gcdebugLog(tc, msg, .{@as(u64, worklist.items)});
     processWorklist(tc, worklist, wtp, gen);
 }
 
@@ -299,13 +299,13 @@ pub fn collect(tc: Tc, what_to_do: WhatToDo, gen: Generations) void {
         .in_tray => {
             // We just need to process anything in the in-tray.
             addInTrayToWorklist(tc, worklist);
-            drain(tc, worklist, &wtp, gen, "Thread %d run %d : processing %d items from in tray \n");
+            drain(tc, worklist, &wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from in tray \n");
         },
         .finalizing => {
             // Need to process the finalizing queue.
             for (list(tc.finalizing, tc.num_finalizing)) |*obj|
                 worklistAdd(tc, worklist, obj);
-            drain(tc, worklist, &wtp, gen, "Thread %d run %d : processing %d items from finalizing \n");
+            drain(tc, worklist, &wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from finalizing \n");
         },
         else => mainRun(tc, worklist, &wtp, what_to_do, gen),
     }
@@ -359,18 +359,18 @@ inline fn mainRun(tc: Tc, worklist: Worklist, wtp: *WorkToPass, what_to_do: What
     // this, since they are instance-wide.
     if (what_to_do != .no_instance) {
         roots.addPermanentsToWorklist(tc, worklist, null);
-        drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %d items from instance permanents\n");
+        drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from instance permanents\n");
         roots.addInstanceRootsToWorklist(tc, worklist, null);
-        drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %d items from instance roots\n");
+        drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from instance roots\n");
     }
 
     // Add per-thread state to worklist and process it.
     roots.addTcRootsToWorklist(tc, worklist, null);
-    drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %d items from TC objects\n");
+    drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from TC objects\n");
 
     // Add temporary roots and process them (these are per-thread).
     roots.addTempsToWorklist(tc, worklist, null);
-    drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %d items from thread temps\n");
+    drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from thread temps\n");
 
     // Add things that are roots for the first generation because they are
     // pointed to by objects in the second generation and process them
@@ -379,12 +379,12 @@ inline fn mainRun(tc: Tc, worklist: Worklist, wtp: *WorkToPass, what_to_do: What
     // the gen2 rooting keeps them alive forever).
     if (gen == .nursery) {
         roots.addGen2sToWorklist(tc, worklist);
-        drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %d items from gen2 \n");
+        drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from gen2 \n");
     }
 
     // Process anything in the in-tray.
     addInTrayToWorklist(tc, worklist);
-    drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %d items from in tray \n");
+    drain(tc, worklist, wtp, gen, "Thread %d run %d : processing %" ++ c.PRIu64 ++ " items from in tray \n");
 
     // At this point, we have probably done most of the work we will
     // need to (only get more if another thread passes us more); zero

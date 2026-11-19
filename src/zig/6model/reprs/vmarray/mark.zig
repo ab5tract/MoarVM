@@ -55,9 +55,8 @@ fn markArm(comptime k: Kind, tc: Tc, body: *Body, worklist: Worklist) void {
     const n = body.elems;
     const raw = @field(body.slots, kinds.info(k).member);
     const slots = raw + body.start;
-    // MVMuint64 to the MVMint32 parameter: the C's conversion keeps the
-    // low 32 bits.
-    c.MVM_gc_worklist_presize_for(tc, worklist, @bitCast(@as(u32, @truncate(n))));
+    // The count is an MVMuint64, as elems (upstream e9dee2a3e).
+    c.MVM_gc_worklist_presize_for(tc, worklist, n);
     if (raw == null and (c.MVM_GC_DEBUG != 0 or worklist.*.include_gen2 == 0))
         moar.nullDeref(body.start *% kinds.info(k).elem_size);
     var i: u64 = 0;

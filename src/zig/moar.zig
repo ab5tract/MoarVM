@@ -181,7 +181,7 @@ pub inline fn worklistAdd(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, 
 pub inline fn worklistAddIncludeGen2Nocheck(tc: [*c]ThreadContext, worklist: [*c]c.MVMGCWorklist, item: anytype) void {
     if (comptime c.MVM_GC_DEBUG != 0) return worklistAdd(tc, worklist, item);
     worklist.*.list[worklist.*.items] = @ptrCast(@alignCast(item));
-    // MVMuint32 `items++`; the presize leaves room, so it cannot wrap.
+    // MVMuint64 `items++`; the presize leaves room, so it cannot wrap.
     worklist.*.items +%= 1;
 }
 
@@ -475,12 +475,12 @@ test "worklistAdd skips null and, unless include_gen2, gen2 items" {
         worklistAdd(tc, wl, &none);
         worklistAdd(tc, wl, &gen2_obj);
         worklistAdd(tc, wl, &nursery_obj);
-        try std.testing.expectEqual(@as(u32, 1 + include_gen2), wl.*.items);
+        try std.testing.expectEqual(@as(u64, 1 + include_gen2), wl.*.items);
         try std.testing.expectEqual(@intFromPtr(&nursery_obj), @intFromPtr(wl.*.list[include_gen2]));
         // Past alloc the slow path grows the list.
         for (0..300) |_| worklistAdd(tc, wl, &nursery_obj);
-        try std.testing.expectEqual(@as(u32, 301 + include_gen2), wl.*.items);
-        try std.testing.expectEqual(@as(u32, 512), wl.*.alloc);
+        try std.testing.expectEqual(@as(u64, 301 + include_gen2), wl.*.items);
+        try std.testing.expectEqual(@as(u64, 512), wl.*.alloc);
     }
 }
 

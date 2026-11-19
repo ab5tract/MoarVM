@@ -831,18 +831,18 @@ test "gcMark presizes and adds in index order" {
         const wl = c.MVM_gc_worklist_create(tc, include_gen2);
         defer c.MVM_gc_worklist_destroy(tc, wl);
         mark.gcMark(tc, objs.st(), objs.body(), wl);
-        try expectEqual(@as(u32, 5), wl.*.items);
+        try expectEqual(@as(u64, 5), wl.*.items);
         for (0..5) |i| try expectEqual(@intFromPtr(&kinds.slots(.obj, objs.body())[1 + i]), @intFromPtr(wl.*.list[i]));
         // A numeric array adds nothing.
         mark.gcMark(tc, ints.st(), ints.body(), wl);
-        try expectEqual(@as(u32, 5), wl.*.items);
+        try expectEqual(@as(u64, 5), wl.*.items);
     }
     // Presized to exactly items + elems = 300 slots, past the start size
     // of 256: the C's presize, not the doubling of add_slow.
     const wl = c.MVM_gc_worklist_create(tc, 0);
     defer c.MVM_gc_worklist_destroy(tc, wl);
     mark.gcMark(tc, big.st(), big.body(), wl);
-    try expectEqual(@as(u32, 300), wl.*.items);
+    try expectEqual(@as(u64, 300), wl.*.items);
     try expectEqual(@as(u32, 300), wl.*.alloc);
     for (0..300) |i| try expectEqual(@intFromPtr(&kinds.slots(.obj, big.body())[i]), @intFromPtr(wl.*.list[i]));
 }
@@ -856,11 +856,11 @@ test "gcMarkReprData adds the element type" {
     defer c.MVM_gc_worklist_destroy(tc, wl);
     const st = vm.types[@backingInt(Kind.i64)].?.st;
     mark.gcMarkReprData(tc, st, wl);
-    try expectEqual(@as(u32, 1), wl.*.items);
+    try expectEqual(@as(u64, 1), wl.*.items);
     try expectEqual(@intFromPtr(&reprData(vm.types[@backingInt(Kind.i64)].?).elem_type), @intFromPtr(wl.*.list[0]));
     // An OBJ array's element type is NULL: nothing added.
     mark.gcMarkReprData(tc, vm.types[@backingInt(Kind.obj)].?.st, wl);
-    try expectEqual(@as(u32, 1), wl.*.items);
+    try expectEqual(@as(u64, 1), wl.*.items);
 }
 
 test "describeRefs reports each object and string element with its index" {
@@ -1146,7 +1146,7 @@ test "the kinds without storage: what does not throw does nothing and keeps slot
         const wl = c.MVM_gc_worklist_create(tc, 1);
         defer c.MVM_gc_worklist_destroy(tc, wl);
         mark.gcMark(tc, a.st(), a.body(), wl);
-        try expectEqual(@as(u32, 0), wl.*.items);
+        try expectEqual(@as(u64, 0), wl.*.items);
         // Nothing was allocated: no storage is NULL slots (spec 5.4).
         try expect(a.body().slots.any == null);
         try expectEqual(@as(u64, 0), a.body().ssize);
@@ -1559,7 +1559,7 @@ test "on a stubbed STable without REPR data an empty array is left alone where t
     mark.gcMark(tc, st, a.body(), wl);
     // gc_mark_repr_data: its own NULL check (VMArray.c:120).
     mark.gcMarkReprData(tc, st, wl);
-    try expectEqual(@as(u32, 0), wl.*.items);
+    try expectEqual(@as(u64, 0), wl.*.items);
     // gc_free reads only the object; copy_to reads the REPR data only for
     // elements (VMArray.c:55-56); elems never reads it.
     E.gcFree(tc, a.o);
