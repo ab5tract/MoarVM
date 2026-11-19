@@ -843,7 +843,7 @@ test "gcMark presizes and adds in index order" {
     defer c.MVM_gc_worklist_destroy(tc, wl);
     mark.gcMark(tc, big.st(), big.body(), wl);
     try expectEqual(@as(u64, 300), wl.*.items);
-    try expectEqual(@as(u32, 300), wl.*.alloc);
+    try expectEqual(@as(u64, 300), wl.*.alloc);
     for (0..300) |i| try expectEqual(@intFromPtr(&kinds.slots(.obj, big.body())[i]), @intFromPtr(wl.*.list[i]));
 }
 
@@ -1350,6 +1350,17 @@ test "growing to within 4096 of 2**64 elements throws instead of wrapping, and l
         try expectEqual(@as(u64, 12288), pushed.body().ssize);
         const shifted_result = try childThrow(setElemsTo, .{ tc, pushed, @as(u64, 0) -% 1 }, pushed.body(), elem_size);
         try expectThrew(&shifted_result, "Unable to allocate an array of 18446744073709551615 elements", "elems=8997 start=3 ssize=12288 bytes=");
+        // 2**64 - 4095 with start 3: n + start does not wrap and passes
+        // ssize, so setSize first moves the elements to start 0 (as the
+        // C's set_size_internal), then the rounding wraps and grow throws:
+        // start is 0, elems and the element values are unchanged.
+        var parent_buffer: [512]u8 = undefined;
+        const parent_state = stateLine(&parent_buffer, pushed.body(), elem_size);
+        const parent_bytes = parent_state[std.mem.find(u8, parent_state, "bytes=").?..];
+        var expected_buffer: [600]u8 = undefined;
+        const expected_state = try std.fmt.bufPrint(&expected_buffer, "elems=8997 start=0 ssize=12288 {s}\n", .{parent_bytes});
+        const compacted_result = try childThrow(setElemsTo, .{ tc, pushed, @as(u64, 0) -% 4095 }, pushed.body(), elem_size);
+        try expectThrew(&compacted_result, "Unable to allocate an array of 18446744073709547521 elements", expected_state);
     }
 }
 
@@ -1816,10 +1827,22 @@ test "write_buf on a kind without storage throws the integer-type message, even 
     }
 }
 
-fn composeWith(tc: *c.MVMThreadContext, array_type: ?*Object, element_type: ?*Object) void {
+fn composeWith(tc: *c.MVMThreadContext, array_type_in: ?*Object, element_type_in: ?*Object) void {
+    // Every object is rooted across the allocations and binds (a
+    // collection may move them); the defer pops on every path that returns
+    // (a throw in a childThrow child exits the process instead).
+    var array_type = array_type_in;
+    var element_type = element_type_in;
+    var info: ?*Object = null;
+    var array_info: ?*Object = null;
+    c.MVM_gc_root_temp_push(tc, @ptrCast(&array_type));
+    c.MVM_gc_root_temp_push(tc, @ptrCast(&element_type));
+    c.MVM_gc_root_temp_push(tc, @ptrCast(&info));
+    c.MVM_gc_root_temp_push(tc, @ptrCast(&array_info));
+    defer c.MVM_gc_root_temp_pop_n(tc, 4);
     const consts = tc.instance.*.str_consts;
-    const info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
-    const array_info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
+    info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
+    array_info = c.MVM_repr_alloc_init(tc, tc.instance.*.boot_types.BOOTHash);
     c.MVM_repr_bind_key_o(tc, array_info, consts.type, element_type);
     c.MVM_repr_bind_key_o(tc, info, consts.array, array_info);
     zig_compose(tc, array_type.?.st, info);

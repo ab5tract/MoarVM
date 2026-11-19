@@ -139,7 +139,9 @@ pub fn Storage(comptime Source: type) type {
         /// least 8; from 8,192 on, `n` rounded up past the next multiple of
         /// 4,096 (`(n + 0x1000) & ~0xfff`, wrapping as the C's unsigned
         /// arithmetic does; a wrapped size, below `n`, throws "Unable to
-        /// allocate an array of <n> elements" before anything is changed).
+        /// allocate an array of <n> elements" before anything is
+        /// reallocated: the elements are unchanged, though `setSize` may
+        /// already have moved them to `start = 0`, as the C does).
         /// Above the address budget for the element size it throws "Unable
         /// to allocate an array of <ssize> elements".
         /// Then the buffer is reallocated (`remap`, where the C calls
